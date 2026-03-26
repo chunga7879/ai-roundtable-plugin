@@ -1,0 +1,321 @@
+import * as vscode from 'vscode';
+import * as path from 'path';
+import type { WorkspaceContext, WorkspaceFile } from '../types';
+
+const MAX_FILE_SIZE_BYTES = 50_000;
+const MAX_TOTAL_CONTEXT_BYTES = 200_000;
+const MAX_FILES_TO_INCLUDE = 20;
+
+const EXCLUDED_DIRS = new Set([
+  'node_modules',
+  '.git',
+  'dist',
+  'build',
+  'out',
+  '.next',
+  '.nuxt',
+  'coverage',
+  '__pycache__',
+  '.pytest_cache',
+  'venv',
+  '.venv',
+  '.tox',
+  'vendor',
+  'target',
+  '.gradle',
+]);
+
+const EXCLUDED_EXTENSIONS = new Set([
+  '.png',
+  '.jpg',
+  '.jpeg',
+  '.gif',
+  '.svg',
+  '.ico',
+  '.woff',
+  '.woff2',
+  '.ttf',
+  '.eot',
+  '.mp4',
+  '.mp3',
+  '.wav',
+  '.zip',
+  '.tar',
+  '.gz',
+  '.pdf',
+  '.bin',
+  '.exe',
+  '.dll',
+  '.so',
+  '.dylib',
+  '.lock',
+  '.map',
+]);
+
+const EXTENSION_TO_LANGUAGE: Record<string, string> = {
+  '.ts': 'typescript',
+  '.tsx': 'typescriptreact',
+  '.js': 'javascript',
+  '.jsx': 'javascriptreact',
+  '.py': 'python',
+  '.rs': 'rust',
+  '.go': 'go',
+  '.java': 'java',
+  '.cs': 'csharp',
+  '.cpp': 'cpp',
+  '.c': 'c',
+  '.h': 'c',
+  '.hpp': 'cpp',
+  '.rb': 'ruby',
+  '.php': 'php',
+  '.swift': 'swift',
+  '.kt': 'kotlin',
+  '.scala': 'scala',
+  '.sh': 'shell',
+  '.bash': 'shell',
+  '.zsh': 'shell',
+  '.yaml': 'yaml',
+  '.yml': 'yaml',
+  '.json': 'json',
+  '.toml': 'toml',
+  '.xml': 'xml',
+  '.html': 'html',
+  '.css': 'css',
+  '.scss': 'scss',
+  '.less': 'less',
+  '.md': 'markdown',
+  '.sql': 'sql',
+  '.dockerfile': 'dockerfile',
+  '.env': 'dotenv',
+};
+
+export class WorkspaceReaderError extends Error {
+  constructor(
+    message: string,
+    public readonly cause?: unknown,
+  ) {
+    super(message);
+    this.name = 'WorkspaceReaderError';
+  }
+}
+
+export class WorkspaceReader {
+  async buildContext(): Promise<WorkspaceContext> {
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (!workspaceFolders || workspaceFolders.length === 0) {
+      return { files: [] };
+    }
+
+    const activeEditor = vscode.window.activeTextEditor;
+    const activeFilePath = activeEditor?.document.uri.fsPath;
+
+    const filesToRead: vscode.Uri[] = [];
+
+    // Priority 1: Currently open/active file
+    if (activeEditor && !activeEditor.document.isUntitled) {
+      filesToRead.push(activeEditor.document.uri);
+    }
+
+    // Priority 2: All visible editors
+    for (const editor of vscode.window.visibleTextEditors) {
+      if (!editor.document.isUntitled && editor !== activeEditor) {
+        const uri = editor.document.uri;
+        if (!filesToRead.some((f) => f.fsPath === uri.fsPath)) {
+          filesToRead.push(uri);
+        }
+      }
+    }
+
+    // Priority 3: Files in workspace (breadth-first, respecting limits)
+    const rootUri = workspaceFolders[0].uri;
+    const workspaceFiles = await this.collectWorkspaceFiles(
+      rootUri,
+      MAX_FILES_TO_INCLUDE - filesToRead.length,
+      filesToRead.map((u) => u.fsPath),
+    );
+
+    for (const uri of workspaceFiles) {
+      if (!filesToRead.some((f) => f.fsPath === uri.fsPath)) {
+        filesToRead.push(uri);
+      }
+    }
+
+    // Read files up to total context limit
+    const files: WorkspaceFile[] = [];
+    let totalBytes = 0;
+
+    for (const uri of filesToRead) {
+      if (files.length >= MAX_FILES_TO_INCLUDE) {
+        break;
+      }
+
+      const workspaceFile = await this.readWorkspaceFile(uri, rootUri.fsPath);
+      if (!workspaceFile) {
+        continue;
+      }
+
+      const fileBytes = Buffer.byteLength(workspaceFile.content, 'utf-8');
+      if (totalBytes + fileBytes > MAX_TOTAL_CONTEXT_BYTES) {
+        break;
+      }
+
+      files.push(workspaceFile);
+      totalBytes += fileBytes;
+    }
+
+    return {
+      files,
+      activeFilePath: activeFilePath
+        ? this.toRelativePath(activeFilePath, rootUri.fsPath)
+        : undefined,
+    };
+  }
+
+  private async readWorkspaceFile(
+    uri: vscode.Uri,
+    workspaceRoot: string,
+  ): Promise<WorkspaceFile | undefined> {
+    const fsPath = uri.fsPath;
+    const ext = path.extname(fsPath).toLowerCase();
+
+    if (EXCLUDED_EXTENSIONS.has(ext)) {
+      return undefined;
+    }
+
+    if (this.isInExcludedDir(fsPath, workspaceRoot)) {
+      return undefined;
+    }
+
+    try {
+      const stat = await vscode.workspace.fs.stat(uri);
+      if (stat.size > MAX_FILE_SIZE_BYTES) {
+        // Include truncated version with notice
+        const bytes = await vscode.workspace.fs.readFile(uri);
+        const fullContent = Buffer.from(bytes).toString('utf-8');
+        const truncated = fullContent.slice(0, MAX_FILE_SIZE_BYTES);
+        const relativePath = this.toRelativePath(fsPath, workspaceRoot);
+
+        return {
+          path: relativePath,
+          content: `${truncated}\n\n[... truncated at ${MAX_FILE_SIZE_BYTES} bytes ...]`,
+          language: this.getLanguage(ext),
+        };
+      }
+
+      const bytes = await vscode.workspace.fs.readFile(uri);
+      const content = Buffer.from(bytes).toString('utf-8');
+
+      return {
+        path: this.toRelativePath(fsPath, workspaceRoot),
+        content,
+        language: this.getLanguage(ext),
+      };
+    } catch (err) {
+      // File may have been deleted or is unreadable — skip silently
+      return undefined;
+    }
+  }
+
+  private async collectWorkspaceFiles(
+    rootUri: vscode.Uri,
+    maxFiles: number,
+    alreadyIncluded: string[],
+  ): Promise<vscode.Uri[]> {
+    if (maxFiles <= 0) {
+      return [];
+    }
+
+    const result: vscode.Uri[] = [];
+    await this.traverseDirectory(
+      rootUri,
+      rootUri.fsPath,
+      result,
+      maxFiles,
+      alreadyIncluded,
+    );
+    return result;
+  }
+
+  private async traverseDirectory(
+    dirUri: vscode.Uri,
+    workspaceRoot: string,
+    result: vscode.Uri[],
+    maxFiles: number,
+    alreadyIncluded: string[],
+  ): Promise<void> {
+    if (result.length >= maxFiles) {
+      return;
+    }
+
+    const dirPath = dirUri.fsPath;
+    const dirName = path.basename(dirPath);
+
+    if (EXCLUDED_DIRS.has(dirName)) {
+      return;
+    }
+
+    let entries: [string, vscode.FileType][];
+    try {
+      entries = await vscode.workspace.fs.readDirectory(dirUri);
+    } catch {
+      return;
+    }
+
+    // Sort: files before directories, then alphabetically
+    entries.sort(([nameA, typeA], [nameB, typeB]) => {
+      if (typeA !== typeB) {
+        return typeA === vscode.FileType.File ? -1 : 1;
+      }
+      return nameA.localeCompare(nameB);
+    });
+
+    for (const [name, type] of entries) {
+      if (result.length >= maxFiles) {
+        break;
+      }
+
+      const entryUri = vscode.Uri.joinPath(dirUri, name);
+      const entryPath = entryUri.fsPath;
+
+      if (type === vscode.FileType.File) {
+        if (!alreadyIncluded.includes(entryPath)) {
+          const ext = path.extname(name).toLowerCase();
+          if (!EXCLUDED_EXTENSIONS.has(ext) && name !== '.env') {
+            result.push(entryUri);
+          }
+        }
+      } else if (type === vscode.FileType.Directory) {
+        await this.traverseDirectory(
+          entryUri,
+          workspaceRoot,
+          result,
+          maxFiles,
+          alreadyIncluded,
+        );
+      }
+    }
+  }
+
+  private isInExcludedDir(filePath: string, workspaceRoot: string): boolean {
+    const relative = path.relative(workspaceRoot, filePath);
+    const parts = relative.split(path.sep);
+
+    for (const part of parts.slice(0, -1)) {
+      if (EXCLUDED_DIRS.has(part)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  private toRelativePath(filePath: string, workspaceRoot: string): string {
+    const relative = path.relative(workspaceRoot, filePath);
+    // Normalize to forward slashes for consistency
+    return relative.split(path.sep).join('/');
+  }
+
+  private getLanguage(ext: string): string {
+    return EXTENSION_TO_LANGUAGE[ext] ?? 'plaintext';
+  }
+}

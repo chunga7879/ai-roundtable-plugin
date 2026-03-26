@@ -1,0 +1,9 @@
+node_modules/
+out/
+*.vsix
+.vscode-test/
+coverage/
+*.js.map
+.env
+.env.local
+*.log

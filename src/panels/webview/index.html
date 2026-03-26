@@ -1,0 +1,768 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-{{NONCE}}';" />
+  <title>AI Roundtable</title>
+  <style>
+    :root {
+      --border-radius: 6px;
+      --spacing-xs: 4px;
+      --spacing-sm: 8px;
+      --spacing-md: 12px;
+      --spacing-lg: 16px;
+      --spacing-xl: 20px;
+      --font-size-sm: 12px;
+      --font-size-md: 13px;
+      --font-size-lg: 14px;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: var(--vscode-font-family);
+      font-size: var(--vscode-font-size, 13px);
+      color: var(--vscode-foreground);
+      background-color: var(--vscode-sideBar-background, var(--vscode-editor-background));
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* ── Configuration Banner ── */
+    #config-banner {
+      display: none;
+      padding: var(--spacing-md);
+      background-color: var(--vscode-editorWarning-background, #3a2e00);
+      border-bottom: 1px solid var(--vscode-editorWarning-foreground, #cca700);
+      gap: var(--spacing-sm);
+      align-items: center;
+      flex-direction: column;
+    }
+    #config-banner.visible {
+      display: flex;
+    }
+    #config-banner p {
+      font-size: var(--font-size-sm);
+      color: var(--vscode-editorWarning-foreground, #cca700);
+      text-align: center;
+    }
+    #configure-btn {
+      padding: var(--spacing-xs) var(--spacing-md);
+      background-color: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+      border: none;
+      border-radius: var(--border-radius);
+      cursor: pointer;
+      font-size: var(--font-size-sm);
+      font-family: inherit;
+    }
+    #configure-btn:hover {
+      background-color: var(--vscode-button-hoverBackground);
+    }
+
+    /* ── Controls Panel ── */
+    #controls {
+      padding: var(--spacing-md);
+      border-bottom: 1px solid var(--vscode-panel-border, var(--vscode-widget-border));
+      display: flex;
+      flex-direction: column;
+      gap: var(--spacing-sm);
+      flex-shrink: 0;
+    }
+
+    .control-row {
+      display: flex;
+      gap: var(--spacing-sm);
+      align-items: center;
+    }
+
+    label {
+      font-size: var(--font-size-sm);
+      color: var(--vscode-descriptionForeground);
+      white-space: nowrap;
+      min-width: 80px;
+    }
+
+    select {
+      flex: 1;
+      padding: var(--spacing-xs) var(--spacing-sm);
+      background-color: var(--vscode-dropdown-background);
+      color: var(--vscode-dropdown-foreground);
+      border: 1px solid var(--vscode-dropdown-border);
+      border-radius: var(--border-radius);
+      font-family: inherit;
+      font-size: var(--font-size-md);
+      cursor: pointer;
+      outline: none;
+    }
+    select:focus {
+      border-color: var(--vscode-focusBorder);
+    }
+
+    /* ── Sub-agents checkboxes ── */
+    #sub-agents-section {
+      display: flex;
+      flex-direction: column;
+      gap: var(--spacing-xs);
+    }
+    .sub-agents-label {
+      font-size: var(--font-size-sm);
+      color: var(--vscode-descriptionForeground);
+    }
+    #sub-agents-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--spacing-xs) var(--spacing-md);
+    }
+    .agent-checkbox-item {
+      display: flex;
+      align-items: center;
+      gap: var(--spacing-xs);
+      cursor: pointer;
+    }
+    .agent-checkbox-item input[type="checkbox"] {
+      cursor: pointer;
+      accent-color: var(--vscode-focusBorder);
+    }
+    .agent-checkbox-item span {
+      font-size: var(--font-size-sm);
+      color: var(--vscode-foreground);
+    }
+
+    /* ── Messages Area ── */
+    #messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: var(--spacing-md);
+      display: flex;
+      flex-direction: column;
+      gap: var(--spacing-md);
+      scroll-behavior: smooth;
+    }
+
+    .message {
+      display: flex;
+      flex-direction: column;
+      gap: var(--spacing-xs);
+      max-width: 100%;
+    }
+
+    .message-header {
+      display: flex;
+      align-items: center;
+      gap: var(--spacing-xs);
+    }
+
+    .message-label {
+      font-size: var(--font-size-sm);
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .message-label.user { color: var(--vscode-terminal-ansiBrightBlue, #4fc3f7); }
+    .message-label.agent { color: var(--vscode-terminal-ansiBrightGreen, #81c784); }
+    .message-label.agent.claude { color: var(--vscode-terminal-ansiBrightMagenta, #ce93d8); }
+    .message-label.agent.gpt { color: var(--vscode-terminal-ansiBrightGreen, #81c784); }
+    .message-label.agent.gemini { color: var(--vscode-terminal-ansiBrightYellow, #fff176); }
+    .message-label.agent.copilot { color: var(--vscode-terminal-ansiBrightCyan, #80deea); }
+    .message-label.sub-agent { color: var(--vscode-descriptionForeground); font-style: italic; }
+    .message-label.system { color: var(--vscode-descriptionForeground); }
+    .message-label.error { color: var(--vscode-errorForeground, #f48771); }
+
+    .message-body {
+      font-size: var(--font-size-md);
+      line-height: 1.6;
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: var(--vscode-foreground);
+    }
+
+    .message-body.user {
+      background-color: var(--vscode-input-background);
+      padding: var(--spacing-sm) var(--spacing-md);
+      border-radius: var(--border-radius);
+      border-left: 3px solid var(--vscode-terminal-ansiBrightBlue, #4fc3f7);
+    }
+
+    .message-body.agent {
+      background-color: var(--vscode-editor-background);
+      padding: var(--spacing-sm) var(--spacing-md);
+      border-radius: var(--border-radius);
+    }
+
+    .message-body.sub-agent {
+      background-color: var(--vscode-editor-background);
+      padding: var(--spacing-sm) var(--spacing-md);
+      border-radius: var(--border-radius);
+      opacity: 0.8;
+      border-left: 3px solid var(--vscode-descriptionForeground);
+    }
+
+    .message-body.error {
+      background-color: var(--vscode-inputValidation-errorBackground);
+      padding: var(--spacing-sm) var(--spacing-md);
+      border-radius: var(--border-radius);
+      border-left: 3px solid var(--vscode-errorForeground, #f48771);
+      color: var(--vscode-errorForeground, #f48771);
+    }
+
+    .message-body.system {
+      color: var(--vscode-descriptionForeground);
+      font-style: italic;
+      font-size: var(--font-size-sm);
+    }
+
+    /* ── Loading indicator ── */
+    .loading-dots {
+      display: inline-block;
+    }
+    .loading-dots::after {
+      content: '';
+      animation: dots 1.2s steps(4, end) infinite;
+    }
+    @keyframes dots {
+      0%   { content: ''; }
+      25%  { content: '.'; }
+      50%  { content: '..'; }
+      75%  { content: '...'; }
+      100% { content: ''; }
+    }
+
+    /* ── File Changes Panel ── */
+    #file-changes-panel {
+      display: none;
+      flex-direction: column;
+      gap: var(--spacing-sm);
+      padding: var(--spacing-md);
+      background-color: var(--vscode-editor-background);
+      border-top: 1px solid var(--vscode-panel-border, var(--vscode-widget-border));
+      flex-shrink: 0;
+    }
+    #file-changes-panel.visible {
+      display: flex;
+    }
+    #file-changes-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    #file-changes-title {
+      font-size: var(--font-size-sm);
+      font-weight: 600;
+      color: var(--vscode-foreground);
+    }
+    #file-changes-list {
+      display: flex;
+      flex-direction: column;
+      gap: var(--spacing-xs);
+      max-height: 120px;
+      overflow-y: auto;
+    }
+    .file-change-item {
+      display: flex;
+      align-items: center;
+      gap: var(--spacing-sm);
+      padding: var(--spacing-xs) var(--spacing-sm);
+      background-color: var(--vscode-input-background);
+      border-radius: var(--border-radius);
+      cursor: pointer;
+    }
+    .file-change-item:hover {
+      background-color: var(--vscode-list-hoverBackground);
+    }
+    .file-change-badge {
+      font-size: 10px;
+      font-weight: 700;
+      padding: 1px 5px;
+      border-radius: 3px;
+      text-transform: uppercase;
+    }
+    .file-change-badge.modified {
+      background-color: var(--vscode-gitDecoration-modifiedResourceForeground, #e2c08d);
+      color: var(--vscode-editor-background);
+    }
+    .file-change-badge.new {
+      background-color: var(--vscode-gitDecoration-addedResourceForeground, #73c991);
+      color: var(--vscode-editor-background);
+    }
+    .file-change-path {
+      font-size: var(--font-size-sm);
+      font-family: var(--vscode-editor-font-family, monospace);
+      color: var(--vscode-foreground);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #file-changes-actions {
+      display: flex;
+      gap: var(--spacing-sm);
+    }
+    .action-btn {
+      flex: 1;
+      padding: var(--spacing-xs) var(--spacing-md);
+      border: none;
+      border-radius: var(--border-radius);
+      cursor: pointer;
+      font-family: inherit;
+      font-size: var(--font-size-sm);
+      font-weight: 500;
+    }
+    #apply-changes-btn {
+      background-color: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+    }
+    #apply-changes-btn:hover {
+      background-color: var(--vscode-button-hoverBackground);
+    }
+    #reject-changes-btn {
+      background-color: var(--vscode-button-secondaryBackground);
+      color: var(--vscode-button-secondaryForeground);
+    }
+    #reject-changes-btn:hover {
+      background-color: var(--vscode-button-secondaryHoverBackground);
+    }
+
+    /* ── Input Area ── */
+    #input-area {
+      padding: var(--spacing-md);
+      border-top: 1px solid var(--vscode-panel-border, var(--vscode-widget-border));
+      display: flex;
+      gap: var(--spacing-sm);
+      align-items: flex-end;
+      flex-shrink: 0;
+    }
+
+    #message-input {
+      flex: 1;
+      padding: var(--spacing-sm) var(--spacing-md);
+      background-color: var(--vscode-input-background);
+      color: var(--vscode-input-foreground);
+      border: 1px solid var(--vscode-input-border, var(--vscode-widget-border));
+      border-radius: var(--border-radius);
+      font-family: inherit;
+      font-size: var(--font-size-md);
+      resize: none;
+      outline: none;
+      min-height: 38px;
+      max-height: 120px;
+      line-height: 1.5;
+    }
+    #message-input:focus {
+      border-color: var(--vscode-focusBorder);
+    }
+    #message-input::placeholder {
+      color: var(--vscode-input-placeholderForeground);
+    }
+    #message-input:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    #send-btn {
+      padding: var(--spacing-sm) var(--spacing-md);
+      background-color: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+      border: none;
+      border-radius: var(--border-radius);
+      cursor: pointer;
+      font-family: inherit;
+      font-size: var(--font-size-md);
+      white-space: nowrap;
+      height: 38px;
+    }
+    #send-btn:hover:not(:disabled) {
+      background-color: var(--vscode-button-hoverBackground);
+    }
+    #send-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    /* ── Scrollbar styling ── */
+    ::-webkit-scrollbar {
+      width: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    ::-webkit-scrollbar-thumb {
+      background-color: var(--vscode-scrollbarSlider-background);
+      border-radius: 3px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background-color: var(--vscode-scrollbarSlider-hoverBackground);
+    }
+  </style>
+</head>
+<body>
+  <!-- Configuration Warning Banner -->
+  <div id="config-banner">
+    <p>AI provider not configured. Set up GitHub Copilot or API keys to start.</p>
+    <button id="configure-btn" type="button">Configure Provider</button>
+  </div>
+
+  <!-- Controls -->
+  <div id="controls">
+    <div class="control-row">
+      <label for="round-select">Round</label>
+      <select id="round-select">
+        <option value="requirements">Requirements</option>
+        <option value="architect">Architect</option>
+        <option value="developer" selected>Developer</option>
+        <option value="reviewer">Reviewer</option>
+        <option value="qa">QA Engineer</option>
+        <option value="devops">DevOps</option>
+        <option value="runner">Runner</option>
+      </select>
+    </div>
+
+    <div class="control-row">
+      <label for="main-agent-select">Main Agent</label>
+      <select id="main-agent-select">
+        <option value="copilot">GitHub Copilot</option>
+        <option value="claude">Claude (Anthropic)</option>
+        <option value="gpt">GPT (OpenAI)</option>
+        <option value="gemini">Gemini (Google)</option>
+      </select>
+    </div>
+
+    <div id="sub-agents-section">
+      <span class="sub-agents-label">Sub Agents (verifiers)</span>
+      <div id="sub-agents-grid">
+        <label class="agent-checkbox-item">
+          <input type="checkbox" name="sub-agent" value="copilot" />
+          <span>Copilot</span>
+        </label>
+        <label class="agent-checkbox-item">
+          <input type="checkbox" name="sub-agent" value="claude" />
+          <span>Claude</span>
+        </label>
+        <label class="agent-checkbox-item">
+          <input type="checkbox" name="sub-agent" value="gpt" />
+          <span>GPT</span>
+        </label>
+        <label class="agent-checkbox-item">
+          <input type="checkbox" name="sub-agent" value="gemini" />
+          <span>Gemini</span>
+        </label>
+      </div>
+    </div>
+  </div>
+
+  <!-- Messages -->
+  <div id="messages" role="log" aria-live="polite" aria-label="Conversation">
+    <div class="message" id="welcome-message">
+      <div class="message-body system">
+        Select a round type and agents above, then describe what you want to build.
+        Your workspace files will be included as context automatically.
+      </div>
+    </div>
+  </div>
+
+  <!-- File Changes Panel -->
+  <div id="file-changes-panel">
+    <div id="file-changes-header">
+      <span id="file-changes-title">Proposed File Changes</span>
+    </div>
+    <div id="file-changes-list"></div>
+    <div id="file-changes-actions">
+      <button id="apply-changes-btn" class="action-btn" type="button">Apply All Changes</button>
+      <button id="reject-changes-btn" class="action-btn" type="button">Discard</button>
+    </div>
+  </div>
+
+  <!-- Input Area -->
+  <div id="input-area">
+    <textarea
+      id="message-input"
+      placeholder="Describe what you want to build or fix..."
+      rows="1"
+      aria-label="Message input"
+    ></textarea>
+    <button id="send-btn" type="button">Send</button>
+  </div>
+
+  <script nonce="{{NONCE}}">
+    (function () {
+      'use strict';
+
+      const vscode = acquireVsCodeApi();
+
+      // ── State ──────────────────────────────────────────────────────────────
+      let isLoading = false;
+      /** @type {Array<{filePath: string, content: string, isNew: boolean}>} */
+      let pendingFileChanges = [];
+
+      // ── DOM refs ───────────────────────────────────────────────────────────
+      const configBanner = /** @type {HTMLElement} */ (document.getElementById('config-banner'));
+      const configureBtn = /** @type {HTMLButtonElement} */ (document.getElementById('configure-btn'));
+      const messagesEl = /** @type {HTMLElement} */ (document.getElementById('messages'));
+      const messageInput = /** @type {HTMLTextAreaElement} */ (document.getElementById('message-input'));
+      const sendBtn = /** @type {HTMLButtonElement} */ (document.getElementById('send-btn'));
+      const roundSelect = /** @type {HTMLSelectElement} */ (document.getElementById('round-select'));
+      const mainAgentSelect = /** @type {HTMLSelectElement} */ (document.getElementById('main-agent-select'));
+      const fileChangesPanel = /** @type {HTMLElement} */ (document.getElementById('file-changes-panel'));
+      const fileChangesList = /** @type {HTMLElement} */ (document.getElementById('file-changes-list'));
+      const applyChangesBtn = /** @type {HTMLButtonElement} */ (document.getElementById('apply-changes-btn'));
+      const rejectChangesBtn = /** @type {HTMLButtonElement} */ (document.getElementById('reject-changes-btn'));
+
+      // ── Auto-resize textarea ───────────────────────────────────────────────
+      messageInput.addEventListener('input', function () {
+        this.style.height = 'auto';
+        this.style.height = Math.min(this.scrollHeight, 120) + 'px';
+      });
+
+      // ── Send message on Enter (Shift+Enter for newline) ────────────────────
+      messageInput.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          handleSend();
+        }
+      });
+
+      sendBtn.addEventListener('click', handleSend);
+      configureBtn.addEventListener('click', function () {
+        vscode.postMessage({ type: 'configureProvider' });
+      });
+
+      applyChangesBtn.addEventListener('click', function () {
+        vscode.postMessage({
+          type: 'applyChanges',
+          payload: { fileChanges: pendingFileChanges },
+        });
+        hideFileChanges();
+      });
+
+      rejectChangesBtn.addEventListener('click', function () {
+        vscode.postMessage({ type: 'rejectChanges' });
+        hideFileChanges();
+      });
+
+      // ── Handle send ────────────────────────────────────────────────────────
+      function handleSend() {
+        const text = messageInput.value.trim();
+        if (!text || isLoading) {
+          return;
+        }
+
+        const subAgents = getSelectedSubAgents();
+
+        vscode.postMessage({
+          type: 'sendMessage',
+          payload: {
+            userMessage: text,
+            roundType: roundSelect.value,
+            mainAgent: mainAgentSelect.value,
+            subAgents: subAgents,
+          },
+        });
+
+        messageInput.value = '';
+        messageInput.style.height = 'auto';
+      }
+
+      function getSelectedSubAgents() {
+        const checkboxes = /** @type {NodeListOf<HTMLInputElement>} */ (
+          document.querySelectorAll('input[name="sub-agent"]:checked')
+        );
+        return Array.from(checkboxes).map((cb) => cb.value);
+      }
+
+      // ── Messages ───────────────────────────────────────────────────────────
+      /**
+       * @param {{id: string, role: string, agentName?: string, content: string, isSubAgentFeedback?: boolean}} msg
+       */
+      function appendMessage(msg) {
+        // Remove welcome message if present
+        const welcome = document.getElementById('welcome-message');
+        if (welcome) {
+          welcome.remove();
+        }
+
+        const wrapper = document.createElement('div');
+        wrapper.className = 'message';
+        wrapper.id = 'msg-' + msg.id;
+
+        const header = document.createElement('div');
+        header.className = 'message-header';
+
+        const labelEl = document.createElement('span');
+        labelEl.className = 'message-label ' + msg.role;
+
+        if (msg.isSubAgentFeedback) {
+          labelEl.classList.add('sub-agent');
+        }
+
+        if (msg.agentName) {
+          labelEl.classList.add(msg.agentName.toLowerCase());
+        }
+
+        labelEl.textContent = buildLabel(msg);
+        header.appendChild(labelEl);
+        wrapper.appendChild(header);
+
+        const bodyEl = document.createElement('div');
+        bodyEl.className = 'message-body ' + (msg.isSubAgentFeedback ? 'sub-agent' : msg.role);
+        bodyEl.textContent = msg.content;
+        wrapper.appendChild(bodyEl);
+
+        messagesEl.appendChild(wrapper);
+        scrollToBottom();
+      }
+
+      /**
+       * @param {{id: string, content: string}} update
+       */
+      function updateMessage(update) {
+        const wrapper = document.getElementById('msg-' + update.id);
+        if (!wrapper) {
+          return;
+        }
+        const bodyEl = wrapper.querySelector('.message-body');
+        if (bodyEl) {
+          bodyEl.textContent = update.content;
+          scrollToBottom();
+        }
+      }
+
+      /**
+       * @param {{id: string, role: string, agentName?: string, isSubAgentFeedback?: boolean}} msg
+       * @returns {string}
+       */
+      function buildLabel(msg) {
+        if (msg.role === 'user') {
+          return 'You';
+        }
+        if (msg.role === 'system') {
+          return 'System';
+        }
+        if (msg.role === 'error') {
+          return 'Error';
+        }
+        if (msg.agentName) {
+          const name = msg.agentName.charAt(0).toUpperCase() + msg.agentName.slice(1);
+          return msg.isSubAgentFeedback ? name + ' (verifier)' : name;
+        }
+        return 'Agent';
+      }
+
+      function scrollToBottom() {
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+      }
+
+      // ── Loading state ──────────────────────────────────────────────────────
+      /**
+       * @param {boolean} loading
+       */
+      function setLoading(loading) {
+        isLoading = loading;
+        sendBtn.disabled = loading;
+        messageInput.disabled = loading;
+        sendBtn.textContent = loading ? 'Sending\u2026' : 'Send';
+      }
+
+      // ── File changes ───────────────────────────────────────────────────────
+      /**
+       * @param {Array<{filePath: string, content: string, isNew: boolean}>} fileChanges
+       */
+      function showFileChanges(fileChanges) {
+        pendingFileChanges = fileChanges;
+        fileChangesList.innerHTML = '';
+
+        for (const change of fileChanges) {
+          const item = document.createElement('div');
+          item.className = 'file-change-item';
+          item.title = 'Click to preview diff';
+
+          const badge = document.createElement('span');
+          badge.className = 'file-change-badge ' + (change.isNew ? 'new' : 'modified');
+          badge.textContent = change.isNew ? 'NEW' : 'MOD';
+
+          const pathEl = document.createElement('span');
+          pathEl.className = 'file-change-path';
+          pathEl.textContent = change.filePath;
+
+          item.appendChild(badge);
+          item.appendChild(pathEl);
+
+          // Clicking a file previews it in a diff
+          item.addEventListener('click', function () {
+            vscode.postMessage({
+              type: 'previewChange',
+              payload: { fileChange: change },
+            });
+          });
+
+          fileChangesList.appendChild(item);
+        }
+
+        fileChangesPanel.classList.add('visible');
+      }
+
+      function hideFileChanges() {
+        pendingFileChanges = [];
+        fileChangesPanel.classList.remove('visible');
+        fileChangesList.innerHTML = '';
+      }
+
+      // ── Messages from extension ────────────────────────────────────────────
+      window.addEventListener('message', function (event) {
+        const message = event.data;
+
+        switch (message.type) {
+          case 'addMessage':
+            appendMessage(message.payload);
+            break;
+
+          case 'updateMessage':
+            updateMessage(message.payload);
+            break;
+
+          case 'setLoading':
+            setLoading(message.payload.loading);
+            break;
+
+          case 'showFileChanges':
+            showFileChanges(message.payload.fileChanges);
+            break;
+
+          case 'clearFileChanges':
+            hideFileChanges();
+            break;
+
+          case 'configLoaded':
+            if (!message.payload.hasApiKeys && message.payload.providerMode !== 'copilot') {
+              configBanner.classList.add('visible');
+            } else {
+              configBanner.classList.remove('visible');
+            }
+            break;
+
+          case 'error':
+            appendMessage({
+              id: 'err-' + Date.now(),
+              role: 'error',
+              content: message.payload.message,
+              timestamp: Date.now(),
+            });
+            break;
+
+          default:
+            break;
+        }
+      });
+
+      // ── Init ───────────────────────────────────────────────────────────────
+      vscode.postMessage({ type: 'requestConfig' });
+    })();
+  </script>
+</body>
+</html>

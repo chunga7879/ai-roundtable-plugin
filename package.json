@@ -1,0 +1,132 @@
+{
+  "name": "ai-roundtable",
+  "displayName": "AI Roundtable",
+  "description": "Multi-agent AI assistant for VS Code workspaces — run requirements, architecture, development, review, QA, DevOps, and debugging rounds with Claude, GPT, Gemini, or GitHub Copilot.",
+  "version": "0.1.0",
+  "publisher": "chungalee",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "AI",
+    "Programming Languages",
+    "Other"
+  ],
+  "keywords": [
+    "ai",
+    "copilot",
+    "claude",
+    "gpt",
+    "gemini",
+    "multi-agent",
+    "roundtable",
+    "code review",
+    "requirements"
+  ],
+  "icon": "resources/icon.png",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "aiRoundtable.openPanel",
+        "title": "Open AI Roundtable Panel",
+        "category": "AI Roundtable",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "aiRoundtable.configureProvider",
+        "title": "Configure Provider",
+        "category": "AI Roundtable",
+        "icon": "$(settings-gear)"
+      },
+      {
+        "command": "aiRoundtable.clearApiKeys",
+        "title": "Clear API Keys",
+        "category": "AI Roundtable",
+        "icon": "$(trash)"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "aiRoundtable.openPanel"
+        },
+        {
+          "command": "aiRoundtable.configureProvider"
+        },
+        {
+          "command": "aiRoundtable.clearApiKeys"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "aiRoundtable.openPanel",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "AI Roundtable",
+      "properties": {
+        "aiRoundtable.providerMode": {
+          "type": "string",
+          "enum": [
+            "copilot",
+            "api_keys"
+          ],
+          "enumDescriptions": [
+            "Use GitHub Copilot via the vscode.lm API (no API key needed)",
+            "Use direct API keys for Anthropic (Claude), OpenAI (GPT), or Google (Gemini)"
+          ],
+          "default": "copilot",
+          "description": "Which AI provider to use for agent calls."
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "aiRoundtable",
+          "title": "AI Roundtable",
+          "icon": "resources/icon-activity.svg"
+        }
+      ]
+    },
+    "views": {
+      "aiRoundtable": [
+        {
+          "type": "webview",
+          "id": "aiRoundtable.sidebarView",
+          "name": "Chat",
+          "icon": "resources/icon-activity.svg",
+          "contextualTitle": "AI Roundtable"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src --ext ts",
+    "lint:fix": "eslint src --ext ts --fix",
+    "test": "node ./out/test/runTest.js",
+    "package": "vsce package",
+    "clean": "rm -rf out"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/vscode": "^1.90.0",
+    "@typescript-eslint/eslint-plugin": "^7.14.0",
+    "@typescript-eslint/parser": "^7.14.0",
+    "@vscode/test-electron": "^2.4.0",
+    "@vscode/vsce": "^2.29.0",
+    "eslint": "^8.57.0",
+    "typescript": "^5.5.0"
+  },
+  "dependencies": {}
+}

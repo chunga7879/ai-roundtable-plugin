@@ -1,0 +1,313 @@
+import * as https from 'https';
+import type * as http from 'http';
+import { AgentName } from '../types';
+
+export interface ApiKeyProviderOptions {
+  anthropicApiKey?: string;
+  openaiApiKey?: string;
+  googleApiKey?: string;
+}
+
+export interface LLMRequestOptions {
+  systemPrompt: string;
+  userMessage: string;
+  maxTokens: number;
+}
+
+export class ApiKeyProviderError extends Error {
+  constructor(
+    message: string,
+    public readonly statusCode?: number,
+    public readonly cause?: unknown,
+  ) {
+    super(message);
+    this.name = 'ApiKeyProviderError';
+  }
+}
+
+const CLAUDE_MODEL = 'claude-sonnet-4-6';
+const OPENAI_MODEL = 'gpt-4o';
+const GEMINI_MODEL = 'gemini-1.5-pro';
+
+const REQUEST_TIMEOUT_MS = 120_000;
+
+export class ApiKeyProvider {
+  constructor(private readonly options: ApiKeyProviderOptions) {}
+
+  async sendRequest(
+    agentName: AgentName,
+    requestOptions: LLMRequestOptions,
+  ): Promise<string> {
+    switch (agentName) {
+      case AgentName.CLAUDE:
+        return this.sendClaudeRequest(requestOptions);
+      case AgentName.GPT:
+        return this.sendOpenAIRequest(requestOptions);
+      case AgentName.GEMINI:
+        return this.sendGeminiRequest(requestOptions);
+      case AgentName.COPILOT:
+        throw new ApiKeyProviderError(
+          'Copilot agent cannot be used with API key provider. Use CopilotProvider instead.',
+        );
+      default: {
+        const exhaustiveCheck: never = agentName;
+        throw new ApiKeyProviderError(`Unknown agent: ${String(exhaustiveCheck)}`);
+      }
+    }
+  }
+
+  hasKeyForAgent(agentName: AgentName): boolean {
+    switch (agentName) {
+      case AgentName.CLAUDE:
+        return Boolean(this.options.anthropicApiKey);
+      case AgentName.GPT:
+        return Boolean(this.options.openaiApiKey);
+      case AgentName.GEMINI:
+        return Boolean(this.options.googleApiKey);
+      case AgentName.COPILOT:
+        return false;
+      default:
+        return false;
+    }
+  }
+
+  private async sendClaudeRequest(options: LLMRequestOptions): Promise<string> {
+    const apiKey = this.options.anthropicApiKey;
+    if (!apiKey) {
+      throw new ApiKeyProviderError(
+        'Anthropic API key is not configured. Please run "AI Roundtable: Configure Provider".',
+      );
+    }
+
+    const body = JSON.stringify({
+      model: CLAUDE_MODEL,
+      max_tokens: options.maxTokens,
+      system: options.systemPrompt,
+      messages: [{ role: 'user', content: options.userMessage }],
+    });
+
+    const responseText = await this.makeHttpsRequest({
+      hostname: 'api.anthropic.com',
+      path: '/v1/messages',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'Content-Length': Buffer.byteLength(body).toString(),
+      },
+      body,
+      agentLabel: AgentName.CLAUDE,
+    });
+
+    const parsed = JSON.parse(responseText) as {
+      content?: Array<{ type: string; text: string }>;
+      error?: { message: string };
+    };
+
+    if (parsed.error) {
+      throw new ApiKeyProviderError(
+        `Anthropic API error: ${parsed.error.message}`,
+      );
+    }
+
+    const textContent = parsed.content?.find((c) => c.type === 'text');
+    if (!textContent) {
+      throw new ApiKeyProviderError(
+        'Anthropic API returned no text content in response.',
+      );
+    }
+
+    return textContent.text;
+  }
+
+  private async sendOpenAIRequest(options: LLMRequestOptions): Promise<string> {
+    const apiKey = this.options.openaiApiKey;
+    if (!apiKey) {
+      throw new ApiKeyProviderError(
+        'OpenAI API key is not configured. Please run "AI Roundtable: Configure Provider".',
+      );
+    }
+
+    const body = JSON.stringify({
+      model: OPENAI_MODEL,
+      max_tokens: options.maxTokens,
+      messages: [
+        { role: 'system', content: options.systemPrompt },
+        { role: 'user', content: options.userMessage },
+      ],
+    });
+
+    const responseText = await this.makeHttpsRequest({
+      hostname: 'api.openai.com',
+      path: '/v1/chat/completions',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Length': Buffer.byteLength(body).toString(),
+      },
+      body,
+      agentLabel: AgentName.GPT,
+    });
+
+    const parsed = JSON.parse(responseText) as {
+      choices?: Array<{ message?: { content?: string } }>;
+      error?: { message: string };
+    };
+
+    if (parsed.error) {
+      throw new ApiKeyProviderError(`OpenAI API error: ${parsed.error.message}`);
+    }
+
+    const content = parsed.choices?.[0]?.message?.content;
+    if (content === undefined || content === null) {
+      throw new ApiKeyProviderError(
+        'OpenAI API returned no content in response.',
+      );
+    }
+
+    return content;
+  }
+
+  private async sendGeminiRequest(
+    options: LLMRequestOptions,
+  ): Promise<string> {
+    const apiKey = this.options.googleApiKey;
+    if (!apiKey) {
+      throw new ApiKeyProviderError(
+        'Google API key is not configured. Please run "AI Roundtable: Configure Provider".',
+      );
+    }
+
+    const body = JSON.stringify({
+      system_instruction: {
+        parts: [{ text: options.systemPrompt }],
+      },
+      contents: [
+        {
+          role: 'user',
+          parts: [{ text: options.userMessage }],
+        },
+      ],
+      generationConfig: {
+        maxOutputTokens: options.maxTokens,
+      },
+    });
+
+    const path = `/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`;
+
+    const responseText = await this.makeHttpsRequest({
+      hostname: 'generativelanguage.googleapis.com',
+      path,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(body).toString(),
+      },
+      body,
+      agentLabel: AgentName.GEMINI,
+    });
+
+    const parsed = JSON.parse(responseText) as {
+      candidates?: Array<{
+        content?: { parts?: Array<{ text?: string }> };
+      }>;
+      error?: { message: string };
+    };
+
+    if (parsed.error) {
+      throw new ApiKeyProviderError(`Google API error: ${parsed.error.message}`);
+    }
+
+    const text = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (text === undefined) {
+      throw new ApiKeyProviderError(
+        'Google Gemini API returned no text content in response.',
+      );
+    }
+
+    return text;
+  }
+
+  private makeHttpsRequest(params: {
+    hostname: string;
+    path: string;
+    method: string;
+    headers: Record<string, string>;
+    body: string;
+    agentLabel: AgentName;
+  }): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const req = https.request(
+        {
+          hostname: params.hostname,
+          path: params.path,
+          method: params.method,
+          headers: params.headers,
+        },
+        (res: http.IncomingMessage) => {
+          const chunks: Buffer[] = [];
+
+          res.on('data', (chunk: Buffer) => {
+            chunks.push(chunk);
+          });
+
+          res.on('end', () => {
+            const responseText = Buffer.concat(chunks).toString('utf-8');
+
+            if (
+              res.statusCode !== undefined &&
+              (res.statusCode < 200 || res.statusCode >= 300)
+            ) {
+              reject(
+                new ApiKeyProviderError(
+                  `${params.agentLabel} API request failed with HTTP ${res.statusCode}: ${responseText.slice(0, 500)}`,
+                  res.statusCode,
+                ),
+              );
+              return;
+            }
+
+            resolve(responseText);
+          });
+
+          res.on('error', (err: Error) => {
+            reject(
+              new ApiKeyProviderError(
+                `Network error reading response from ${params.hostname}: ${err.message}`,
+                undefined,
+                err,
+              ),
+            );
+          });
+        },
+      );
+
+      req.setTimeout(REQUEST_TIMEOUT_MS, () => {
+        req.destroy(
+          new ApiKeyProviderError(
+            `Request to ${params.hostname} timed out after ${REQUEST_TIMEOUT_MS / 1000}s`,
+          ),
+        );
+      });
+
+      req.on('error', (err: Error) => {
+        if (err instanceof ApiKeyProviderError) {
+          reject(err);
+        } else {
+          reject(
+            new ApiKeyProviderError(
+              `Network error connecting to ${params.hostname}: ${err.message}`,
+              undefined,
+              err,
+            ),
+          );
+        }
+      });
+
+      req.write(params.body);
+      req.end();
+    });
+  }
+}
