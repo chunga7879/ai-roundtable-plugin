@@ -8,6 +8,7 @@ export enum RoundType {
   QA = 'qa',
   DEVOPS = 'devops',
   RUNNER = 'runner',
+  DOCUMENTATION = 'documentation',
 }
 
 export enum AgentName {
@@ -15,6 +16,7 @@ export enum AgentName {
   CLAUDE = 'claude',
   GPT = 'gpt',
   GEMINI = 'gemini',
+  DEEPSEEK = 'deepseek',
 }
 
 export enum ProviderMode {
@@ -47,12 +49,18 @@ export interface AgentResponse {
   fileChanges: FileChange[];
 }
 
+export interface ConversationTurn {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
 export interface RoundRequest {
   userMessage: string;
   roundType: RoundType;
   mainAgent: AgentName;
   subAgents: AgentName[];
   workspaceContext: WorkspaceContext;
+  conversationHistory: ConversationTurn[];
 }
 
 export interface WorkspaceContext {
@@ -71,6 +79,8 @@ export interface ExtensionConfig {
   anthropicApiKey?: string;
   openaiApiKey?: string;
   googleApiKey?: string;
+  deepseekApiKey?: string;
+  copilotModelFamily?: string;
 }
 
 export interface SubAgentVerification {
@@ -90,7 +100,9 @@ export type WebviewToExtensionMessage =
   | { type: 'applyChanges'; payload: ApplyChangesPayload }
   | { type: 'rejectChanges' }
   | { type: 'requestConfig' }
-  | { type: 'configureProvider' };
+  | { type: 'configureProvider' }
+  | { type: 'runCommand'; payload: { command: string; mainAgent: string; subAgents: string[] } }
+  | { type: 'runAgain' };
 
 export interface SendMessagePayload {
   userMessage: string;
@@ -110,7 +122,9 @@ export type ExtensionToWebviewMessage =
   | { type: 'showFileChanges'; payload: { fileChanges: FileChange[] } }
   | { type: 'clearFileChanges' }
   | { type: 'configLoaded'; payload: { providerMode: ProviderMode; hasApiKeys: boolean } }
-  | { type: 'error'; payload: { message: string } };
+  | { type: 'error'; payload: { message: string } }
+  | { type: 'executionStarted'; payload: { command: string } }
+  | { type: 'executionComplete'; payload: { command: string; output: string; exitCode: number } };
 
 // ── Input validation helpers ──────────────────────────────────────────────────
 

@@ -8,6 +8,7 @@ const CONFIG_SECTION = 'aiRoundtable';
 const SECRET_ANTHROPIC_KEY = 'aiRoundtable.anthropicApiKey';
 const SECRET_OPENAI_KEY = 'aiRoundtable.openaiApiKey';
 const SECRET_GOOGLE_KEY = 'aiRoundtable.googleApiKey';
+const SECRET_DEEPSEEK_KEY = 'aiRoundtable.deepseekApiKey';
 
 const COMMANDS = {
   OPEN_PANEL: 'aiRoundtable.openPanel',
@@ -27,15 +28,20 @@ export class ConfigManager {
     const providerMode: ProviderMode =
       rawMode === ProviderMode.API_KEYS ? ProviderMode.API_KEYS : ProviderMode.COPILOT;
 
+    const rawCopilotFamily = vsConfig.get<string>('copilotModelFamily') ?? 'auto';
+    const copilotModelFamily = rawCopilotFamily === 'auto' ? undefined : rawCopilotFamily;
+
     let anthropicApiKey: string | undefined;
     let openaiApiKey: string | undefined;
     let googleApiKey: string | undefined;
+    let deepseekApiKey: string | undefined;
 
     try {
-      [anthropicApiKey, openaiApiKey, googleApiKey] = await Promise.all([
+      [anthropicApiKey, openaiApiKey, googleApiKey, deepseekApiKey] = await Promise.all([
         this.secretStorage.get(SECRET_ANTHROPIC_KEY),
         this.secretStorage.get(SECRET_OPENAI_KEY),
         this.secretStorage.get(SECRET_GOOGLE_KEY),
+        this.secretStorage.get(SECRET_DEEPSEEK_KEY),
       ]);
     } catch (err) {
       throw new ConfigurationError(
@@ -49,6 +55,8 @@ export class ConfigManager {
       anthropicApiKey: anthropicApiKey ?? undefined,
       openaiApiKey: openaiApiKey ?? undefined,
       googleApiKey: googleApiKey ?? undefined,
+      deepseekApiKey: deepseekApiKey ?? undefined,
+      copilotModelFamily,
     };
   }
 
@@ -62,7 +70,7 @@ export class ConfigManager {
   }
 
   async storeApiKey(
-    provider: 'anthropic' | 'openai' | 'google',
+    provider: 'anthropic' | 'openai' | 'google' | 'deepseek',
     key: string,
   ): Promise<void> {
     if (!key || key.trim().length < MIN_API_KEY_LENGTH) {
@@ -75,6 +83,7 @@ export class ConfigManager {
       anthropic: SECRET_ANTHROPIC_KEY,
       openai: SECRET_OPENAI_KEY,
       google: SECRET_GOOGLE_KEY,
+      deepseek: SECRET_DEEPSEEK_KEY,
     }[provider];
 
     try {
@@ -93,6 +102,7 @@ export class ConfigManager {
         this.secretStorage.delete(SECRET_ANTHROPIC_KEY),
         this.secretStorage.delete(SECRET_OPENAI_KEY),
         this.secretStorage.delete(SECRET_GOOGLE_KEY),
+        this.secretStorage.delete(SECRET_DEEPSEEK_KEY),
       ]);
     } catch (err) {
       throw new ConfigurationError('Failed to clear API keys from secret storage.', err);
@@ -108,7 +118,7 @@ export class ConfigManager {
           value: ProviderMode.COPILOT,
         },
         {
-          label: '$(key) API Keys (Anthropic / OpenAI / Google)',
+          label: '$(key) API Keys (Anthropic / OpenAI / Google / DeepSeek)',
           description: 'Use Claude, GPT, or Gemini directly with your own API keys',
           value: ProviderMode.API_KEYS,
         },
@@ -138,7 +148,7 @@ export class ConfigManager {
   private async promptForApiKeys(): Promise<void> {
     const providers: Array<{
       name: string;
-      key: 'anthropic' | 'openai' | 'google';
+      key: 'anthropic' | 'openai' | 'google' | 'deepseek';
       prompt: string;
       placeholder: string;
     }> = [
@@ -159,6 +169,12 @@ export class ConfigManager {
         key: 'google',
         prompt: 'Enter your Google AI API key',
         placeholder: 'AIza...',
+      },
+      {
+        name: 'DeepSeek',
+        key: 'deepseek',
+        prompt: 'Enter your DeepSeek API key',
+        placeholder: 'sk-...',
       },
     ];
 

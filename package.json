@@ -83,6 +83,25 @@
           ],
           "default": "copilot",
           "description": "Which AI provider to use for agent calls."
+        },
+        "aiRoundtable.copilotModelFamily": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "gpt-4o",
+            "gpt-4",
+            "claude",
+            "gemini"
+          ],
+          "enumDescriptions": [
+            "Automatically select the best available Copilot model (gpt-4o preferred)",
+            "GPT-4o (OpenAI) — most capable, uses premium requests",
+            "GPT-4 (OpenAI) — slightly older, uses premium requests",
+            "Claude (Anthropic) — only available if your Copilot plan includes it",
+            "Gemini (Google) — only available if your Copilot plan includes it"
+          ],
+          "default": "auto",
+          "description": "Which model family to request when using GitHub Copilot. Only applies when Provider Mode is 'copilot'. Note: selecting Claude or Gemini here does NOT use your Anthropic/Google API keys — it requests that model through your Copilot subscription."
         }
       }
     },

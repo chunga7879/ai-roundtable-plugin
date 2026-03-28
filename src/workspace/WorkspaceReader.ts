@@ -53,8 +53,34 @@ const EXCLUDED_EXTENSIONS = new Set([
   '.map',
 ]);
 
+/** File extensions that may contain credentials or private keys. */
+const EXCLUDED_SENSITIVE_EXTENSIONS = new Set([
+  '.pem',
+  '.key',
+  '.p12',
+  '.pfx',
+  '.cer',
+  '.crt',
+  '.der',
+]);
+
 /** Files whose base name must be excluded regardless of extension. */
-const EXCLUDED_FILENAMES = new Set(['.env']);
+const EXCLUDED_FILENAMES = new Set([
+  '.env',
+  '.npmrc',
+  '.pypirc',
+  '.netrc',
+  '.htpasswd',
+]);
+
+/** Patterns matched against the lowercased basename to catch secrets/credentials files. */
+const EXCLUDED_FILENAME_PATTERNS: ReadonlyArray<RegExp> = [
+  /^\.env\./,           // .env.local, .env.production, .env.staging, etc.
+  /secret/,             // *secret*, secrets.json, etc.
+  /credential/,         // *credential*, credentials.json, etc.
+  /password/,           // *password*, passwords.txt, etc.
+  /private[-_.]key/,    // private.key, private_key.pem, etc.
+];
 
 const EXTENSION_TO_LANGUAGE: Readonly<Record<string, string>> = {
   '.ts': 'typescript',
@@ -196,8 +222,19 @@ export class WorkspaceReader {
       return undefined;
     }
 
-    // Exclude by filename (e.g. .env)
+    // Exclude sensitive file extensions (private keys, certificates)
+    if (EXCLUDED_SENSITIVE_EXTENSIONS.has(ext)) {
+      return undefined;
+    }
+
+    // Exclude by exact filename (.env, .npmrc, etc.)
     if (EXCLUDED_FILENAMES.has(basename)) {
+      return undefined;
+    }
+
+    // Exclude by filename pattern (.env.local, *secret*, *credential*, etc.)
+    const lowerBasename = basename.toLowerCase();
+    if (EXCLUDED_FILENAME_PATTERNS.some((pattern) => pattern.test(lowerBasename))) {
       return undefined;
     }
 
@@ -305,8 +342,13 @@ export class WorkspaceReader {
       if (type === vscode.FileType.File) {
         if (!alreadyIncluded.includes(entryPath)) {
           const ext = path.extname(name).toLowerCase();
-          // Exclude by extension AND by exact filename (e.g. .env)
-          if (!EXCLUDED_EXTENSIONS.has(ext) && !EXCLUDED_FILENAMES.has(name)) {
+          const lowerName = name.toLowerCase();
+          const isSafe =
+            !EXCLUDED_EXTENSIONS.has(ext) &&
+            !EXCLUDED_SENSITIVE_EXTENSIONS.has(ext) &&
+            !EXCLUDED_FILENAMES.has(name) &&
+            !EXCLUDED_FILENAME_PATTERNS.some((p) => p.test(lowerName));
+          if (isSafe) {
             result.push(entryUri);
           }
         }

@@ -1,18 +1,21 @@
 import * as https from 'https';
 import type * as http from 'http';
 import { AgentName } from '../types';
+import type { ConversationTurn } from '../types';
 import { ProviderError } from '../errors';
 
 export interface ApiKeyProviderOptions {
   anthropicApiKey?: string;
   openaiApiKey?: string;
   googleApiKey?: string;
+  deepseekApiKey?: string;
 }
 
 export interface LLMRequestOptions {
   systemPrompt: string;
   userMessage: string;
   maxTokens: number;
+  conversationHistory?: ConversationTurn[];
 }
 
 /** Re-exported for backwards compatibility with AgentRunner imports */
@@ -26,6 +29,7 @@ export class ApiKeyProviderError extends ProviderError {
 const CLAUDE_MODEL = 'claude-sonnet-4-6';
 const OPENAI_MODEL = 'gpt-4o';
 const GEMINI_MODEL = 'gemini-1.5-pro';
+const DEEPSEEK_MODEL = 'deepseek-coder';
 
 const REQUEST_TIMEOUT_MS = 120_000;
 
@@ -63,6 +67,8 @@ export class ApiKeyProvider {
         return this.sendOpenAIRequest(requestOptions);
       case AgentName.GEMINI:
         return this.sendGeminiRequest(requestOptions);
+      case AgentName.DEEPSEEK:
+        return this.sendDeepSeekRequest(requestOptions);
       case AgentName.COPILOT:
         throw new ApiKeyProviderError(
           'Copilot agent cannot be used with API key provider. Use CopilotProvider instead.',
@@ -82,6 +88,8 @@ export class ApiKeyProvider {
         return Boolean(this.options.openaiApiKey);
       case AgentName.GEMINI:
         return Boolean(this.options.googleApiKey);
+      case AgentName.DEEPSEEK:
+        return Boolean(this.options.deepseekApiKey);
       case AgentName.COPILOT:
         return false;
       default:
@@ -97,11 +105,15 @@ export class ApiKeyProvider {
       );
     }
 
+    const history = options.conversationHistory ?? [];
     const body = JSON.stringify({
       model: CLAUDE_MODEL,
       max_tokens: options.maxTokens,
       system: options.systemPrompt,
-      messages: [{ role: 'user', content: options.userMessage }],
+      messages: [
+        ...history.map((turn) => ({ role: turn.role, content: turn.content })),
+        { role: 'user', content: options.userMessage },
+      ],
     });
 
     const responseText = await this.makeHttpsRequest({
@@ -152,11 +164,13 @@ export class ApiKeyProvider {
       );
     }
 
+    const history = options.conversationHistory ?? [];
     const body = JSON.stringify({
       model: OPENAI_MODEL,
       max_tokens: options.maxTokens,
       messages: [
         { role: 'system', content: options.systemPrompt },
+        ...history.map((turn) => ({ role: turn.role, content: turn.content })),
         { role: 'user', content: options.userMessage },
       ],
     });
@@ -199,6 +213,61 @@ export class ApiKeyProvider {
     return content;
   }
 
+  private async sendDeepSeekRequest(options: LLMRequestOptions): Promise<string> {
+    const apiKey = this.options.deepseekApiKey;
+    if (!apiKey) {
+      throw new ApiKeyProviderError(
+        'DeepSeek API key is not configured. Please run "AI Roundtable: Configure Provider".',
+      );
+    }
+
+    const history = options.conversationHistory ?? [];
+    const body = JSON.stringify({
+      model: DEEPSEEK_MODEL,
+      max_tokens: options.maxTokens,
+      messages: [
+        { role: 'system', content: options.systemPrompt },
+        ...history.map((turn) => ({ role: turn.role, content: turn.content })),
+        { role: 'user', content: options.userMessage },
+      ],
+    });
+
+    const responseText = await this.makeHttpsRequest({
+      hostname: 'api.deepseek.com',
+      path: '/v1/chat/completions',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Length': Buffer.byteLength(body).toString(),
+      },
+      body,
+      agentLabel: AgentName.DEEPSEEK,
+    });
+
+    let parsed: OpenAIResponseBody;
+    try {
+      parsed = JSON.parse(responseText) as OpenAIResponseBody;
+    } catch {
+      throw new ApiKeyProviderError(
+        `DeepSeek API returned non-JSON response (${responseText.length} bytes).`,
+      );
+    }
+
+    if (parsed.error) {
+      throw new ApiKeyProviderError(
+        `DeepSeek API error (${parsed.error.type ?? 'unknown'}): ${parsed.error.message}`,
+      );
+    }
+
+    const content = parsed.choices?.[0]?.message?.content;
+    if (content === undefined || content === null) {
+      throw new ApiKeyProviderError('DeepSeek API returned no content in response.');
+    }
+
+    return content;
+  }
+
   private async sendGeminiRequest(
     options: LLMRequestOptions,
   ): Promise<string> {
@@ -209,11 +278,16 @@ export class ApiKeyProvider {
       );
     }
 
+    const history = options.conversationHistory ?? [];
     const body = JSON.stringify({
       system_instruction: {
         parts: [{ text: options.systemPrompt }],
       },
       contents: [
+        ...history.map((turn) => ({
+          role: turn.role === 'assistant' ? 'model' : 'user',
+          parts: [{ text: turn.content }],
+        })),
         {
           role: 'user',
           parts: [{ text: options.userMessage }],

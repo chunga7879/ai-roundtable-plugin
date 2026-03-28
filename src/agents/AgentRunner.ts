@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import type {
   AgentName,
   AgentResponse,
+  ConversationTurn,
   FileChange,
   RoundRequest,
   RoundResult,
@@ -38,6 +39,7 @@ interface CallAgentOptions {
   systemPrompt: string;
   userMessage: string;
   maxTokens: number;
+  conversationHistory?: ConversationTurn[];
 }
 
 export class AgentRunner {
@@ -56,7 +58,7 @@ export class AgentRunner {
     cancellationToken: vscode.CancellationToken,
     onProgress: (event: ProgressEvent) => void,
   ): Promise<RoundResult> {
-    const { roundType, mainAgent, subAgents, userMessage, workspaceContext } =
+    const { roundType, mainAgent, subAgents, userMessage, workspaceContext, conversationHistory } =
       request;
 
     const systemPrompt = buildSystemPrompt(roundType);
@@ -72,7 +74,7 @@ export class AgentRunner {
 
     const mainAgentResponse = await this.callAgent(
       mainAgent,
-      { systemPrompt, userMessage: fullUserMessage, maxTokens },
+      { systemPrompt, userMessage: fullUserMessage, maxTokens, conversationHistory },
       cancellationToken,
     );
 

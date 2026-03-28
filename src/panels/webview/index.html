@@ -107,6 +107,16 @@
     }
 
     /* ── Sub-agents checkboxes ── */
+    #runner-sub-agent-warning {
+      display: none;
+      font-size: var(--font-size-sm);
+      color: var(--vscode-editorWarning-foreground, #cca700);
+      margin-top: var(--spacing-xs);
+    }
+    #runner-sub-agent-warning.visible {
+      display: block;
+    }
+
     #sub-agents-section {
       display: flex;
       flex-direction: column;
@@ -173,6 +183,7 @@
     .message-label.agent.gpt { color: var(--vscode-terminal-ansiBrightGreen, #81c784); }
     .message-label.agent.gemini { color: var(--vscode-terminal-ansiBrightYellow, #fff176); }
     .message-label.agent.copilot { color: var(--vscode-terminal-ansiBrightCyan, #80deea); }
+    .message-label.agent.deepseek { color: var(--vscode-terminal-ansiBrightRed, #ef9a9a); }
     .message-label.sub-agent { color: var(--vscode-descriptionForeground); font-style: italic; }
     .message-label.system { color: var(--vscode-descriptionForeground); }
     .message-label.error { color: var(--vscode-errorForeground, #f48771); }
@@ -330,6 +341,90 @@
       background-color: var(--vscode-button-secondaryHoverBackground);
     }
 
+    /* ── Run Panel (Runner round only) ── */
+    #run-panel {
+      display: none;
+      flex-direction: column;
+      gap: var(--spacing-sm);
+      padding: var(--spacing-md);
+      background-color: var(--vscode-editor-background);
+      border-top: 1px solid var(--vscode-panel-border, var(--vscode-widget-border));
+      flex-shrink: 0;
+    }
+    #run-panel.visible {
+      display: flex;
+    }
+    #run-panel-title {
+      font-size: var(--font-size-sm);
+      font-weight: 600;
+      color: var(--vscode-foreground);
+    }
+    #run-command-row {
+      display: flex;
+      gap: var(--spacing-sm);
+    }
+    #run-command-input {
+      flex: 1;
+      padding: var(--spacing-xs) var(--spacing-sm);
+      background-color: var(--vscode-input-background);
+      color: var(--vscode-input-foreground);
+      border: 1px solid var(--vscode-input-border, var(--vscode-widget-border));
+      border-radius: var(--border-radius);
+      font-family: var(--vscode-editor-font-family, monospace);
+      font-size: var(--font-size-md);
+      outline: none;
+    }
+    #run-command-input:focus {
+      border-color: var(--vscode-focusBorder);
+    }
+    #run-command-input::placeholder {
+      color: var(--vscode-input-placeholderForeground);
+    }
+    #run-command-input:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    #run-btn {
+      padding: var(--spacing-xs) var(--spacing-md);
+      background-color: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+      border: none;
+      border-radius: var(--border-radius);
+      cursor: pointer;
+      font-family: inherit;
+      font-size: var(--font-size-sm);
+      white-space: nowrap;
+    }
+    #run-btn:hover:not(:disabled) {
+      background-color: var(--vscode-button-hoverBackground);
+    }
+    #run-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    #run-again-btn {
+      display: none;
+      padding: var(--spacing-xs) var(--spacing-md);
+      background-color: var(--vscode-button-secondaryBackground);
+      color: var(--vscode-button-secondaryForeground);
+      border: none;
+      border-radius: var(--border-radius);
+      cursor: pointer;
+      font-family: inherit;
+      font-size: var(--font-size-sm);
+      white-space: nowrap;
+    }
+    #run-again-btn.visible {
+      display: block;
+    }
+    #run-again-btn:hover:not(:disabled) {
+      background-color: var(--vscode-button-secondaryHoverBackground);
+    }
+    #run-again-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
     /* ── Input Area ── */
     #input-area {
       padding: var(--spacing-md);
@@ -421,6 +516,7 @@
         <option value="qa">QA Engineer</option>
         <option value="devops">DevOps</option>
         <option value="runner">Runner</option>
+        <option value="documentation">Documentation</option>
       </select>
     </div>
 
@@ -431,11 +527,13 @@
         <option value="claude">Claude (Anthropic)</option>
         <option value="gpt">GPT (OpenAI)</option>
         <option value="gemini">Gemini (Google)</option>
+        <option value="deepseek">DeepSeek</option>
       </select>
     </div>
 
     <div id="sub-agents-section">
       <span class="sub-agents-label">Sub Agents (verifiers)</span>
+      <div id="runner-sub-agent-warning">⚠ Sub agents slow down Runner. Each verification adds a full API round-trip before analysis is shown.</div>
       <div id="sub-agents-grid">
         <label class="agent-checkbox-item">
           <input type="checkbox" name="sub-agent" value="copilot" />
@@ -452,6 +550,10 @@
         <label class="agent-checkbox-item">
           <input type="checkbox" name="sub-agent" value="gemini" />
           <span>Gemini</span>
+        </label>
+        <label class="agent-checkbox-item">
+          <input type="checkbox" name="sub-agent" value="deepseek" />
+          <span>DeepSeek</span>
         </label>
       </div>
     </div>
@@ -479,6 +581,16 @@
     </div>
   </div>
 
+  <!-- Run Panel (Runner round only) -->
+  <div id="run-panel">
+    <span id="run-panel-title">Run Command</span>
+    <div id="run-command-row">
+      <input id="run-command-input" type="text" placeholder="e.g. docker-compose up, npm test, python main.py" />
+      <button id="run-btn" type="button">Run</button>
+      <button id="run-again-btn" type="button">Run Again</button>
+    </div>
+  </div>
+
   <!-- Input Area -->
   <div id="input-area">
     <textarea
@@ -500,6 +612,7 @@
       let isLoading = false;
       /** @type {Array<{filePath: string, content: string, isNew: boolean}>} */
       let pendingFileChanges = [];
+      let lastRunCommand = '';
 
       // ── DOM refs ───────────────────────────────────────────────────────────
       const configBanner = /** @type {HTMLElement} */ (document.getElementById('config-banner'));
@@ -513,6 +626,11 @@
       const fileChangesList = /** @type {HTMLElement} */ (document.getElementById('file-changes-list'));
       const applyChangesBtn = /** @type {HTMLButtonElement} */ (document.getElementById('apply-changes-btn'));
       const rejectChangesBtn = /** @type {HTMLButtonElement} */ (document.getElementById('reject-changes-btn'));
+      const runPanel = /** @type {HTMLElement} */ (document.getElementById('run-panel'));
+      const runCommandInput = /** @type {HTMLInputElement} */ (document.getElementById('run-command-input'));
+      const runBtn = /** @type {HTMLButtonElement} */ (document.getElementById('run-btn'));
+      const runAgainBtn = /** @type {HTMLButtonElement} */ (document.getElementById('run-again-btn'));
+      const runnerSubAgentWarning = /** @type {HTMLElement} */ (document.getElementById('runner-sub-agent-warning'));
 
       // ── Auto-resize textarea ───────────────────────────────────────────────
       messageInput.addEventListener('input', function () {
@@ -529,6 +647,78 @@
       });
 
       sendBtn.addEventListener('click', handleSend);
+
+      // ── Main agent change: disable matching sub agent checkbox ───────────
+      function updateSubAgentCheckboxes() {
+        const selectedMain = mainAgentSelect.value;
+        document.querySelectorAll('input[name="sub-agent"]').forEach(function (cb) {
+          const checkbox = /** @type {HTMLInputElement} */ (cb);
+          if (checkbox.value === selectedMain) {
+            checkbox.checked = false;
+            checkbox.disabled = true;
+            checkbox.closest('.agent-checkbox-item').style.opacity = '0.4';
+          } else {
+            checkbox.disabled = false;
+            checkbox.closest('.agent-checkbox-item').style.opacity = '1';
+          }
+        });
+        updateRunnerWarning();
+      }
+
+      mainAgentSelect.addEventListener('change', updateSubAgentCheckboxes);
+
+      // ── Round select: show/hide run panel + warning ───────────────────────
+      function updateRunnerWarning() {
+        const isRunner = roundSelect.value === 'runner';
+        const hasSubAgents = getSelectedSubAgents().length > 0;
+        if (isRunner && hasSubAgents) {
+          runnerSubAgentWarning.classList.add('visible');
+        } else {
+          runnerSubAgentWarning.classList.remove('visible');
+        }
+      }
+
+      roundSelect.addEventListener('change', function () {
+        if (roundSelect.value === 'runner') {
+          runPanel.classList.add('visible');
+        } else {
+          runPanel.classList.remove('visible');
+        }
+        updateRunnerWarning();
+      });
+
+      document.querySelectorAll('input[name="sub-agent"]').forEach(function (cb) {
+        cb.addEventListener('change', updateRunnerWarning);
+      });
+
+      // ── Run button ─────────────────────────────────────────────────────────
+      runBtn.addEventListener('click', function () {
+        const command = runCommandInput.value.trim();
+        if (!command || isLoading) return;
+        lastRunCommand = command;
+        vscode.postMessage({
+          type: 'runCommand',
+          payload: {
+            command,
+            mainAgent: mainAgentSelect.value,
+            subAgents: getSelectedSubAgents(),
+          },
+        });
+      });
+
+      runCommandInput.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          runBtn.click();
+        }
+      });
+
+      runAgainBtn.addEventListener('click', function () {
+        if (!isLoading) {
+          vscode.postMessage({ type: 'runAgain' });
+        }
+      });
+
       configureBtn.addEventListener('click', function () {
         vscode.postMessage({ type: 'configureProvider' });
       });
@@ -666,7 +856,11 @@
         isLoading = loading;
         sendBtn.disabled = loading;
         messageInput.disabled = loading;
+        runBtn.disabled = loading;
+        runCommandInput.disabled = loading;
+        runAgainBtn.disabled = loading;
         sendBtn.textContent = loading ? 'Sending\u2026' : 'Send';
+        runBtn.textContent = loading ? 'Running\u2026' : 'Run';
       }
 
       // ── File changes ───────────────────────────────────────────────────────
@@ -746,6 +940,27 @@
             }
             break;
 
+          case 'executionStarted':
+            appendMessage({
+              id: 'exec-start-' + Date.now(),
+              role: 'system',
+              content: '$ ' + message.payload.command,
+            });
+            break;
+
+          case 'executionComplete': {
+            const success = message.payload.exitCode === 0;
+            appendMessage({
+              id: 'exec-out-' + Date.now(),
+              role: success ? 'system' : 'error',
+              content: message.payload.output,
+            });
+            // Show "Run Again" button after first execution
+            lastRunCommand = message.payload.command;
+            runAgainBtn.classList.add('visible');
+            break;
+          }
+
           case 'error':
             appendMessage({
               id: 'err-' + Date.now(),
@@ -761,6 +976,7 @@
       });
 
       // ── Init ───────────────────────────────────────────────────────────────
+      updateSubAgentCheckboxes();
       vscode.postMessage({ type: 'requestConfig' });
     })();
   </script>

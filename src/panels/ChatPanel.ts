@@ -1,7 +1,9 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
+import * as cp from 'child_process';
 import type {
+  ConversationTurn,
   ExtensionConfig,
   ExtensionToWebviewMessage,
   FileChange,
@@ -13,7 +15,7 @@ import {
   validateSendMessagePayload,
   validateApplyChangesPayload,
 } from '../types';
-import type { RoundType } from '../types';
+import { RoundType } from '../types';
 import type { ProgressEvent } from '../agents/AgentRunner';
 import { AgentRunner } from '../agents/AgentRunner';
 import { CopilotProvider } from '../agents/CopilotProvider';
@@ -42,6 +44,12 @@ export class ChatPanel implements vscode.Disposable {
   private currentCancellationTokenSource:
     | vscode.CancellationTokenSource
     | undefined;
+
+  private conversationHistory: ConversationTurn[] = [];
+  private currentRoundType: RoundType | undefined;
+  private lastRunCommand: string | undefined;
+  private lastRunMainAgent: AgentName = AgentName.COPILOT;
+  private lastRunSubAgents: AgentName[] = [];
 
   private constructor(
     panel: vscode.WebviewPanel,
@@ -176,6 +184,26 @@ export class ChatPanel implements vscode.Disposable {
         await this.handleRequestConfig();
         break;
 
+      case 'runCommand': {
+        const runPayload = msg.payload as { command?: unknown; mainAgent?: unknown; subAgents?: unknown };
+        if (typeof runPayload?.command === 'string' && runPayload.command.trim().length > 0) {
+          const mainAgent = typeof runPayload.mainAgent === 'string' && Object.values(AgentName).includes(runPayload.mainAgent as AgentName)
+            ? runPayload.mainAgent as AgentName
+            : AgentName.COPILOT;
+          const subAgents = Array.isArray(runPayload.subAgents)
+            ? (runPayload.subAgents as string[]).filter((a): a is AgentName => Object.values(AgentName).includes(a as AgentName))
+            : [];
+          await this.handleRunCommand(runPayload.command.trim(), mainAgent, subAgents);
+        }
+        break;
+      }
+
+      case 'runAgain':
+        if (this.lastRunCommand) {
+          await this.handleRunCommand(this.lastRunCommand, this.lastRunMainAgent, this.lastRunSubAgents);
+        }
+        break;
+
       default:
         // Unknown message types are silently ignored
         break;
@@ -188,6 +216,12 @@ export class ChatPanel implements vscode.Disposable {
     mainAgent: AgentName,
     subAgents: AgentName[],
   ): Promise<void> {
+    // Reset history when round type changes
+    if (roundType !== this.currentRoundType) {
+      this.conversationHistory = [];
+      this.currentRoundType = roundType;
+    }
+
     // Cancel any in-flight request
     this.currentCancellationTokenSource?.cancel();
     this.currentCancellationTokenSource?.dispose();
@@ -220,6 +254,7 @@ export class ChatPanel implements vscode.Disposable {
         mainAgent,
         subAgents,
         workspaceContext,
+        conversationHistory: [...this.conversationHistory],
       };
 
       const result = await runner.runRound(
@@ -233,6 +268,10 @@ export class ChatPanel implements vscode.Disposable {
       if (cancellationToken.isCancellationRequested) {
         return;
       }
+
+      // Update conversation history with this turn
+      this.conversationHistory.push({ role: 'user', content: userMessage });
+      this.conversationHistory.push({ role: 'assistant', content: result.reflectedResponse });
 
       // Show sub-agent feedbacks as collapsed messages
       for (const verification of result.subAgentVerifications) {
@@ -333,13 +372,38 @@ export class ChatPanel implements vscode.Disposable {
     }
   }
 
+  private async handleRunCommand(command: string, mainAgent: AgentName, subAgents: AgentName[]): Promise<void> {
+    this.lastRunCommand = command;
+    this.lastRunMainAgent = mainAgent;
+    this.lastRunSubAgents = subAgents;
+
+    this.postMessage({ type: 'executionStarted', payload: { command } });
+
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    const MAX_OUTPUT = 50_000;
+
+    const { output, exitCode } = await new Promise<{ output: string; exitCode: number }>((resolve) => {
+      cp.exec(command, { cwd: workspaceRoot, timeout: 60_000, maxBuffer: MAX_OUTPUT }, (err, stdout, stderr) => {
+        const combined = [stdout, stderr].filter(Boolean).join('\n').slice(0, MAX_OUTPUT);
+        resolve({ output: combined || '(no output)', exitCode: err?.code ?? (err ? 1 : 0) });
+      });
+    });
+
+    this.postMessage({ type: 'executionComplete', payload: { command, output, exitCode } });
+
+    // Auto-feed output to Runner AI for analysis
+    const analysisMessage = `[Execution Output]\nCommand: ${command}\nExit code: ${exitCode}\n\n${output}`;
+    await this.handleSendMessage(analysisMessage, RoundType.RUNNER, mainAgent, subAgents);
+  }
+
   private async handleRequestConfig(): Promise<void> {
     try {
       const config = await this.configManager.getConfig();
       const hasApiKeys = Boolean(
         config.anthropicApiKey ??
           config.openaiApiKey ??
-          config.googleApiKey,
+          config.googleApiKey ??
+          config.deepseekApiKey,
       );
 
       this.postMessage({
@@ -411,6 +475,7 @@ export class ChatPanel implements vscode.Disposable {
       [AgentName.CLAUDE]: 'Claude',
       [AgentName.GPT]: 'GPT',
       [AgentName.GEMINI]: 'Gemini',
+      [AgentName.DEEPSEEK]: 'DeepSeek',
     };
     return names[agentName] ?? agentName;
   }
@@ -440,10 +505,12 @@ export class ChatPanel implements vscode.Disposable {
 
   private buildAgentRunner(config: ExtensionConfig): AgentRunner {
     const copilotProvider = new CopilotProvider();
+    copilotProvider.setPreferredFamily(config.copilotModelFamily);
     const apiKeyProvider = new ApiKeyProvider({
       anthropicApiKey: config.anthropicApiKey,
       openaiApiKey: config.openaiApiKey,
       googleApiKey: config.googleApiKey,
+      deepseekApiKey: config.deepseekApiKey,
     });
 
     return new AgentRunner({

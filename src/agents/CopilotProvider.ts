@@ -1,11 +1,12 @@
 import * as vscode from 'vscode';
-import type { AgentName } from '../types';
+import type { AgentName, ConversationTurn } from '../types';
 import { ProviderError } from '../errors';
 
 export interface LLMRequestOptions {
   systemPrompt: string;
   userMessage: string;
   maxTokens?: number;
+  conversationHistory?: ConversationTurn[];
 }
 
 /** Re-exported for backwards compatibility with AgentRunner imports */
@@ -28,6 +29,14 @@ const MODEL_SELECTION_TIMEOUT_MS = 30_000;
 
 export class CopilotProvider {
   private cachedModel: vscode.LanguageModelChat | undefined;
+  private preferredFamily: string | undefined;
+
+  setPreferredFamily(family: string | undefined): void {
+    if (this.preferredFamily !== family) {
+      this.preferredFamily = family;
+      this.cachedModel = undefined; // invalidate cache when preference changes
+    }
+  }
 
   async isAvailable(): Promise<boolean> {
     try {
@@ -62,7 +71,25 @@ export class CopilotProvider {
       ]);
     };
 
-    // Try preferred model families in order
+    // If user specified a preferred family, try it first
+    if (this.preferredFamily) {
+      try {
+        const models = await selectWithTimeout(
+          vscode.lm.selectChatModels({ vendor: 'copilot', family: this.preferredFamily }),
+        );
+        if (models.length > 0) {
+          this.cachedModel = models[0];
+          return this.cachedModel;
+        }
+        // Preferred family not available — fall through to auto selection
+      } catch (err) {
+        if (err instanceof CopilotProviderError) {
+          throw err;
+        }
+      }
+    }
+
+    // Auto selection: try preferred model families in order
     for (const family of COPILOT_MODEL_FAMILIES) {
       let models: vscode.LanguageModelChat[];
       try {
@@ -73,7 +100,6 @@ export class CopilotProvider {
         if (err instanceof CopilotProviderError) {
           throw err;
         }
-        // selectChatModels may throw if the API is unavailable — continue to next family
         continue;
       }
       if (models.length > 0) {
@@ -113,11 +139,29 @@ export class CopilotProvider {
   ): Promise<string> {
     const model = await this.selectModel();
 
-    const messages: vscode.LanguageModelChatMessage[] = [
-      vscode.LanguageModelChatMessage.User(
-        `${options.systemPrompt}\n\n---\n\n${options.userMessage}`,
-      ),
-    ];
+    const history = options.conversationHistory ?? [];
+    const messages: vscode.LanguageModelChatMessage[] = [];
+
+    if (history.length === 0) {
+      // No history: prepend system prompt to the first user message
+      messages.push(
+        vscode.LanguageModelChatMessage.User(
+          `${options.systemPrompt}\n\n---\n\n${options.userMessage}`,
+        ),
+      );
+    } else {
+      // With history: system prompt goes with the first historical user message
+      for (let i = 0; i < history.length; i++) {
+        const turn = history[i];
+        if (turn.role === 'user') {
+          const content = i === 0 ? `${options.systemPrompt}\n\n---\n\n${turn.content}` : turn.content;
+          messages.push(vscode.LanguageModelChatMessage.User(content));
+        } else {
+          messages.push(vscode.LanguageModelChatMessage.Assistant(turn.content));
+        }
+      }
+      messages.push(vscode.LanguageModelChatMessage.User(options.userMessage));
+    }
 
     let response: vscode.LanguageModelChatResponse;
     try {
