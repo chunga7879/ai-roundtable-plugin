@@ -1,21 +1,27 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import type { FileChange } from '../types';
+import { WorkspaceError } from '../errors';
 
 const FILE_BLOCK_PATTERN =
   /^FILE:\s*(.+?)\s*\n```(?:\w+)?\n([\s\S]*?)```/gm;
 
-export class WorkspaceWriterError extends Error {
-  constructor(
-    message: string,
-    public readonly cause?: unknown,
-  ) {
-    super(message);
+/** Maximum number of file changes accepted from a single agent response. */
+const MAX_FILE_CHANGES = 50;
+
+/** Re-exported for backwards compatibility */
+export class WorkspaceWriterError extends WorkspaceError {
+  constructor(message: string, cause?: unknown) {
+    super(message, cause);
     this.name = 'WorkspaceWriterError';
   }
 }
 
 export function parseFileChanges(agentResponse: string): FileChange[] {
+  if (typeof agentResponse !== 'string') {
+    return [];
+  }
+
   const changes: FileChange[] = [];
   const seen = new Set<string>();
 
@@ -23,6 +29,10 @@ export function parseFileChanges(agentResponse: string): FileChange[] {
   FILE_BLOCK_PATTERN.lastIndex = 0;
 
   while ((match = FILE_BLOCK_PATTERN.exec(agentResponse)) !== null) {
+    if (changes.length >= MAX_FILE_CHANGES) {
+      break;
+    }
+
     const rawPath = match[1].trim();
     const content = match[2];
 
@@ -41,11 +51,16 @@ export function parseFileChanges(agentResponse: string): FileChange[] {
       continue;
     }
 
+    // Security: reject absolute paths that slipped through
+    if (path.isAbsolute(normalizedPath)) {
+      continue;
+    }
+
     seen.add(normalizedPath);
     changes.push({
       filePath: normalizedPath,
       content,
-      isNew: false, // Will be determined at write time by checking if file exists
+      isNew: false, // Determined at write time by checking if file exists
     });
   }
 
@@ -100,6 +115,10 @@ export class WorkspaceWriter {
       throw new WorkspaceWriterError(
         'No workspace folder is open. Open a folder before applying changes.',
       );
+    }
+
+    if (fileChanges.length === 0) {
+      return { appliedFiles: [], newFiles: [] };
     }
 
     const workspaceRoot = workspaceFolders[0].uri;

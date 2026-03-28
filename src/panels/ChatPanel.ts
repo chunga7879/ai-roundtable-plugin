@@ -6,9 +6,13 @@ import type {
   ExtensionToWebviewMessage,
   FileChange,
   RoundRequest,
-  WebviewToExtensionMessage,
 } from '../types';
-import { AgentName, ProviderMode } from '../types';
+import {
+  AgentName,
+  ProviderMode,
+  validateSendMessagePayload,
+  validateApplyChangesPayload,
+} from '../types';
 import type { RoundType } from '../types';
 import type { ProgressEvent } from '../agents/AgentRunner';
 import { AgentRunner } from '../agents/AgentRunner';
@@ -17,15 +21,15 @@ import { ApiKeyProvider } from '../agents/ApiKeyProvider';
 import { WorkspaceReader } from '../workspace/WorkspaceReader';
 import { WorkspaceWriter } from '../workspace/WorkspaceWriter';
 import type { ConfigManager } from '../extension';
+import { ValidationError } from '../errors';
 
 const VIEW_TYPE = 'aiRoundtable.chatPanel';
 const PANEL_TITLE = 'AI Roundtable';
 
-type WebviewMessage =
-  | WebviewToExtensionMessage
-  | { type: 'previewChange'; payload: { fileChange: FileChange } };
+/** Maximum length for error messages exposed to the webview (prevents info leakage). */
+const MAX_ERROR_MESSAGE_LENGTH = 300;
 
-export class ChatPanel {
+export class ChatPanel implements vscode.Disposable {
   private static instance: ChatPanel | undefined;
 
   private readonly panel: vscode.WebviewPanel;
@@ -33,6 +37,7 @@ export class ChatPanel {
   private readonly workspaceReader: WorkspaceReader;
   private readonly workspaceWriter: WorkspaceWriter;
   private readonly disposables: vscode.Disposable[] = [];
+  private isDisposed = false;
 
   private currentCancellationTokenSource:
     | vscode.CancellationTokenSource
@@ -51,7 +56,7 @@ export class ChatPanel {
     this.panel.webview.html = this.buildHtml();
 
     this.panel.webview.onDidReceiveMessage(
-      (message: WebviewMessage) => {
+      (message: unknown) => {
         void this.handleWebviewMessage(message);
       },
       undefined,
@@ -89,28 +94,78 @@ export class ChatPanel {
     return ChatPanel.instance;
   }
 
-  private async handleWebviewMessage(message: WebviewMessage): Promise<void> {
-    switch (message.type) {
-      case 'sendMessage':
+  private async handleWebviewMessage(message: unknown): Promise<void> {
+    // Guard: type-narrow before dispatch
+    if (typeof message !== 'object' || message === null || !('type' in message)) {
+      return;
+    }
+
+    const msg = message as { type: string; payload?: unknown };
+
+    switch (msg.type) {
+      case 'sendMessage': {
+        let payload;
+        try {
+          payload = validateSendMessagePayload(msg.payload);
+        } catch (err) {
+          this.postErrorMessage(
+            err instanceof ValidationError
+              ? err.message
+              : 'Invalid message payload.',
+          );
+          return;
+        }
         await this.handleSendMessage(
-          message.payload.userMessage,
-          message.payload.roundType,
-          message.payload.mainAgent,
-          message.payload.subAgents,
+          payload.userMessage,
+          payload.roundType,
+          payload.mainAgent,
+          payload.subAgents,
         );
         break;
+      }
 
-      case 'applyChanges':
-        await this.handleApplyChanges(message.payload.fileChanges);
+      case 'applyChanges': {
+        let payload;
+        try {
+          payload = validateApplyChangesPayload(msg.payload);
+        } catch (err) {
+          this.postErrorMessage(
+            err instanceof ValidationError
+              ? err.message
+              : 'Invalid applyChanges payload.',
+          );
+          return;
+        }
+        await this.handleApplyChanges(payload.fileChanges);
         break;
+      }
 
       case 'rejectChanges':
         this.postMessage({ type: 'clearFileChanges' });
         break;
 
-      case 'previewChange':
-        await this.handlePreviewChange(message.payload.fileChange);
+      case 'previewChange': {
+        const previewPayload = msg.payload as Record<string, unknown> | undefined;
+        const rawFileChange = previewPayload?.['fileChange'];
+        if (typeof rawFileChange === 'object' && rawFileChange !== null) {
+          const fc = rawFileChange as Record<string, unknown>;
+          // Validate filePath for path traversal before passing to WorkspaceWriter
+          if (
+            typeof fc['filePath'] === 'string' &&
+            fc['filePath'].trim().length > 0 &&
+            !fc['filePath'].includes('..') &&
+            !fc['filePath'].startsWith('/') &&
+            typeof fc['content'] === 'string'
+          ) {
+            await this.handlePreviewChange({
+              filePath: (fc['filePath'] as string).trim(),
+              content: fc['content'] as string,
+              isNew: typeof fc['isNew'] === 'boolean' ? fc['isNew'] : false,
+            });
+          }
+        }
         break;
+      }
 
       case 'requestConfig':
         await this.handleRequestConfig();
@@ -122,6 +177,7 @@ export class ChatPanel {
         break;
 
       default:
+        // Unknown message types are silently ignored
         break;
     }
   }
@@ -134,6 +190,7 @@ export class ChatPanel {
   ): Promise<void> {
     // Cancel any in-flight request
     this.currentCancellationTokenSource?.cancel();
+    this.currentCancellationTokenSource?.dispose();
     this.currentCancellationTokenSource = new vscode.CancellationTokenSource();
     const cancellationToken = this.currentCancellationTokenSource.token;
 
@@ -230,18 +287,7 @@ export class ChatPanel {
         return;
       }
 
-      const errorMessage =
-        err instanceof Error ? err.message : 'An unexpected error occurred.';
-
-      this.postMessage({
-        type: 'addMessage',
-        payload: {
-          id: crypto.randomUUID(),
-          role: 'error',
-          content: errorMessage,
-          timestamp: Date.now(),
-        },
-      });
+      this.postErrorMessage(this.toSafeUserMessage(err));
     } finally {
       this.postMessage({ type: 'setLoading', payload: { loading: false } });
       this.currentCancellationTokenSource?.dispose();
@@ -275,17 +321,7 @@ export class ChatPanel {
         },
       });
     } catch (err) {
-      const errorMessage =
-        err instanceof Error ? err.message : 'Failed to apply changes.';
-      this.postMessage({
-        type: 'addMessage',
-        payload: {
-          id: crypto.randomUUID(),
-          role: 'error',
-          content: errorMessage,
-          timestamp: Date.now(),
-        },
-      });
+      this.postErrorMessage(this.toSafeUserMessage(err));
     }
   }
 
@@ -293,9 +329,7 @@ export class ChatPanel {
     try {
       await this.workspaceWriter.previewChange(fileChange);
     } catch (err) {
-      const errorMessage =
-        err instanceof Error ? err.message : 'Failed to preview change.';
-      void vscode.window.showErrorMessage(errorMessage);
+      void vscode.window.showErrorMessage(this.toSafeUserMessage(err));
     }
   }
 
@@ -420,7 +454,41 @@ export class ChatPanel {
   }
 
   private postMessage(message: ExtensionToWebviewMessage): void {
+    if (this.isDisposed) {
+      return;
+    }
     void this.panel.webview.postMessage(message);
+  }
+
+  /**
+   * Posts a sanitized error message to the webview.
+   * Truncates to MAX_ERROR_MESSAGE_LENGTH to prevent information leakage.
+   */
+  private postErrorMessage(message: string): void {
+    const safe =
+      message.length > MAX_ERROR_MESSAGE_LENGTH
+        ? message.slice(0, MAX_ERROR_MESSAGE_LENGTH) + '…'
+        : message;
+    this.postMessage({
+      type: 'addMessage',
+      payload: {
+        id: crypto.randomUUID(),
+        role: 'error',
+        content: safe,
+        timestamp: Date.now(),
+      },
+    });
+  }
+
+  /**
+   * Converts an unknown error to a user-safe message string.
+   * Uses only `err.message` (never the stack trace).
+   */
+  private toSafeUserMessage(err: unknown): string {
+    if (err instanceof Error) {
+      return err.message;
+    }
+    return 'An unexpected error occurred.';
   }
 
   private buildHtml(): string {
@@ -463,14 +531,25 @@ export class ChatPanel {
   }
 
   dispose(): void {
+    if (this.isDisposed) {
+      return;
+    }
+    this.isDisposed = true;
+
     this.currentCancellationTokenSource?.cancel();
     this.currentCancellationTokenSource?.dispose();
+    this.currentCancellationTokenSource = undefined;
 
     ChatPanel.instance = undefined;
 
     for (const disposable of this.disposables) {
-      disposable.dispose();
+      try {
+        disposable.dispose();
+      } catch {
+        // Best-effort cleanup — continue disposing remaining items
+      }
     }
+    this.disposables.length = 0;
 
     this.panel.dispose();
   }

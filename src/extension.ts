@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import type { ExtensionConfig } from './types';
 import { ProviderMode } from './types';
 import { ChatPanel } from './panels/ChatPanel';
+import { ConfigurationError } from './errors';
 
 const CONFIG_SECTION = 'aiRoundtable';
 const SECRET_ANTHROPIC_KEY = 'aiRoundtable.anthropicApiKey';
@@ -14,6 +15,9 @@ const COMMANDS = {
   CLEAR_API_KEYS: 'aiRoundtable.clearApiKeys',
 } as const;
 
+/** Minimum plausible length for any API key. */
+const MIN_API_KEY_LENGTH = 10;
+
 export class ConfigManager {
   constructor(private readonly secretStorage: vscode.SecretStorage) {}
 
@@ -23,11 +27,22 @@ export class ConfigManager {
     const providerMode: ProviderMode =
       rawMode === ProviderMode.API_KEYS ? ProviderMode.API_KEYS : ProviderMode.COPILOT;
 
-    const [anthropicApiKey, openaiApiKey, googleApiKey] = await Promise.all([
-      this.secretStorage.get(SECRET_ANTHROPIC_KEY),
-      this.secretStorage.get(SECRET_OPENAI_KEY),
-      this.secretStorage.get(SECRET_GOOGLE_KEY),
-    ]);
+    let anthropicApiKey: string | undefined;
+    let openaiApiKey: string | undefined;
+    let googleApiKey: string | undefined;
+
+    try {
+      [anthropicApiKey, openaiApiKey, googleApiKey] = await Promise.all([
+        this.secretStorage.get(SECRET_ANTHROPIC_KEY),
+        this.secretStorage.get(SECRET_OPENAI_KEY),
+        this.secretStorage.get(SECRET_GOOGLE_KEY),
+      ]);
+    } catch (err) {
+      throw new ConfigurationError(
+        'Failed to read API keys from secret storage.',
+        err,
+      );
+    }
 
     return {
       providerMode,
@@ -50,21 +65,38 @@ export class ConfigManager {
     provider: 'anthropic' | 'openai' | 'google',
     key: string,
   ): Promise<void> {
+    if (!key || key.trim().length < MIN_API_KEY_LENGTH) {
+      throw new ConfigurationError(
+        `API key for ${provider} is too short or empty.`,
+      );
+    }
+
     const secretKey = {
       anthropic: SECRET_ANTHROPIC_KEY,
       openai: SECRET_OPENAI_KEY,
       google: SECRET_GOOGLE_KEY,
     }[provider];
 
-    await this.secretStorage.store(secretKey, key);
+    try {
+      await this.secretStorage.store(secretKey, key.trim());
+    } catch (err) {
+      throw new ConfigurationError(
+        `Failed to store API key for ${provider}.`,
+        err,
+      );
+    }
   }
 
   async clearAllApiKeys(): Promise<void> {
-    await Promise.all([
-      this.secretStorage.delete(SECRET_ANTHROPIC_KEY),
-      this.secretStorage.delete(SECRET_OPENAI_KEY),
-      this.secretStorage.delete(SECRET_GOOGLE_KEY),
-    ]);
+    try {
+      await Promise.all([
+        this.secretStorage.delete(SECRET_ANTHROPIC_KEY),
+        this.secretStorage.delete(SECRET_OPENAI_KEY),
+        this.secretStorage.delete(SECRET_GOOGLE_KEY),
+      ]);
+    } catch (err) {
+      throw new ConfigurationError('Failed to clear API keys from secret storage.', err);
+    }
   }
 
   async configureProvider(): Promise<void> {
@@ -140,7 +172,7 @@ export class ConfigManager {
         password: true,
         ignoreFocusOut: true,
         validateInput: (value) => {
-          if (value && value.trim().length < 10) {
+          if (value && value.trim().length < MIN_API_KEY_LENGTH) {
             return 'API key appears too short. Double-check your key.';
           }
           return undefined;
@@ -148,8 +180,15 @@ export class ConfigManager {
       });
 
       if (key && key.trim().length > 0) {
-        await this.storeApiKey(provider.key, key.trim());
-        configuredCount++;
+        try {
+          await this.storeApiKey(provider.key, key.trim());
+          configuredCount++;
+        } catch {
+          // Failure to store one key should not abort the loop for remaining providers
+          void vscode.window.showWarningMessage(
+            `AI Roundtable: Failed to save ${provider.name} key. Please try again.`,
+          );
+        }
       }
     }
 
@@ -177,7 +216,11 @@ export async function activate(
     }),
 
     vscode.commands.registerCommand(COMMANDS.CONFIGURE_PROVIDER, () => {
-      void configManager.configureProvider();
+      void configManager.configureProvider().catch((err: unknown) => {
+        void vscode.window.showErrorMessage(
+          `AI Roundtable: Failed to configure provider. ${err instanceof Error ? err.message : 'Unknown error.'}`,
+        );
+      });
     }),
 
     vscode.commands.registerCommand(COMMANDS.CLEAR_API_KEYS, () => {
@@ -188,11 +231,17 @@ export async function activate(
           'Clear Keys',
         );
         if (confirm === 'Clear Keys') {
-          await configManager.clearAllApiKeys();
-          await configManager.setProviderMode(ProviderMode.COPILOT);
-          void vscode.window.showInformationMessage(
-            'AI Roundtable: All API keys have been cleared.',
-          );
+          try {
+            await configManager.clearAllApiKeys();
+            await configManager.setProviderMode(ProviderMode.COPILOT);
+            void vscode.window.showInformationMessage(
+              'AI Roundtable: All API keys have been cleared.',
+            );
+          } catch (err) {
+            void vscode.window.showErrorMessage(
+              `AI Roundtable: Failed to clear API keys. ${err instanceof Error ? err.message : 'Unknown error.'}`,
+            );
+          }
         }
       })();
     }),
@@ -205,7 +254,13 @@ export async function activate(
 async function runFirstTimeSetupIfNeeded(
   configManager: ConfigManager,
 ): Promise<void> {
-  const config = await configManager.getConfig();
+  let config: ExtensionConfig;
+  try {
+    config = await configManager.getConfig();
+  } catch {
+    // Non-fatal — silently skip first-run setup if config is unavailable
+    return;
+  }
 
   // If mode is COPILOT (default), check if Copilot is actually available
   if (config.providerMode === ProviderMode.COPILOT) {

@@ -111,14 +111,31 @@
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "pretest": "npm run compile && npm run lint",
     "lint": "eslint src --ext ts",
     "lint:fix": "eslint src --ext ts --fix",
-    "test": "node ./out/test/runTest.js",
+    "test": "jest --passWithNoTests",
+    "test:vscode": "node ./out/test/runTest.js",
     "package": "vsce package",
     "clean": "rm -rf out"
   },
+  "jest": {
+    "preset": "ts-jest",
+    "testEnvironment": "node",
+    "roots": ["<rootDir>/tests"],
+    "moduleNameMapper": {
+      "^vscode$": "<rootDir>/tests/__mocks__/vscode.ts"
+    },
+    "transform": {
+      "^.+\\.tsx?$": ["ts-jest", {
+        "tsconfig": {
+          "module": "CommonJS",
+          "strict": false
+        }
+      }]
+    }
+  },
   "devDependencies": {
+    "@types/jest": "^30.0.0",
     "@types/node": "^20.14.0",
     "@types/vscode": "^1.90.0",
     "@typescript-eslint/eslint-plugin": "^7.14.0",
@@ -126,7 +143,8 @@
     "@vscode/test-electron": "^2.4.0",
     "@vscode/vsce": "^2.29.0",
     "eslint": "^8.57.0",
+    "jest": "^30.3.0",
+    "ts-jest": "^29.4.6",
     "typescript": "^5.5.0"
-  },
-  "dependencies": {}
+  }
 }

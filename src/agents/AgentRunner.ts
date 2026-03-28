@@ -19,13 +19,11 @@ import { CopilotProviderError } from './CopilotProvider';
 import type { ApiKeyProvider } from './ApiKeyProvider';
 import { ApiKeyProviderError } from './ApiKeyProvider';
 import { parseFileChanges } from '../workspace/WorkspaceWriter';
+import { RoundtableError } from '../errors';
 
-export class AgentRunnerError extends Error {
-  constructor(
-    message: string,
-    public readonly cause?: unknown,
-  ) {
-    super(message);
+export class AgentRunnerError extends RoundtableError {
+  constructor(message: string, cause?: unknown) {
+    super(message, cause);
     this.name = 'AgentRunnerError';
   }
 }
@@ -34,6 +32,12 @@ interface AgentRunnerDependencies {
   copilotProvider: CopilotProvider;
   apiKeyProvider: ApiKeyProvider;
   providerMode: ProviderMode;
+}
+
+interface CallAgentOptions {
+  systemPrompt: string;
+  userMessage: string;
+  maxTokens: number;
 }
 
 export class AgentRunner {
@@ -72,6 +76,11 @@ export class AgentRunner {
       cancellationToken,
     );
 
+    // Propagate cancellation immediately after each await
+    if (cancellationToken.isCancellationRequested) {
+      throw new vscode.CancellationError();
+    }
+
     onProgress({ type: 'main_agent_done', agentName: mainAgent });
 
     // Step 2: Sub agents verify in parallel (skip if none selected or same as main)
@@ -105,17 +114,21 @@ export class AgentRunner {
           if (err instanceof vscode.CancellationError) {
             throw err;
           }
-          // Graceful degradation: log but don't fail the whole round if a sub-agent fails
-          const errorMessage =
-            err instanceof Error ? err.message : String(err);
+          // Graceful degradation: don't fail the round if a sub-agent fails.
+          // The error message is sanitized (never exposes raw API errors).
+          const safeMessage = this.toSafeErrorMessage(err);
           return {
             agentName,
-            feedback: `[Verification unavailable: ${errorMessage}]`,
+            feedback: `[Verification unavailable: ${safeMessage}]`,
           };
         }
       });
 
       subAgentVerifications = await Promise.all(verificationPromises);
+
+      if (cancellationToken.isCancellationRequested) {
+        throw new vscode.CancellationError();
+      }
 
       onProgress({
         type: 'sub_agents_done',
@@ -151,6 +164,10 @@ export class AgentRunner {
         cancellationToken,
       );
 
+      if (cancellationToken.isCancellationRequested) {
+        throw new vscode.CancellationError();
+      }
+
       onProgress({ type: 'reflection_done', agentName: mainAgent });
     } else {
       reflectedResponse = mainAgentResponse;
@@ -169,7 +186,7 @@ export class AgentRunner {
 
   private async callAgent(
     agentName: AgentName,
-    options: { systemPrompt: string; userMessage: string; maxTokens: number },
+    options: CallAgentOptions,
     cancellationToken: vscode.CancellationToken,
   ): Promise<string> {
     try {
@@ -206,10 +223,22 @@ export class AgentRunner {
         );
       }
       throw new AgentRunnerError(
-        `Unexpected error from agent ${agentName}: ${err instanceof Error ? err.message : String(err)}`,
+        `Unexpected error from agent ${agentName}: ${this.toSafeErrorMessage(err)}`,
         err,
       );
     }
+  }
+
+  /**
+   * Converts an unknown thrown value to a user-safe error message string.
+   * Ensures API keys or internal stack traces are not included.
+   */
+  private toSafeErrorMessage(err: unknown): string {
+    if (err instanceof Error) {
+      // Use only the message, not the stack
+      return err.message;
+    }
+    return 'An unexpected error occurred.';
   }
 
   private buildContextSection(

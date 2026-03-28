@@ -1,0 +1,164 @@
+/**
+ * Mock for the 'vscode' module used in unit tests.
+ * Provides minimal stubs for all VS Code APIs used by the extension.
+ */
+
+export enum FileType {
+  Unknown = 0,
+  File = 1,
+  Directory = 2,
+  SymbolicLink = 64,
+}
+
+export enum ViewColumn {
+  Active = -1,
+  Beside = -2,
+  One = 1,
+}
+
+export enum ConfigurationTarget {
+  Global = 1,
+  Workspace = 2,
+  WorkspaceFolder = 3,
+}
+
+export class CancellationError extends Error {
+  constructor() {
+    super('Cancelled');
+    this.name = 'CancellationError';
+  }
+}
+
+export class CancellationTokenSource {
+  readonly token: { isCancellationRequested: boolean; onCancellationRequested: jest.Mock } = {
+    isCancellationRequested: false,
+    onCancellationRequested: jest.fn(),
+  };
+  cancel(): void {
+    this.token.isCancellationRequested = true;
+  }
+  dispose(): void {}
+}
+
+export class Uri {
+  static file(path: string): Uri {
+    return new Uri('file', '', path, '', '');
+  }
+  static parse(value: string): Uri {
+    return new Uri('untitled', '', value, '', '');
+  }
+  static joinPath(base: Uri, ...pathSegments: string[]): Uri {
+    const joined = [base.fsPath, ...pathSegments].join('/').replace(/\/+/g, '/');
+    return Uri.file(joined);
+  }
+
+  constructor(
+    public readonly scheme: string,
+    public readonly authority: string,
+    public readonly path: string,
+    public readonly query: string,
+    public readonly fragment: string,
+  ) {}
+
+  get fsPath(): string {
+    return this.path;
+  }
+
+  toString(): string {
+    return `${this.scheme}:${this.path}`;
+  }
+}
+
+export class Position {
+  constructor(
+    public readonly line: number,
+    public readonly character: number,
+  ) {}
+}
+
+export class Range {
+  constructor(
+    public readonly start: Position,
+    public readonly end: Position,
+  ) {}
+}
+
+export class WorkspaceEdit {
+  private _edits: Array<{ type: string; uri: Uri; content?: unknown }> = [];
+
+  replace(uri: Uri, _range: Range, _newText: string): void {
+    this._edits.push({ type: 'replace', uri });
+  }
+
+  createFile(uri: Uri, _options?: unknown): void {
+    this._edits.push({ type: 'create', uri });
+  }
+
+  get size(): number {
+    return this._edits.length;
+  }
+}
+
+export class LanguageModelChatMessage {
+  static User(content: string): LanguageModelChatMessage {
+    return new LanguageModelChatMessage('user', content);
+  }
+  constructor(
+    public readonly role: string,
+    public readonly content: string,
+  ) {}
+}
+
+// ── workspace namespace ──────────────────────────────────────────────────────
+
+export const workspace = {
+  workspaceFolders: undefined as
+    | Array<{ uri: Uri; name: string; index: number }>
+    | undefined,
+  getConfiguration: jest.fn().mockReturnValue({
+    get: jest.fn(),
+    update: jest.fn().mockResolvedValue(undefined),
+  }),
+  fs: {
+    stat: jest.fn().mockResolvedValue({ size: 100, type: FileType.File }),
+    readFile: jest.fn().mockResolvedValue(Buffer.from('')),
+    readDirectory: jest.fn().mockResolvedValue([]),
+  },
+  applyEdit: jest.fn().mockResolvedValue(true),
+  onDidChangeWorkspaceFolders: jest.fn(),
+};
+
+// ── window namespace ─────────────────────────────────────────────────────────
+
+export const window = {
+  activeTextEditor: undefined as { document: { uri: Uri; isUntitled: boolean } } | undefined,
+  visibleTextEditors: [] as Array<{ document: { uri: Uri; isUntitled: boolean } }>,
+  createWebviewPanel: jest.fn().mockReturnValue({
+    webview: {
+      html: '',
+      postMessage: jest.fn().mockResolvedValue(true),
+      onDidReceiveMessage: jest.fn(),
+    },
+    onDidDispose: jest.fn(),
+    reveal: jest.fn(),
+    dispose: jest.fn(),
+  }),
+  showInformationMessage: jest.fn().mockResolvedValue(undefined),
+  showWarningMessage: jest.fn().mockResolvedValue(undefined),
+  showErrorMessage: jest.fn().mockResolvedValue(undefined),
+  showInputBox: jest.fn().mockResolvedValue(undefined),
+  showQuickPick: jest.fn().mockResolvedValue(undefined),
+};
+
+// ── lm namespace ─────────────────────────────────────────────────────────────
+
+export const lm = {
+  selectChatModels: jest.fn().mockResolvedValue([]),
+};
+
+// ── commands namespace ────────────────────────────────────────────────────────
+
+export const commands = {
+  registerCommand: jest.fn().mockReturnValue({ dispose: jest.fn() }),
+  executeCommand: jest.fn().mockResolvedValue(undefined),
+};

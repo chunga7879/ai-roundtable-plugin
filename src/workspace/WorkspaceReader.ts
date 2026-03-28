@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import type { WorkspaceContext, WorkspaceFile } from '../types';
+import { WorkspaceError } from '../errors';
 
 const MAX_FILE_SIZE_BYTES = 50_000;
 const MAX_TOTAL_CONTEXT_BYTES = 200_000;
@@ -52,7 +53,10 @@ const EXCLUDED_EXTENSIONS = new Set([
   '.map',
 ]);
 
-const EXTENSION_TO_LANGUAGE: Record<string, string> = {
+/** Files whose base name must be excluded regardless of extension. */
+const EXCLUDED_FILENAMES = new Set(['.env']);
+
+const EXTENSION_TO_LANGUAGE: Readonly<Record<string, string>> = {
   '.ts': 'typescript',
   '.tsx': 'typescriptreact',
   '.js': 'javascript',
@@ -89,12 +93,10 @@ const EXTENSION_TO_LANGUAGE: Record<string, string> = {
   '.env': 'dotenv',
 };
 
-export class WorkspaceReaderError extends Error {
-  constructor(
-    message: string,
-    public readonly cause?: unknown,
-  ) {
-    super(message);
+/** Re-exported for backwards compatibility */
+export class WorkspaceReaderError extends WorkspaceError {
+  constructor(message: string, cause?: unknown) {
+    super(message, cause);
     this.name = 'WorkspaceReaderError';
   }
 }
@@ -106,8 +108,14 @@ export class WorkspaceReader {
       return { files: [] };
     }
 
-    const activeEditor = vscode.window.activeTextEditor;
-    const activeFilePath = activeEditor?.document.uri.fsPath;
+    let activeFilePath: string | undefined;
+    let activeEditor: vscode.TextEditor | undefined;
+    try {
+      activeEditor = vscode.window.activeTextEditor;
+      activeFilePath = activeEditor?.document.uri.fsPath;
+    } catch {
+      // activeTextEditor may throw in some environments — degrade gracefully
+    }
 
     const filesToRead: vscode.Uri[] = [];
 
@@ -117,13 +125,17 @@ export class WorkspaceReader {
     }
 
     // Priority 2: All visible editors
-    for (const editor of vscode.window.visibleTextEditors) {
-      if (!editor.document.isUntitled && editor !== activeEditor) {
-        const uri = editor.document.uri;
-        if (!filesToRead.some((f) => f.fsPath === uri.fsPath)) {
-          filesToRead.push(uri);
+    try {
+      for (const editor of vscode.window.visibleTextEditors) {
+        if (!editor.document.isUntitled && editor !== activeEditor) {
+          const uri = editor.document.uri;
+          if (!filesToRead.some((f) => f.fsPath === uri.fsPath)) {
+            filesToRead.push(uri);
+          }
         }
       }
+    } catch {
+      // visibleTextEditors access may fail in tests — degrade gracefully
     }
 
     // Priority 3: Files in workspace (breadth-first, respecting limits)
@@ -177,8 +189,21 @@ export class WorkspaceReader {
   ): Promise<WorkspaceFile | undefined> {
     const fsPath = uri.fsPath;
     const ext = path.extname(fsPath).toLowerCase();
+    const basename = path.basename(fsPath);
 
+    // Exclude by extension
     if (EXCLUDED_EXTENSIONS.has(ext)) {
+      return undefined;
+    }
+
+    // Exclude by filename (e.g. .env)
+    if (EXCLUDED_FILENAMES.has(basename)) {
+      return undefined;
+    }
+
+    // Security: ensure the file is inside the workspace root (prevents symlink escapes)
+    const relativeCheck = path.relative(workspaceRoot, fsPath);
+    if (relativeCheck.startsWith('..') || path.isAbsolute(relativeCheck)) {
       return undefined;
     }
 
@@ -210,7 +235,7 @@ export class WorkspaceReader {
         content,
         language: this.getLanguage(ext),
       };
-    } catch (err) {
+    } catch {
       // File may have been deleted or is unreadable — skip silently
       return undefined;
     }
@@ -280,18 +305,21 @@ export class WorkspaceReader {
       if (type === vscode.FileType.File) {
         if (!alreadyIncluded.includes(entryPath)) {
           const ext = path.extname(name).toLowerCase();
-          if (!EXCLUDED_EXTENSIONS.has(ext) && name !== '.env') {
+          // Exclude by extension AND by exact filename (e.g. .env)
+          if (!EXCLUDED_EXTENSIONS.has(ext) && !EXCLUDED_FILENAMES.has(name)) {
             result.push(entryUri);
           }
         }
       } else if (type === vscode.FileType.Directory) {
-        await this.traverseDirectory(
-          entryUri,
-          workspaceRoot,
-          result,
-          maxFiles,
-          alreadyIncluded,
-        );
+        if (!EXCLUDED_DIRS.has(name)) {
+          await this.traverseDirectory(
+            entryUri,
+            workspaceRoot,
+            result,
+            maxFiles,
+            alreadyIncluded,
+          );
+        }
       }
     }
   }

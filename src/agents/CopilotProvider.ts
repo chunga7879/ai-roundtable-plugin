@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import type { AgentName } from '../types';
+import { ProviderError } from '../errors';
 
 export interface LLMRequestOptions {
   systemPrompt: string;
@@ -7,12 +8,10 @@ export interface LLMRequestOptions {
   maxTokens?: number;
 }
 
-export class CopilotProviderError extends Error {
-  constructor(
-    message: string,
-    public readonly cause?: unknown,
-  ) {
-    super(message);
+/** Re-exported for backwards compatibility with AgentRunner imports */
+export class CopilotProviderError extends ProviderError {
+  constructor(message: string, cause?: unknown) {
+    super(message, undefined, cause);
     this.name = 'CopilotProviderError';
   }
 }
@@ -23,6 +22,9 @@ const COPILOT_MODEL_FAMILIES: readonly string[] = [
   'claude',
   'gemini',
 ];
+
+/** How long (ms) to wait for Copilot model selection before giving up. */
+const MODEL_SELECTION_TIMEOUT_MS = 30_000;
 
 export class CopilotProvider {
   private cachedModel: vscode.LanguageModelChat | undefined;
@@ -41,12 +43,39 @@ export class CopilotProvider {
       return this.cachedModel;
     }
 
+    const selectWithTimeout = <T>(thenable: Thenable<T>): Promise<T> => {
+      let timerId: ReturnType<typeof setTimeout> | undefined;
+      const timeoutPromise = new Promise<T>((_, reject) => {
+        timerId = setTimeout(
+          () =>
+            reject(
+              new CopilotProviderError(
+                `Copilot model selection timed out after ${MODEL_SELECTION_TIMEOUT_MS / 1000}s`,
+              ),
+            ),
+          MODEL_SELECTION_TIMEOUT_MS,
+        );
+      });
+      return Promise.race([
+        Promise.resolve(thenable).finally(() => clearTimeout(timerId)),
+        timeoutPromise,
+      ]);
+    };
+
     // Try preferred model families in order
     for (const family of COPILOT_MODEL_FAMILIES) {
-      const models = await vscode.lm.selectChatModels({
-        vendor: 'copilot',
-        family,
-      });
+      let models: vscode.LanguageModelChat[];
+      try {
+        models = await selectWithTimeout(
+          vscode.lm.selectChatModels({ vendor: 'copilot', family }),
+        );
+      } catch (err) {
+        if (err instanceof CopilotProviderError) {
+          throw err;
+        }
+        // selectChatModels may throw if the API is unavailable — continue to next family
+        continue;
+      }
       if (models.length > 0) {
         this.cachedModel = models[0];
         return this.cachedModel;
@@ -54,7 +83,18 @@ export class CopilotProvider {
     }
 
     // Fallback: any copilot model
-    const anyModels = await vscode.lm.selectChatModels({ vendor: 'copilot' });
+    let anyModels: vscode.LanguageModelChat[];
+    try {
+      anyModels = await selectWithTimeout(
+        vscode.lm.selectChatModels({ vendor: 'copilot' }),
+      );
+    } catch (err) {
+      throw new CopilotProviderError(
+        'Failed to query available Copilot language models.',
+        err,
+      );
+    }
+
     if (anyModels.length === 0) {
       throw new CopilotProviderError(
         'No GitHub Copilot language models are available. ' +
@@ -86,6 +126,8 @@ export class CopilotProvider {
       if (err instanceof vscode.CancellationError) {
         throw err;
       }
+      // Invalidate the cached model so the next request re-selects a healthy one
+      this.invalidateModelCache();
       throw new CopilotProviderError(
         `Copilot request failed for agent ${agentName}: ${err instanceof Error ? err.message : String(err)}`,
         err,
@@ -110,7 +152,14 @@ export class CopilotProvider {
       );
     }
 
-    return chunks.join('');
+    const result = chunks.join('');
+    if (result.trim().length === 0) {
+      throw new CopilotProviderError(
+        `Copilot returned an empty response for agent ${agentName}.`,
+      );
+    }
+
+    return result;
   }
 
   invalidateModelCache(): void {

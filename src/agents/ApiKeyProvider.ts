@@ -1,6 +1,7 @@
 import * as https from 'https';
 import type * as http from 'http';
 import { AgentName } from '../types';
+import { ProviderError } from '../errors';
 
 export interface ApiKeyProviderOptions {
   anthropicApiKey?: string;
@@ -14,13 +15,10 @@ export interface LLMRequestOptions {
   maxTokens: number;
 }
 
-export class ApiKeyProviderError extends Error {
-  constructor(
-    message: string,
-    public readonly statusCode?: number,
-    public readonly cause?: unknown,
-  ) {
-    super(message);
+/** Re-exported for backwards compatibility with AgentRunner imports */
+export class ApiKeyProviderError extends ProviderError {
+  constructor(message: string, statusCode?: number, cause?: unknown) {
+    super(message, statusCode, cause);
     this.name = 'ApiKeyProviderError';
   }
 }
@@ -30,6 +28,26 @@ const OPENAI_MODEL = 'gpt-4o';
 const GEMINI_MODEL = 'gemini-1.5-pro';
 
 const REQUEST_TIMEOUT_MS = 120_000;
+
+/** Maximum response body size to read (10 MB). Prevents OOM from runaway responses. */
+const MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
+
+interface AnthropicResponseBody {
+  content?: Array<{ type: string; text: string }>;
+  error?: { message: string; type?: string };
+}
+
+interface OpenAIResponseBody {
+  choices?: Array<{ message?: { content?: string } }>;
+  error?: { message: string; type?: string };
+}
+
+interface GeminiResponseBody {
+  candidates?: Array<{
+    content?: { parts?: Array<{ text?: string }> };
+  }>;
+  error?: { message: string; status?: string };
+}
 
 export class ApiKeyProvider {
   constructor(private readonly options: ApiKeyProviderOptions) {}
@@ -100,14 +118,19 @@ export class ApiKeyProvider {
       agentLabel: AgentName.CLAUDE,
     });
 
-    const parsed = JSON.parse(responseText) as {
-      content?: Array<{ type: string; text: string }>;
-      error?: { message: string };
-    };
+    let parsed: AnthropicResponseBody;
+    try {
+      parsed = JSON.parse(responseText) as AnthropicResponseBody;
+    } catch {
+      throw new ApiKeyProviderError(
+        `Anthropic API returned non-JSON response (${responseText.length} bytes).`,
+      );
+    }
 
     if (parsed.error) {
+      // Include error type but never the API key
       throw new ApiKeyProviderError(
-        `Anthropic API error: ${parsed.error.message}`,
+        `Anthropic API error (${parsed.error.type ?? 'unknown'}): ${parsed.error.message}`,
       );
     }
 
@@ -151,13 +174,19 @@ export class ApiKeyProvider {
       agentLabel: AgentName.GPT,
     });
 
-    const parsed = JSON.parse(responseText) as {
-      choices?: Array<{ message?: { content?: string } }>;
-      error?: { message: string };
-    };
+    let parsed: OpenAIResponseBody;
+    try {
+      parsed = JSON.parse(responseText) as OpenAIResponseBody;
+    } catch {
+      throw new ApiKeyProviderError(
+        `OpenAI API returned non-JSON response (${responseText.length} bytes).`,
+      );
+    }
 
     if (parsed.error) {
-      throw new ApiKeyProviderError(`OpenAI API error: ${parsed.error.message}`);
+      throw new ApiKeyProviderError(
+        `OpenAI API error (${parsed.error.type ?? 'unknown'}): ${parsed.error.message}`,
+      );
     }
 
     const content = parsed.choices?.[0]?.message?.content;
@@ -195,6 +224,7 @@ export class ApiKeyProvider {
       },
     });
 
+    // Note: apiKey is placed in query param as per Google API convention — never logged
     const path = `/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`;
 
     const responseText = await this.makeHttpsRequest({
@@ -209,15 +239,19 @@ export class ApiKeyProvider {
       agentLabel: AgentName.GEMINI,
     });
 
-    const parsed = JSON.parse(responseText) as {
-      candidates?: Array<{
-        content?: { parts?: Array<{ text?: string }> };
-      }>;
-      error?: { message: string };
-    };
+    let parsed: GeminiResponseBody;
+    try {
+      parsed = JSON.parse(responseText) as GeminiResponseBody;
+    } catch {
+      throw new ApiKeyProviderError(
+        `Google Gemini API returned non-JSON response (${responseText.length} bytes).`,
+      );
+    }
 
     if (parsed.error) {
-      throw new ApiKeyProviderError(`Google API error: ${parsed.error.message}`);
+      throw new ApiKeyProviderError(
+        `Google Gemini API error (${parsed.error.status ?? 'unknown'}): ${parsed.error.message}`,
+      );
     }
 
     const text = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
@@ -248,8 +282,18 @@ export class ApiKeyProvider {
         },
         (res: http.IncomingMessage) => {
           const chunks: Buffer[] = [];
+          let totalBytes = 0;
 
           res.on('data', (chunk: Buffer) => {
+            totalBytes += chunk.length;
+            if (totalBytes > MAX_RESPONSE_BYTES) {
+              req.destroy(
+                new ApiKeyProviderError(
+                  `Response from ${params.hostname} exceeded maximum size of ${MAX_RESPONSE_BYTES} bytes.`,
+                ),
+              );
+              return;
+            }
             chunks.push(chunk);
           });
 
@@ -260,9 +304,11 @@ export class ApiKeyProvider {
               res.statusCode !== undefined &&
               (res.statusCode < 200 || res.statusCode >= 300)
             ) {
+              // Truncate body to avoid leaking verbose API error payloads into logs
+              const snippet = responseText.slice(0, 300);
               reject(
                 new ApiKeyProviderError(
-                  `${params.agentLabel} API request failed with HTTP ${res.statusCode}: ${responseText.slice(0, 500)}`,
+                  `${params.agentLabel} API request failed with HTTP ${res.statusCode}: ${snippet}`,
                   res.statusCode,
                 ),
               );

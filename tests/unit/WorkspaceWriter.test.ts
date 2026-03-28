@@ -1,0 +1,164 @@
+import { parseFileChanges } from '../../src/workspace/WorkspaceWriter';
+
+describe('parseFileChanges', () => {
+  describe('valid FILE: blocks', () => {
+    it('parses a single FILE: block with language specifier', () => {
+      const input = `
+FILE: src/index.ts
+\`\`\`typescript
+const x = 1;
+\`\`\`
+`;
+      const result = parseFileChanges(input);
+      expect(result).toHaveLength(1);
+      expect(result[0].filePath).toBe('src/index.ts');
+      expect(result[0].content).toContain('const x = 1;');
+      expect(result[0].isNew).toBe(false);
+    });
+
+    it('parses a FILE: block without language specifier', () => {
+      const input = `FILE: config.json\n\`\`\`\n{"key": "value"}\n\`\`\``;
+      const result = parseFileChanges(input);
+      expect(result).toHaveLength(1);
+      expect(result[0].filePath).toBe('config.json');
+    });
+
+    it('parses multiple FILE: blocks from the same response', () => {
+      const input = `
+FILE: src/a.ts
+\`\`\`typescript
+export const A = 1;
+\`\`\`
+
+FILE: src/b.ts
+\`\`\`typescript
+export const B = 2;
+\`\`\`
+`;
+      const result = parseFileChanges(input);
+      expect(result).toHaveLength(2);
+      expect(result[0].filePath).toBe('src/a.ts');
+      expect(result[1].filePath).toBe('src/b.ts');
+    });
+
+    it('normalizes backslashes to forward slashes', () => {
+      const input = `FILE: src\\components\\App.tsx\n\`\`\`tsx\nconst App = () => <div/>\n\`\`\``;
+      const result = parseFileChanges(input);
+      expect(result).toHaveLength(1);
+      expect(result[0].filePath).toBe('src/components/App.tsx');
+    });
+
+    it('strips leading ./ from paths', () => {
+      const input = `FILE: ./src/main.py\n\`\`\`python\nprint("hello")\n\`\`\``;
+      const result = parseFileChanges(input);
+      expect(result).toHaveLength(1);
+      expect(result[0].filePath).toBe('src/main.py');
+    });
+
+    it('strips leading / from paths', () => {
+      const input = `FILE: /src/main.go\n\`\`\`go\npackage main\n\`\`\``;
+      const result = parseFileChanges(input);
+      expect(result).toHaveLength(1);
+      expect(result[0].filePath).toBe('src/main.go');
+    });
+  });
+
+  describe('security: path traversal rejection', () => {
+    it('rejects paths containing ..', () => {
+      const input = `FILE: ../../etc/passwd\n\`\`\`\nroot:x:0:0\n\`\`\``;
+      const result = parseFileChanges(input);
+      expect(result).toHaveLength(0);
+    });
+
+    it('rejects paths containing .. in the middle', () => {
+      const input = `FILE: src/../../../etc/passwd\n\`\`\`\nroot\n\`\`\``;
+      const result = parseFileChanges(input);
+      expect(result).toHaveLength(0);
+    });
+
+    it('rejects paths that are just ..', () => {
+      const input = `FILE: ..\n\`\`\`\ncontent\n\`\`\``;
+      const result = parseFileChanges(input);
+      expect(result).toHaveLength(0);
+    });
+  });
+
+  describe('deduplication', () => {
+    it('returns only the first occurrence of a duplicate path', () => {
+      const input = `
+FILE: src/index.ts
+\`\`\`typescript
+const first = 1;
+\`\`\`
+
+FILE: src/index.ts
+\`\`\`typescript
+const second = 2;
+\`\`\`
+`;
+      const result = parseFileChanges(input);
+      expect(result).toHaveLength(1);
+      expect(result[0].content).toContain('const first = 1;');
+    });
+
+    it('handles three duplicate paths by keeping only the first', () => {
+      const block = `FILE: foo.ts\n\`\`\`ts\nconst x = 1;\n\`\`\`\n`;
+      const input = block + block + block;
+      const result = parseFileChanges(input);
+      expect(result).toHaveLength(1);
+    });
+  });
+
+  describe('edge cases', () => {
+    it('returns empty array for input with no FILE: blocks', () => {
+      const result = parseFileChanges('No file blocks here, just prose.');
+      expect(result).toHaveLength(0);
+    });
+
+    it('returns empty array for empty string input', () => {
+      const result = parseFileChanges('');
+      expect(result).toHaveLength(0);
+    });
+
+    it('handles FILE: blocks with empty content', () => {
+      const input = `FILE: empty.ts\n\`\`\`typescript\n\`\`\``;
+      const result = parseFileChanges(input);
+      expect(result).toHaveLength(1);
+      expect(result[0].content).toBe('');
+    });
+
+    it('preserves multiline content inside a block', () => {
+      const content = 'line1\nline2\nline3\n';
+      const input = `FILE: multi.ts\n\`\`\`\n${content}\`\`\``;
+      const result = parseFileChanges(input);
+      expect(result).toHaveLength(1);
+      expect(result[0].content).toContain('line1');
+      expect(result[0].content).toContain('line3');
+    });
+
+    it('parses FILE: blocks embedded in surrounding prose', () => {
+      const input = `
+Here is my analysis:
+
+The key issue is the missing error handler.
+
+FILE: src/handler.ts
+\`\`\`typescript
+export function handle() {}
+\`\`\`
+
+Let me know if you want changes.
+`;
+      const result = parseFileChanges(input);
+      expect(result).toHaveLength(1);
+      expect(result[0].filePath).toBe('src/handler.ts');
+    });
+
+    it('is idempotent when called twice on the same input', () => {
+      const input = `FILE: a.ts\n\`\`\`ts\nconst x = 1;\n\`\`\``;
+      const r1 = parseFileChanges(input);
+      const r2 = parseFileChanges(input);
+      expect(r1).toEqual(r2);
+    });
+  });
+});
