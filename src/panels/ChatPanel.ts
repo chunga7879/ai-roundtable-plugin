@@ -48,7 +48,7 @@ export class ChatPanel implements vscode.Disposable {
   private conversationHistory: ConversationTurn[] = [];
   private currentRoundType: RoundType | undefined;
   private lastRunCommand: string | undefined;
-  private lastRunMainAgent: AgentName = AgentName.COPILOT;
+  private lastRunMainAgent: AgentName = AgentName.CLAUDE;
   private lastRunSubAgents: AgentName[] = [];
 
   private constructor(
@@ -406,12 +406,19 @@ export class ChatPanel implements vscode.Disposable {
           config.deepseekApiKey,
       );
 
+      const availableAgents: AgentName[] =
+        config.providerMode === ProviderMode.COPILOT
+          ? [AgentName.CLAUDE, AgentName.GPT, AgentName.GEMINI, AgentName.DEEPSEEK]
+          : ([
+              config.anthropicApiKey ? AgentName.CLAUDE : null,
+              config.openaiApiKey ? AgentName.GPT : null,
+              config.googleApiKey ? AgentName.GEMINI : null,
+              config.deepseekApiKey ? AgentName.DEEPSEEK : null,
+            ].filter((a): a is AgentName => a !== null));
+
       this.postMessage({
         type: 'configLoaded',
-        payload: {
-          providerMode: config.providerMode,
-          hasApiKeys,
-        },
+        payload: { providerMode: config.providerMode, hasApiKeys, availableAgents },
       });
     } catch {
       this.postMessage({
@@ -419,6 +426,7 @@ export class ChatPanel implements vscode.Disposable {
         payload: {
           providerMode: ProviderMode.COPILOT,
           hasApiKeys: false,
+          availableAgents: [AgentName.CLAUDE, AgentName.GPT, AgentName.GEMINI, AgentName.DEEPSEEK],
         },
       });
     }

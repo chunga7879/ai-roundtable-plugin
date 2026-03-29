@@ -121,7 +121,7 @@ export type ExtensionToWebviewMessage =
   | { type: 'setLoading'; payload: { loading: boolean } }
   | { type: 'showFileChanges'; payload: { fileChanges: FileChange[] } }
   | { type: 'clearFileChanges' }
-  | { type: 'configLoaded'; payload: { providerMode: ProviderMode; hasApiKeys: boolean } }
+  | { type: 'configLoaded'; payload: { providerMode: ProviderMode; hasApiKeys: boolean; availableAgents: AgentName[] } }
   | { type: 'error'; payload: { message: string } }
   | { type: 'executionStarted'; payload: { command: string } }
   | { type: 'executionComplete'; payload: { command: string; output: string; exitCode: number } };

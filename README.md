@@ -136,8 +136,3 @@ This can happen if the Copilot API is temporarily unresponsive. The extension wi
 - **Runner round timeout: 60 seconds** — long-running commands (e.g. full test suites) may be cut off.
 - **Max 50 file changes per response** — responses proposing more than 50 files will have the excess silently dropped.
 
----
-
-## License
-
-MIT
