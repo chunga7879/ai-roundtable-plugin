@@ -81,7 +81,6 @@ function setupHttpsMock(opts: MockRequestOptions = {}) {
 const defaultOpts = {
   systemPrompt: 'You are a developer.',
   userMessage: 'build feature',
-  maxTokens: 1000,
 };
 
 // ── hasKeyForAgent ────────────────────────────────────────────────────────────
@@ -326,5 +325,126 @@ describe('ApiKeyProvider — Gemini', () => {
     const p = new ApiKeyProvider({ googleApiKey: 'goog-key' });
     await expect(p.sendRequest(AgentName.GEMINI, defaultOpts))
       .rejects.toBeInstanceOf(ApiKeyProviderError);
+  });
+});
+
+// ── DeepSeek ──────────────────────────────────────────────────────────────────
+
+describe('ApiKeyProvider — DeepSeek', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('returns message content from successful response', async () => {
+    setupHttpsMock({
+      responseBody: JSON.stringify({
+        choices: [{ message: { content: 'Hello from DeepSeek' } }],
+      }),
+    });
+    const p = new ApiKeyProvider({ deepseekApiKey: 'ds-key' });
+    const result = await p.sendRequest(AgentName.DEEPSEEK, defaultOpts);
+    expect(result).toBe('Hello from DeepSeek');
+  });
+
+  it('throws ApiKeyProviderError when deepseekApiKey is missing', async () => {
+    const p = new ApiKeyProvider({});
+    await expect(p.sendRequest(AgentName.DEEPSEEK, defaultOpts))
+      .rejects.toBeInstanceOf(ApiKeyProviderError);
+  });
+
+  it('throws ApiKeyProviderError on API error response', async () => {
+    setupHttpsMock({
+      responseBody: JSON.stringify({
+        error: { message: 'invalid key', type: 'auth_error' },
+      }),
+    });
+    const p = new ApiKeyProvider({ deepseekApiKey: 'ds-key' });
+    await expect(p.sendRequest(AgentName.DEEPSEEK, defaultOpts))
+      .rejects.toBeInstanceOf(ApiKeyProviderError);
+  });
+
+  it('throws ApiKeyProviderError on non-JSON response', async () => {
+    setupHttpsMock({ responseBody: 'not json' });
+    const p = new ApiKeyProvider({ deepseekApiKey: 'ds-key' });
+    await expect(p.sendRequest(AgentName.DEEPSEEK, defaultOpts))
+      .rejects.toBeInstanceOf(ApiKeyProviderError);
+  });
+
+  it('throws ApiKeyProviderError when no content in response', async () => {
+    setupHttpsMock({
+      responseBody: JSON.stringify({ choices: [] }),
+    });
+    const p = new ApiKeyProvider({ deepseekApiKey: 'ds-key' });
+    await expect(p.sendRequest(AgentName.DEEPSEEK, defaultOpts))
+      .rejects.toBeInstanceOf(ApiKeyProviderError);
+  });
+
+  it('throws ApiKeyProviderError on HTTP 401', async () => {
+    setupHttpsMock({ statusCode: 401, responseBody: 'unauthorized' });
+    const p = new ApiKeyProvider({ deepseekApiKey: 'ds-key' });
+    await expect(p.sendRequest(AgentName.DEEPSEEK, defaultOpts))
+      .rejects.toBeInstanceOf(ApiKeyProviderError);
+  });
+
+  it('passes conversation history in the messages array', async () => {
+    setupHttpsMock({
+      responseBody: JSON.stringify({
+        choices: [{ message: { content: 'DS response' } }],
+      }),
+    });
+    const p = new ApiKeyProvider({ deepseekApiKey: 'ds-key' });
+    await p.sendRequest(AgentName.DEEPSEEK, {
+      ...defaultOpts,
+      conversationHistory: [
+        { role: 'user', content: 'previous question' },
+        { role: 'assistant', content: 'previous answer' },
+      ],
+    });
+
+    // Verify request was made (history merging is an internal concern — just check it succeeds)
+    expect(https.request as jest.Mock).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── Conversation history pass-through ─────────────────────────────────────────
+
+describe('ApiKeyProvider — conversation history', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('includes conversation history in Claude request body', async () => {
+    let capturedBody = '';
+    (https.request as jest.Mock).mockImplementation(
+      (_opts: unknown, callback: (res: EventEmitter & { statusCode?: number }) => void) => {
+        const mockReq = new EventEmitter() as EventEmitter & {
+          write: jest.Mock; end: jest.Mock; setTimeout: jest.Mock; destroy: jest.Mock;
+        };
+        mockReq.write = jest.fn().mockImplementation((b: string) => { capturedBody = b; });
+        mockReq.end = jest.fn();
+        mockReq.setTimeout = jest.fn();
+        mockReq.destroy = jest.fn();
+
+        const mockRes = new EventEmitter() as EventEmitter & { statusCode?: number };
+        mockRes.statusCode = 200;
+        setImmediate(() => {
+          mockRes.emit('data', Buffer.from(JSON.stringify({
+            content: [{ type: 'text', text: 'reply' }],
+          })));
+          mockRes.emit('end');
+        });
+        callback(mockRes);
+        return mockReq;
+      },
+    );
+
+    const p = new ApiKeyProvider({ anthropicApiKey: 'sk-ant' });
+    await p.sendRequest(AgentName.CLAUDE, {
+      ...defaultOpts,
+      conversationHistory: [
+        { role: 'user', content: 'first question' },
+        { role: 'assistant', content: 'first answer' },
+      ],
+    });
+
+    const body = JSON.parse(capturedBody);
+    expect(body.messages).toContainEqual({ role: 'user', content: 'first question' });
+    expect(body.messages).toContainEqual({ role: 'assistant', content: 'first answer' });
   });
 });

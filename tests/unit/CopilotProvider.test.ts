@@ -31,7 +31,6 @@ function makeModel(chunks: string[] = ['hello ', 'world'], throwOnSend?: Error) 
 const defaultOptions = {
   systemPrompt: 'You are a developer.',
   userMessage: 'write tests',
-  maxTokens: 1000,
 };
 
 // ── isAvailable ───────────────────────────────────────────────────────────────

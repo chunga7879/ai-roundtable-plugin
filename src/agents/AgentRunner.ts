@@ -13,7 +13,6 @@ import {
   buildReflectionPrompt,
   buildSubAgentVerificationPrompt,
   buildSystemPrompt,
-  ROUND_MAX_TOKENS,
 } from '../prompts/roundPrompts';
 import type { CopilotProvider } from './CopilotProvider';
 import { CopilotProviderError } from './CopilotProvider';
@@ -38,7 +37,6 @@ interface AgentRunnerDependencies {
 interface CallAgentOptions {
   systemPrompt: string;
   userMessage: string;
-  maxTokens: number;
   conversationHistory?: ConversationTurn[];
 }
 
@@ -62,7 +60,6 @@ export class AgentRunner {
       request;
 
     const systemPrompt = buildSystemPrompt(roundType);
-    const maxTokens = ROUND_MAX_TOKENS[roundType];
 
     const contextSection = this.buildContextSection(workspaceContext);
     const fullUserMessage = contextSection
@@ -74,7 +71,7 @@ export class AgentRunner {
 
     const mainAgentResponse = await this.callAgent(
       mainAgent,
-      { systemPrompt, userMessage: fullUserMessage, maxTokens, conversationHistory },
+      { systemPrompt, userMessage: fullUserMessage, conversationHistory },
       cancellationToken,
     );
 
@@ -107,7 +104,6 @@ export class AgentRunner {
             {
               systemPrompt: verificationSystemPrompt,
               userMessage: `Please verify the primary agent's response for the following request:\n\n${fullUserMessage}`,
-              maxTokens: Math.min(maxTokens, 4096),
             },
             cancellationToken,
           );
@@ -161,7 +157,6 @@ export class AgentRunner {
         {
           systemPrompt,
           userMessage: reflectionUserMessage,
-          maxTokens,
         },
         cancellationToken,
       );

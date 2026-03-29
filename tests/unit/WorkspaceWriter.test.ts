@@ -160,5 +160,13 @@ Let me know if you want changes.
       const r2 = parseFileChanges(input);
       expect(r1).toEqual(r2);
     });
+
+    it('stops at 50 file changes (MAX_FILE_CHANGES limit)', () => {
+      const blocks = Array.from({ length: 55 }, (_, i) =>
+        `FILE: src/file${i}.ts\n\`\`\`ts\nconst x${i} = ${i};\n\`\`\`\n`,
+      ).join('\n');
+      const result = parseFileChanges(blocks);
+      expect(result).toHaveLength(50);
+    });
   });
 });

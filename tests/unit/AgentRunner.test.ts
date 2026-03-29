@@ -19,6 +19,7 @@ function makeRoundRequest(overrides: Partial<RoundRequest> = {}): RoundRequest {
     mainAgent: AgentName.CLAUDE,
     subAgents: [],
     workspaceContext: { files: [] },
+    conversationHistory: [],
     ...overrides,
   };
 }
@@ -352,6 +353,64 @@ describe('AgentRunner', () => {
       const callArgs = copilotProvider.sendRequest.mock.calls[0];
       const userMessage = callArgs[0].userMessage as string;
       expect(userMessage).toBe('Test message');
+    });
+  });
+
+  describe('conversation history', () => {
+    it('passes conversationHistory through to the main agent call', async () => {
+      const copilotProvider = makeCopilotProvider('Response');
+      const runner = new AgentRunner({
+        copilotProvider: copilotProvider as never,
+        apiKeyProvider: makeApiKeyProvider() as never,
+        providerMode: ProviderMode.COPILOT,
+      });
+
+      const history = [
+        { role: 'user' as const, content: 'prior question' },
+        { role: 'assistant' as const, content: 'prior answer' },
+      ];
+
+      await runner.runRound(
+        makeRoundRequest({ conversationHistory: history }),
+        makeCancellationToken(),
+        jest.fn(),
+      );
+
+      const callArgs = copilotProvider.sendRequest.mock.calls[0];
+      expect(callArgs[0].conversationHistory).toEqual(history);
+    });
+
+    it('omits conversationHistory from sub-agent verification calls', async () => {
+      let callCount = 0;
+      const copilotProvider = {
+        sendRequest: jest.fn().mockImplementation(() => {
+          callCount++;
+          if (callCount === 1) return Promise.resolve('Main response');
+          if (callCount === 2) return Promise.resolve('Sub feedback');
+          return Promise.resolve('Reflected');
+        }),
+        isAvailable: jest.fn().mockResolvedValue(true),
+        invalidateModelCache: jest.fn(),
+      };
+
+      const runner = new AgentRunner({
+        copilotProvider: copilotProvider as never,
+        apiKeyProvider: makeApiKeyProvider() as never,
+        providerMode: ProviderMode.COPILOT,
+      });
+
+      await runner.runRound(
+        makeRoundRequest({
+          subAgents: [AgentName.GPT],
+          conversationHistory: [{ role: 'user' as const, content: 'history' }],
+        }),
+        makeCancellationToken(),
+        jest.fn(),
+      );
+
+      // Sub-agent call (index 1) should not carry the user's conversation history
+      const subAgentCall = copilotProvider.sendRequest.mock.calls[1];
+      expect(subAgentCall[0].conversationHistory).toBeUndefined();
     });
   });
 });

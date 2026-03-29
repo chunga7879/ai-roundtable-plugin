@@ -14,7 +14,6 @@ export interface ApiKeyProviderOptions {
 export interface LLMRequestOptions {
   systemPrompt: string;
   userMessage: string;
-  maxTokens: number;
   conversationHistory?: ConversationTurn[];
 }
 
@@ -32,6 +31,7 @@ const GEMINI_MODEL = 'gemini-1.5-pro';
 const DEEPSEEK_MODEL = 'deepseek-coder';
 
 const REQUEST_TIMEOUT_MS = 120_000;
+const DEFAULT_MAX_TOKENS = 16_384;
 
 /** Maximum response body size to read (10 MB). Prevents OOM from runaway responses. */
 const MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
@@ -108,7 +108,7 @@ export class ApiKeyProvider {
     const history = options.conversationHistory ?? [];
     const body = JSON.stringify({
       model: CLAUDE_MODEL,
-      max_tokens: options.maxTokens,
+      max_tokens: DEFAULT_MAX_TOKENS,
       system: options.systemPrompt,
       messages: [
         ...history.map((turn) => ({ role: turn.role, content: turn.content })),
@@ -167,7 +167,7 @@ export class ApiKeyProvider {
     const history = options.conversationHistory ?? [];
     const body = JSON.stringify({
       model: OPENAI_MODEL,
-      max_tokens: options.maxTokens,
+      max_tokens: DEFAULT_MAX_TOKENS,
       messages: [
         { role: 'system', content: options.systemPrompt },
         ...history.map((turn) => ({ role: turn.role, content: turn.content })),
@@ -224,7 +224,7 @@ export class ApiKeyProvider {
     const history = options.conversationHistory ?? [];
     const body = JSON.stringify({
       model: DEEPSEEK_MODEL,
-      max_tokens: options.maxTokens,
+      max_tokens: DEFAULT_MAX_TOKENS,
       messages: [
         { role: 'system', content: options.systemPrompt },
         ...history.map((turn) => ({ role: turn.role, content: turn.content })),
@@ -294,7 +294,7 @@ export class ApiKeyProvider {
         },
       ],
       generationConfig: {
-        maxOutputTokens: options.maxTokens,
+        maxOutputTokens: DEFAULT_MAX_TOKENS,
       },
     });
 

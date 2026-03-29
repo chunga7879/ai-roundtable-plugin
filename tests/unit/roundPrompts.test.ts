@@ -1,7 +1,6 @@
 import { RoundType } from '../../src/types';
 import {
   ROUND_SYSTEM_PROMPTS,
-  ROUND_MAX_TOKENS,
   ROUND_LABELS,
   buildSystemPrompt,
   buildSubAgentVerificationPrompt,
@@ -24,16 +23,6 @@ describe('ROUND_SYSTEM_PROMPTS', () => {
   });
 });
 
-describe('ROUND_MAX_TOKENS', () => {
-  it('has a positive integer token limit for every RoundType', () => {
-    for (const roundType of ALL_ROUND_TYPES) {
-      const tokens = ROUND_MAX_TOKENS[roundType];
-      expect(typeof tokens).toBe('number');
-      expect(tokens).toBeGreaterThan(0);
-      expect(Number.isInteger(tokens)).toBe(true);
-    }
-  });
-});
 
 describe('ROUND_LABELS', () => {
   it('has a label for every RoundType', () => {

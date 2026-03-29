@@ -5,7 +5,6 @@ import { ProviderError } from '../errors';
 export interface LLMRequestOptions {
   systemPrompt: string;
   userMessage: string;
-  maxTokens?: number;
   conversationHistory?: ConversationTurn[];
 }
 
