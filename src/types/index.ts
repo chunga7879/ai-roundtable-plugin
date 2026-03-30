@@ -124,7 +124,8 @@ export type ExtensionToWebviewMessage =
   | { type: 'configLoaded'; payload: { providerMode: ProviderMode; hasApiKeys: boolean; availableAgents: AgentName[] } }
   | { type: 'error'; payload: { message: string } }
   | { type: 'executionStarted'; payload: { command: string } }
-  | { type: 'executionComplete'; payload: { command: string; output: string; exitCode: number } };
+  | { type: 'executionComplete'; payload: { command: string; output: string; exitCode: number } }
+  | { type: 'suggestInstall'; payload: { command: string } };
 
 // ── Input validation helpers ──────────────────────────────────────────────────
 

@@ -128,6 +128,15 @@ export class AgentRunner {
         throw new vscode.CancellationError();
       }
 
+      // Emit each verification result so the UI can show them before reflection starts
+      for (const verification of subAgentVerifications) {
+        onProgress({
+          type: 'sub_agent_feedback',
+          agentName: verification.agentName,
+          feedback: verification.feedback,
+        });
+      }
+
       onProgress({
         type: 'sub_agents_done',
         agentNames: uniqueSubAgents,
@@ -264,6 +273,7 @@ export type ProgressEvent =
   | { type: 'main_agent_start'; agentName: AgentName }
   | { type: 'main_agent_done'; agentName: AgentName }
   | { type: 'sub_agents_start'; agentNames: AgentName[] }
+  | { type: 'sub_agent_feedback'; agentName: AgentName; feedback: string }
   | { type: 'sub_agents_done'; agentNames: AgentName[] }
   | { type: 'reflection_start'; agentName: AgentName }
   | { type: 'reflection_done'; agentName: AgentName };

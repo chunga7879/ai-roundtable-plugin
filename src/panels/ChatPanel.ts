@@ -273,23 +273,6 @@ export class ChatPanel implements vscode.Disposable {
       this.conversationHistory.push({ role: 'user', content: userMessage });
       this.conversationHistory.push({ role: 'assistant', content: result.reflectedResponse });
 
-      // Show sub-agent feedbacks as collapsed messages
-      for (const verification of result.subAgentVerifications) {
-        if (!verification.feedback.startsWith('[Verification unavailable')) {
-          this.postMessage({
-            type: 'addMessage',
-            payload: {
-              id: crypto.randomUUID(),
-              role: 'agent',
-              agentName: verification.agentName,
-              content: verification.feedback,
-              timestamp: Date.now(),
-              isSubAgentFeedback: true,
-            },
-          });
-        }
-      }
-
       // Show final response
       this.postMessage({
         type: 'addMessage',
@@ -359,6 +342,13 @@ export class ChatPanel implements vscode.Disposable {
           timestamp: Date.now(),
         },
       });
+
+      // Detect dependency file changes and suggest install command
+      const allChanged = [...result.appliedFiles, ...result.newFiles];
+      const installCommand = detectInstallCommand(allChanged);
+      if (installCommand) {
+        this.postMessage({ type: 'suggestInstall', payload: { command: installCommand } });
+      }
     } catch (err) {
       this.postErrorMessage(this.toSafeUserMessage(err));
     }
@@ -458,6 +448,22 @@ export class ChatPanel implements vscode.Disposable {
             timestamp: Date.now(),
           },
         });
+        break;
+
+      case 'sub_agent_feedback':
+        if (!event.feedback.startsWith('[Verification unavailable')) {
+          this.postMessage({
+            type: 'addMessage',
+            payload: {
+              id: systemMsgId,
+              role: 'agent',
+              agentName: event.agentName,
+              content: event.feedback,
+              timestamp: Date.now(),
+              isSubAgentFeedback: true,
+            },
+          });
+        }
         break;
 
       case 'reflection_start':
@@ -628,4 +634,36 @@ export class ChatPanel implements vscode.Disposable {
 
     this.panel.dispose();
   }
+}
+
+/** Maps changed file names to the appropriate install command. Returns undefined if no dependency files changed. */
+function detectInstallCommand(changedFiles: string[]): string | undefined {
+  const fileNames = changedFiles.map((f) => f.split('/').pop() ?? f);
+
+  // Order matters: check lockfiles first (more specific), then manifests
+  if (fileNames.some((f) => f === 'package.json')) {
+    return 'npm install';
+  }
+  if (fileNames.some((f) => f === 'requirements.txt' || f === 'pyproject.toml')) {
+    return 'pip install -r requirements.txt';
+  }
+  if (fileNames.some((f) => f === 'Cargo.toml')) {
+    return 'cargo build';
+  }
+  if (fileNames.some((f) => f === 'go.mod')) {
+    return 'go mod download';
+  }
+  if (fileNames.some((f) => f === 'Gemfile')) {
+    return 'bundle install';
+  }
+  if (fileNames.some((f) => f === 'pom.xml')) {
+    return 'mvn dependency:resolve';
+  }
+  if (fileNames.some((f) => f === 'build.gradle' || f === 'build.gradle.kts')) {
+    return 'gradle dependencies';
+  }
+  if (fileNames.some((f) => f === 'composer.json')) {
+    return 'composer install';
+  }
+  return undefined;
 }

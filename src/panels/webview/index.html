@@ -523,7 +523,6 @@
     <div class="control-row">
       <label for="main-agent-select">Main Agent</label>
       <select id="main-agent-select">
-        <option value="copilot">GitHub Copilot</option>
         <option value="claude">Claude (Anthropic)</option>
         <option value="gpt">GPT (OpenAI)</option>
         <option value="gemini">Gemini (Google)</option>
@@ -535,10 +534,6 @@
       <span class="sub-agents-label">Sub Agents (verifiers)</span>
       <div id="runner-sub-agent-warning">⚠ Sub agents slow down Runner. Each verification adds a full API round-trip before analysis is shown.</div>
       <div id="sub-agents-grid">
-        <label class="agent-checkbox-item">
-          <input type="checkbox" name="sub-agent" value="copilot" />
-          <span>Copilot</span>
-        </label>
         <label class="agent-checkbox-item">
           <input type="checkbox" name="sub-agent" value="claude" />
           <span>Claude</span>
@@ -648,12 +643,37 @@
 
       sendBtn.addEventListener('click', handleSend);
 
-      // ── Main agent change: disable matching sub agent checkbox ───────────
-      function updateSubAgentCheckboxes() {
+      // ── Available agents set (updated on configLoaded) ───────────────────
+      /** @type {Set<string>} */
+      let availableAgentSet = new Set(['claude', 'gpt', 'gemini', 'deepseek']);
+
+      // ── Apply availability + same-as-main disabled state to all agent controls
+      function updateAgentControls() {
         const selectedMain = mainAgentSelect.value;
+
+        // Main agent select: disable unavailable options
+        Array.from(mainAgentSelect.options).forEach(function (opt) {
+          const unavailable = !availableAgentSet.has(opt.value);
+          opt.disabled = unavailable;
+          if (unavailable && opt.selected) {
+            // Pick first available
+            const first = Array.from(mainAgentSelect.options).find(function (o) {
+              return !o.disabled;
+            });
+            if (first) {
+              mainAgentSelect.value = first.value;
+            }
+          }
+        });
+
+        const resolvedMain = mainAgentSelect.value;
+
+        // Sub-agent checkboxes: disable if unavailable OR same as main
         document.querySelectorAll('input[name="sub-agent"]').forEach(function (cb) {
           const checkbox = /** @type {HTMLInputElement} */ (cb);
-          if (checkbox.value === selectedMain) {
+          const isMain = checkbox.value === resolvedMain;
+          const isUnavailable = !availableAgentSet.has(checkbox.value);
+          if (isMain || isUnavailable) {
             checkbox.checked = false;
             checkbox.disabled = true;
             checkbox.closest('.agent-checkbox-item').style.opacity = '0.4';
@@ -662,10 +682,11 @@
             checkbox.closest('.agent-checkbox-item').style.opacity = '1';
           }
         });
+
         updateRunnerWarning();
       }
 
-      mainAgentSelect.addEventListener('change', updateSubAgentCheckboxes);
+      mainAgentSelect.addEventListener('change', updateAgentControls);
 
       // ── Round select: show/hide run panel + warning ───────────────────────
       function updateRunnerWarning() {
@@ -938,7 +959,41 @@
             } else {
               configBanner.classList.remove('visible');
             }
+            availableAgentSet = new Set(message.payload.availableAgents || ['claude', 'gpt', 'gemini', 'deepseek']);
+            updateAgentControls();
             break;
+
+          case 'suggestInstall': {
+            const cmd = message.payload.command;
+            const msgEl = appendMessage({
+              id: 'suggest-install-' + Date.now(),
+              role: 'system',
+              content: '💡 Dependencies changed. Run in Runner round:',
+            });
+            // Add a clickable command chip
+            const chip = document.createElement('button');
+            chip.textContent = cmd;
+            chip.style.cssText = [
+              'display:inline-block',
+              'margin-top:6px',
+              'padding:3px 10px',
+              'background:var(--vscode-button-secondaryBackground)',
+              'color:var(--vscode-button-secondaryForeground)',
+              'border:none',
+              'border-radius:4px',
+              'cursor:pointer',
+              'font-family:var(--vscode-editor-font-family,monospace)',
+              'font-size:12px',
+            ].join(';');
+            chip.addEventListener('click', function () {
+              roundSelect.value = 'runner';
+              roundSelect.dispatchEvent(new Event('change'));
+              runCommandInput.value = cmd;
+              runPanel.classList.add('visible');
+            });
+            msgEl.querySelector('.message-body')?.appendChild(chip);
+            break;
+          }
 
           case 'executionStarted':
             appendMessage({
@@ -976,7 +1031,7 @@
       });
 
       // ── Init ───────────────────────────────────────────────────────────────
-      updateSubAgentCheckboxes();
+      updateAgentControls();
       vscode.postMessage({ type: 'requestConfig' });
     })();
   </script>
