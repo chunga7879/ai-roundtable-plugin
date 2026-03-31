@@ -169,4 +169,73 @@ Let me know if you want changes.
       expect(result).toHaveLength(50);
     });
   });
+
+  describe('DELETE: blocks', () => {
+    it('parses a single DELETE: line', () => {
+      const input = `DELETE: src/old/auth.ts`;
+      const result = parseFileChanges(input);
+      expect(result).toHaveLength(1);
+      expect(result[0].filePath).toBe('src/old/auth.ts');
+      expect(result[0].isDelete).toBe(true);
+      expect(result[0].content).toBe('');
+    });
+
+    it('parses DELETE: alongside FILE: blocks', () => {
+      const input = `
+FILE: src/new/auth.ts
+\`\`\`typescript
+export const auth = true;
+\`\`\`
+
+DELETE: src/old/auth.ts
+`;
+      const result = parseFileChanges(input);
+      expect(result).toHaveLength(2);
+      const fileChange = result.find((r) => !r.isDelete);
+      const deleteChange = result.find((r) => r.isDelete);
+      expect(fileChange?.filePath).toBe('src/new/auth.ts');
+      expect(deleteChange?.filePath).toBe('src/old/auth.ts');
+    });
+
+    it('rejects DELETE: paths with directory traversal', () => {
+      const input = `DELETE: ../../etc/passwd`;
+      const result = parseFileChanges(input);
+      expect(result).toHaveLength(0);
+    });
+
+    it('rejects DELETE: paths with .. in the middle', () => {
+      const input = `DELETE: src/../../../etc/shadow`;
+      const result = parseFileChanges(input);
+      expect(result).toHaveLength(0);
+    });
+
+    it('deduplicates DELETE: and FILE: for the same path', () => {
+      const input = `
+FILE: src/auth.ts
+\`\`\`typescript
+const x = 1;
+\`\`\`
+
+DELETE: src/auth.ts
+`;
+      const result = parseFileChanges(input);
+      // FILE: wins because it comes first; DELETE: is deduplicated
+      expect(result).toHaveLength(1);
+      expect(result[0].isDelete).toBeFalsy();
+    });
+
+    it('normalizes DELETE: path separators', () => {
+      const input = `DELETE: src\\old\\utils.ts`;
+      const result = parseFileChanges(input);
+      expect(result).toHaveLength(1);
+      expect(result[0].filePath).toBe('src/old/utils.ts');
+    });
+
+    it('strips leading ./ from DELETE: paths', () => {
+      const input = `DELETE: ./src/legacy.ts`;
+      const result = parseFileChanges(input);
+      expect(result).toHaveLength(1);
+      expect(result[0].filePath).toBe('src/legacy.ts');
+    });
+  });
 });

@@ -42,6 +42,7 @@ export interface FileChange {
   filePath: string;
   content: string;
   isNew: boolean;
+  isDelete?: boolean;
 }
 
 export interface AgentResponse {
@@ -102,7 +103,8 @@ export type WebviewToExtensionMessage =
   | { type: 'requestConfig' }
   | { type: 'configureProvider' }
   | { type: 'runCommand'; payload: { command: string; mainAgent: string; subAgents: string[] } }
-  | { type: 'runAgain' };
+  | { type: 'runAgain' }
+  | { type: 'executeCommand'; payload: { command: string } };
 
 export interface SendMessagePayload {
   userMessage: string;

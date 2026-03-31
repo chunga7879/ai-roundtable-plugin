@@ -61,6 +61,19 @@ Choose **GitHub Copilot** (default) or **API Keys**. If you choose API Keys, you
 4. Type your request and press `Enter`
 5. Review the response — if FILE: blocks are present, a **Proposed Changes** panel appears
 6. Click a file to preview the diff, then **Apply All Changes** or **Discard**
+7. If dependency files changed (e.g. `package.json`), an approve/deny dialog offers to run the install command automatically
+
+### Action buttons
+
+When an AI response ends with a question (e.g. "Would you like me to apply fixes?"), it renders as clickable buttons instead of plain text. Clicking a button re-runs the round with that label as your message — sub-agent verification is skipped for these confirmation turns.
+
+### Shell commands
+
+When the AI needs to run a command to complete its task, it outputs a `RUN: <command>` line which renders as a clickable **▶ command** button. Clicking shows an approve/deny dialog before anything executes. If the command fails, the output is automatically fed to Runner AI for analysis.
+
+### File deletions
+
+When the AI moves or removes a file, it outputs `DELETE: path/to/file` alongside any `FILE:` blocks. Deleted files appear with a red **DEL** badge in the Proposed Changes panel.
 
 ### Round types
 
@@ -69,15 +82,15 @@ Choose **GitHub Copilot** (default) or **API Keys**. If you choose API Keys, you
 | **Requirements** | Turning vague ideas into precise acceptance criteria |
 | **Architect** | System design, tech stack decisions, API contracts |
 | **Developer** | Writing complete, production-ready code |
-| **Reviewer** | Adversarial code review with OWASP security checks |
+| **Reviewer** | Adversarial code review with OWASP security checks — two-step: findings first, fixes on confirm |
 | **QA** | Generating unit, integration, and security tests |
 | **DevOps** | Dockerfile, CI/CD pipelines, environment configuration |
-| **Runner** | Running a terminal command and getting AI analysis of the output |
+| **Runner** | Running a terminal command — AI analysis triggered only on failure |
 | **Documentation** | Generating README, API docs, CHANGELOG |
 
 ### Running a shell command (Runner round)
 
-The Runner round can execute a terminal command in your workspace root and automatically feed the output to the AI for analysis. Use the `runCommand` message from the webview UI, or run the round manually by pasting the output into the chat.
+Select the Runner round, type a command in the **Run Command** input, and press **Run**. The command runs in your workspace root with a 60-second timeout. If it exits with a non-zero code, the output is automatically sent to Runner AI for diagnosis and fix suggestions. Use **Run Again** to re-execute after applying fixes.
 
 ---
 
@@ -115,7 +128,7 @@ tests/
 Ensure the GitHub Copilot extension is installed, you are signed in, and your subscription is active. Run `GitHub Copilot: Sign In` from the command palette.
 
 **"No API key configured for claude"**
-Run `AI Roundtable: Configure Provider`, choose API Keys, and enter your Anthropic key. If the panel was already open, close and reopen it to reload config.
+Run `AI Roundtable: Configure Provider`, choose API Keys, and enter your Anthropic key. The panel updates automatically — no need to reopen it.
 
 **Extension does not activate**
 Check that VS Code is `^1.90.0`. Run `Developer: Show Running Extensions` to confirm the extension is listed. If compile errors exist, run `npm run compile` and reload.
@@ -135,4 +148,5 @@ This can happen if the Copilot API is temporarily unresponsive. The extension wi
 - **Max 20 workspace files / 200 KB context** — large projects will have files truncated or omitted. Open the most relevant files before sending a request.
 - **Runner round timeout: 60 seconds** — long-running commands (e.g. full test suites) may be cut off.
 - **Max 50 file changes per response** — responses proposing more than 50 files will have the excess silently dropped.
+- **Runner AI analysis only runs on failure** — if a command exits with code 0, no AI analysis is triggered.
 

@@ -6,6 +6,8 @@ import { WorkspaceError } from '../errors';
 const FILE_BLOCK_PATTERN =
   /^FILE:\s*(.+?)\s*\n```(?:\w+)?\n([\s\S]*?)```/gm;
 
+const DELETE_BLOCK_PATTERN = /^DELETE:\s*(.+?)\s*$/gm;
+
 /** Maximum number of file changes accepted from a single agent response. */
 const MAX_FILE_CHANGES = 50;
 
@@ -17,6 +19,19 @@ export class WorkspaceWriterError extends WorkspaceError {
   }
 }
 
+function normalizePath(rawPath: string): string | null {
+  const normalized = rawPath
+    .replace(/\\/g, '/')
+    .replace(/^\.\//, '')
+    .replace(/^\//, '');
+
+  if (!normalized) return null;
+  if (normalized.includes('..')) return null;
+  if (path.isAbsolute(normalized)) return null;
+
+  return normalized;
+}
+
 export function parseFileChanges(agentResponse: string): FileChange[] {
   if (typeof agentResponse !== 'string') {
     return [];
@@ -25,6 +40,7 @@ export function parseFileChanges(agentResponse: string): FileChange[] {
   const changes: FileChange[] = [];
   const seen = new Set<string>();
 
+  // Parse FILE: blocks
   let match: RegExpExecArray | null;
   FILE_BLOCK_PATTERN.lastIndex = 0;
 
@@ -33,34 +49,38 @@ export function parseFileChanges(agentResponse: string): FileChange[] {
       break;
     }
 
-    const rawPath = match[1].trim();
-    const content = match[2];
-
-    // Normalize path separators and remove leading slashes or ./
-    const normalizedPath = rawPath
-      .replace(/\\/g, '/')
-      .replace(/^\.\//, '')
-      .replace(/^\//, '');
-
+    const normalizedPath = normalizePath(match[1].trim());
     if (!normalizedPath || seen.has(normalizedPath)) {
-      continue;
-    }
-
-    // Security: reject paths with directory traversal
-    if (normalizedPath.includes('..')) {
-      continue;
-    }
-
-    // Security: reject absolute paths that slipped through
-    if (path.isAbsolute(normalizedPath)) {
       continue;
     }
 
     seen.add(normalizedPath);
     changes.push({
       filePath: normalizedPath,
-      content,
+      content: match[2],
       isNew: false, // Determined at write time by checking if file exists
+    });
+  }
+
+  // Parse DELETE: lines
+  DELETE_BLOCK_PATTERN.lastIndex = 0;
+
+  while ((match = DELETE_BLOCK_PATTERN.exec(agentResponse)) !== null) {
+    if (changes.length >= MAX_FILE_CHANGES) {
+      break;
+    }
+
+    const normalizedPath = normalizePath(match[1].trim());
+    if (!normalizedPath || seen.has(normalizedPath)) {
+      continue;
+    }
+
+    seen.add(normalizedPath);
+    changes.push({
+      filePath: normalizedPath,
+      content: '',
+      isNew: false,
+      isDelete: true,
     });
   }
 
@@ -118,37 +138,38 @@ export class WorkspaceWriter {
     }
 
     if (fileChanges.length === 0) {
-      return { appliedFiles: [], newFiles: [] };
+      return { appliedFiles: [], newFiles: [], deletedFiles: [] };
     }
 
     const workspaceRoot = workspaceFolders[0].uri;
     const edit = new vscode.WorkspaceEdit();
     const appliedFiles: string[] = [];
     const newFiles: string[] = [];
+    const deletedFiles: string[] = [];
 
     for (const change of fileChanges) {
-      const targetUri = vscode.Uri.joinPath(
-        workspaceRoot,
-        change.filePath,
-      );
+      const targetUri = vscode.Uri.joinPath(workspaceRoot, change.filePath);
+
+      if (change.isDelete) {
+        const fileExists = await this.fileExists(targetUri);
+        if (fileExists) {
+          edit.deleteFile(targetUri, { ignoreIfNotExists: true });
+          deletedFiles.push(change.filePath);
+        }
+        continue;
+      }
 
       const fileExists = await this.fileExists(targetUri);
       const encodedContent = Buffer.from(change.content, 'utf-8');
 
       if (fileExists) {
-        // Replace entire file content
         const fullRange = new vscode.Range(
           new vscode.Position(0, 0),
           new vscode.Position(Number.MAX_SAFE_INTEGER, 0),
         );
-        edit.replace(
-          targetUri,
-          fullRange,
-          change.content,
-        );
+        edit.replace(targetUri, fullRange, change.content);
         appliedFiles.push(change.filePath);
       } else {
-        // Create new file (including parent directories)
         edit.createFile(targetUri, {
           overwrite: false,
           ignoreIfExists: false,
@@ -165,7 +186,7 @@ export class WorkspaceWriter {
       );
     }
 
-    return { appliedFiles, newFiles };
+    return { appliedFiles, newFiles, deletedFiles };
   }
 
   async applySingleChange(fileChange: FileChange): Promise<void> {
@@ -223,4 +244,5 @@ export class WorkspaceWriter {
 export interface ApplyResult {
   appliedFiles: string[];
   newFiles: string[];
+  deletedFiles: string[];
 }

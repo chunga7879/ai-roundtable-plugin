@@ -97,13 +97,23 @@ export class AgentRunner {
         agentNames: uniqueSubAgents,
       });
 
+      // Build prior user turns as context for sub-agents
+      const priorUserTurns = conversationHistory
+        .filter((t) => t.role === 'user')
+        .map((t, i) => `[User request ${i + 1}]: ${t.content}`)
+        .join('\n');
+
+      const subAgentUserMessage = priorUserTurns
+        ? `Prior user requests for context:\n${priorUserTurns}\n\nCurrent request:\n${fullUserMessage}`
+        : `Please verify the primary agent's response for the following request:\n\n${fullUserMessage}`;
+
       const verificationPromises = uniqueSubAgents.map(async (agentName) => {
         try {
           const feedback = await this.callAgent(
             agentName,
             {
               systemPrompt: verificationSystemPrompt,
-              userMessage: `Please verify the primary agent's response for the following request:\n\n${fullUserMessage}`,
+              userMessage: subAgentUserMessage,
             },
             cancellationToken,
           );

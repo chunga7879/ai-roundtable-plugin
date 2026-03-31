@@ -224,7 +224,11 @@ If another AI has written code, identify specific lines to improve and rewrite t
   - New migration files → flag as HITL_REQUIRED
   - Modifications to .env or .env.example → flag as HITL_REQUIRED
   IGNORE auto-generated lockfiles — package-lock.json, yarn.lock, pnpm-lock.yaml, Cargo.lock, poetry.lock, go.sum are never grounds for HITL_REQUIRED.
-  If any triggered: stop review, output "⛔ HITL_REQUIRED: [triggering file]" and do not produce APPROVED/CHANGES_REQUIRED.
+  If any triggered:
+    1. Output "⛔ HITL_REQUIRED: [triggering file]"
+    2. Explain in one sentence WHY this requires human review (e.g. "New dependency introduced — verify it has no known vulnerabilities and is intentional.")
+    3. List the specific actions the user should take before proceeding (e.g. "Run npm audit, confirm the package is intentional, then re-run the Reviewer round.")
+    4. Do not produce APPROVED/CHANGES_REQUIRED — the review is paused, not failed.
 
 **Review Checklist**:
 
@@ -276,8 +280,10 @@ Performance:
 Mark categories as 'None found ✅' only after explicitly checking each item. If disagreeing with another AI's finding, prove it with a concrete counter-example.
 
 **Two-step output rule** (applies only when responding directly to the user, not when acting as a verifier):
-- If this is your FIRST response (no prior conversation history): output findings only — no FILE: blocks. End with: "Would you like me to apply these fixes?"
-- If the user has confirmed they want fixes (e.g. "yes", "fix it", "apply"): output all corrections using FILE: format.`,
+- If this is your FIRST response (no prior conversation history): output findings only — no FILE: blocks. End with these action buttons:
+  ACTION: Apply fixes
+  ACTION: Skip
+- If the user clicked "Apply fixes": output all corrections using FILE: format.`,
 
   [RoundType.QA]: `You are a Principal QA Engineer who treats tests as a first-class design artifact. Tests you write must catch real bugs, run in CI, and serve as living documentation.
 
@@ -524,6 +530,21 @@ export function buildSystemPrompt(roundType: RoundType): string {
     'Follow the role instructions below precisely and produce concrete output.',
     'Respond in the same language the user used in their requirement.',
     '',
+    'FILE DELETIONS: If a file must be removed (e.g. when moving a file to a new location), output it on its own line using EXACTLY this format:',
+    'DELETE: path/to/file.ts',
+    'Only delete files that are being replaced or are no longer needed. Never delete files that are not directly related to the task.',
+    '',
+    'SHELL COMMANDS: If completing your task requires running a shell command (e.g. install dependencies, run a build, execute a script), output it on its own line using EXACTLY this format:',
+    'RUN: <command>',
+    'Example: RUN: npm install',
+    'The user will be shown an approve/deny dialog before any command runs. Only suggest commands that are safe and directly necessary for the task.',
+    '',
+    'ACTION BUTTONS: When you want the user to confirm a next step or choose between options, output each option on its own line using EXACTLY this format:',
+    'ACTION: <button label>',
+    'Example: ACTION: Apply fixes',
+    'Example: ACTION: Skip for now',
+    'Use this instead of asking "Would you like me to..." in plain text. The user clicks a button — no typing needed. Clicking an action button will re-run the round without sub-agent verification.',
+    '',
     `Your role this round:`,
     roleDescription,
   ].join('\n');
@@ -587,5 +608,7 @@ export function buildReflectionPrompt(
     '',
     'Now produce your FINAL refined response.',
     'Your final response should be complete and self-contained — not a list of changes.',
+    'IMPORTANT: Your role-specific output rules still apply to this final response.',
+    'For example, if your role has a two-step rule (analysis first, fixes only after user confirmation), follow it here too.',
   ].join('\n');
 }

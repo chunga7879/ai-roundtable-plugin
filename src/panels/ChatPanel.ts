@@ -74,6 +74,12 @@ export class ChatPanel implements vscode.Disposable {
     this.panel.onDidDispose(() => this.dispose(), undefined, this.disposables);
   }
 
+  static async refreshConfig(): Promise<void> {
+    if (ChatPanel.instance) {
+      await ChatPanel.instance.handleRequestConfig();
+    }
+  }
+
   static createOrReveal(
     extensionUri: vscode.Uri,
     configManager: ConfigManager,
@@ -204,6 +210,22 @@ export class ChatPanel implements vscode.Disposable {
         }
         break;
 
+      case 'executeCommand': {
+        const execPayload = msg.payload as { command?: unknown };
+        if (typeof execPayload?.command === 'string' && execPayload.command.trim().length > 0) {
+          const command = execPayload.command.trim();
+          const choice = await vscode.window.showWarningMessage(
+            `Run this command in your workspace?\n\n${command}`,
+            { modal: true },
+            'Run',
+          );
+          if (choice === 'Run') {
+            await this.handleRunCommand(command, this.lastRunMainAgent, this.lastRunSubAgents);
+          }
+        }
+        break;
+      }
+
       default:
         // Unknown message types are silently ignored
         break;
@@ -329,6 +351,9 @@ export class ChatPanel implements vscode.Disposable {
           result.newFiles.length > 0
             ? `Created: ${result.newFiles.join(', ')}`
             : '',
+          result.deletedFiles.length > 0
+            ? `Deleted: ${result.deletedFiles.join(', ')}`
+            : '',
         ]
           .filter(Boolean)
           .join('\n') || 'No changes applied.';
@@ -343,11 +368,18 @@ export class ChatPanel implements vscode.Disposable {
         },
       });
 
-      // Detect dependency file changes and suggest install command
+      // Detect dependency file changes and offer to run install command (exclude deletions)
       const allChanged = [...result.appliedFiles, ...result.newFiles];
       const installCommand = detectInstallCommand(allChanged);
       if (installCommand) {
-        this.postMessage({ type: 'suggestInstall', payload: { command: installCommand } });
+        const choice = await vscode.window.showWarningMessage(
+          `Dependency files changed. Run install command?\n\n${installCommand}`,
+          { modal: true },
+          'Run',
+        );
+        if (choice === 'Run') {
+          await this.handleRunCommand(installCommand, this.lastRunMainAgent, this.lastRunSubAgents);
+        }
       }
     } catch (err) {
       this.postErrorMessage(this.toSafeUserMessage(err));
@@ -363,10 +395,16 @@ export class ChatPanel implements vscode.Disposable {
   }
 
   private async handleRunCommand(command: string, mainAgent: AgentName, subAgents: AgentName[]): Promise<void> {
+    // Guard: prevent concurrent executions
+    if (this.currentCancellationTokenSource) {
+      return;
+    }
+
     this.lastRunCommand = command;
     this.lastRunMainAgent = mainAgent;
     this.lastRunSubAgents = subAgents;
 
+    this.postMessage({ type: 'setLoading', payload: { loading: true } });
     this.postMessage({ type: 'executionStarted', payload: { command } });
 
     const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
@@ -380,10 +418,13 @@ export class ChatPanel implements vscode.Disposable {
     });
 
     this.postMessage({ type: 'executionComplete', payload: { command, output, exitCode } });
+    this.postMessage({ type: 'setLoading', payload: { loading: false } });
 
-    // Auto-feed output to Runner AI for analysis
-    const analysisMessage = `[Execution Output]\nCommand: ${command}\nExit code: ${exitCode}\n\n${output}`;
-    await this.handleSendMessage(analysisMessage, RoundType.RUNNER, mainAgent, subAgents);
+    // Only feed to Runner AI if the command failed
+    if (exitCode !== 0) {
+      const analysisMessage = `[Execution Output]\nCommand: ${command}\nExit code: ${exitCode}\n\n${output}`;
+      await this.handleSendMessage(analysisMessage, RoundType.RUNNER, mainAgent, subAgents);
+    }
   }
 
   private async handleRequestConfig(): Promise<void> {

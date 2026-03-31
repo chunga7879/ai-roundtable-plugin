@@ -304,6 +304,10 @@
       background-color: var(--vscode-gitDecoration-addedResourceForeground, #73c991);
       color: var(--vscode-editor-background);
     }
+    .file-change-badge.deleted {
+      background-color: var(--vscode-gitDecoration-deletedResourceForeground, #f14c4c);
+      color: var(--vscode-editor-background);
+    }
     .file-change-path {
       font-size: var(--font-size-sm);
       font-family: var(--vscode-editor-font-family, monospace);
@@ -479,6 +483,50 @@
     #send-btn:disabled {
       opacity: 0.5;
       cursor: not-allowed;
+    }
+
+    /* ── RUN command chip ── */
+    .run-command-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--spacing-xs);
+      margin-top: var(--spacing-xs);
+      padding: 3px var(--spacing-sm);
+      background: var(--vscode-button-secondaryBackground);
+      color: var(--vscode-button-secondaryForeground);
+      border: 1px solid var(--vscode-button-border, transparent);
+      border-radius: var(--border-radius);
+      cursor: pointer;
+      font-family: var(--vscode-editor-font-family, monospace);
+      font-size: var(--font-size-sm);
+    }
+    .run-command-chip:hover {
+      background: var(--vscode-button-secondaryHoverBackground);
+    }
+    .run-command-chip-icon {
+      font-style: normal;
+    }
+
+    /* ── ACTION buttons ── */
+    .action-buttons-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--spacing-sm);
+      margin-top: var(--spacing-sm);
+    }
+    .action-btn-inline {
+      padding: var(--spacing-xs) var(--spacing-md);
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+      border: none;
+      border-radius: var(--border-radius);
+      cursor: pointer;
+      font-family: inherit;
+      font-size: var(--font-size-sm);
+      font-weight: 500;
+    }
+    .action-btn-inline:hover {
+      background: var(--vscode-button-hoverBackground);
     }
 
     /* ── Scrollbar styling ── */
@@ -822,11 +870,116 @@
 
         const bodyEl = document.createElement('div');
         bodyEl.className = 'message-body ' + (msg.isSubAgentFeedback ? 'sub-agent' : msg.role);
-        bodyEl.textContent = msg.content;
+
+        // For agent messages, detect RUN: lines and render as executable buttons
+        if (msg.role === 'agent') {
+          renderAgentContent(bodyEl, msg.content);
+        } else {
+          bodyEl.textContent = msg.content;
+        }
+
         wrapper.appendChild(bodyEl);
 
         messagesEl.appendChild(wrapper);
         scrollToBottom();
+      }
+
+      /**
+       * Renders agent message content, converting RUN: lines into executable buttons.
+       * @param {HTMLElement} container
+       * @param {string} content
+       */
+      function renderAgentContent(container, content) {
+        const RUN_PREFIX = 'RUN: ';
+        const ACTION_PREFIX = 'ACTION: ';
+        const lines = content.split('\n');
+        /** @type {string[]} */
+        let textBuffer = [];
+        /** @type {string[]} */
+        let actionBuffer = [];
+
+        function flushText() {
+          if (textBuffer.length > 0) {
+            const span = document.createElement('span');
+            span.textContent = textBuffer.join('\n');
+            container.appendChild(span);
+            textBuffer = [];
+          }
+        }
+
+        function flushActions() {
+          if (actionBuffer.length > 0) {
+            const row = document.createElement('div');
+            row.className = 'action-buttons-row';
+            for (const label of actionBuffer) {
+              const btn = document.createElement('button');
+              btn.className = 'action-btn-inline';
+              btn.textContent = label;
+              btn.addEventListener('click', function () {
+                vscode.postMessage({
+                  type: 'sendMessage',
+                  payload: {
+                    userMessage: label,
+                    roundType: roundSelect.value,
+                    mainAgent: mainAgentSelect.value,
+                    subAgents: [], // action button clicks skip sub-agent verification
+                  },
+                });
+              });
+              row.appendChild(btn);
+            }
+            container.appendChild(row);
+            actionBuffer = [];
+          }
+        }
+
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          if (line.startsWith(RUN_PREFIX)) {
+            flushText();
+            flushActions();
+            const command = line.slice(RUN_PREFIX.length).trim();
+            if (command.length > 0) {
+              const chip = document.createElement('button');
+              chip.className = 'run-command-chip';
+              chip.title = 'Click to run with approve/deny';
+
+              const icon = document.createElement('span');
+              icon.className = 'run-command-chip-icon';
+              icon.textContent = '\u25B6';
+              chip.appendChild(icon);
+
+              const cmdLabel = document.createElement('span');
+              cmdLabel.textContent = command;
+              chip.appendChild(cmdLabel);
+
+              chip.addEventListener('click', function () {
+                vscode.postMessage({
+                  type: 'executeCommand',
+                  payload: { command: command },
+                });
+              });
+
+              container.appendChild(document.createElement('br'));
+              container.appendChild(chip);
+              container.appendChild(document.createElement('br'));
+            }
+          } else if (line.startsWith(ACTION_PREFIX)) {
+            flushText();
+            const label = line.slice(ACTION_PREFIX.length).trim();
+            if (label.length > 0) {
+              actionBuffer.push(label);
+            }
+          } else {
+            // Non-action line after collecting actions — flush action group first
+            if (actionBuffer.length > 0) {
+              flushActions();
+            }
+            textBuffer.push(line);
+          }
+        }
+        flushText();
+        flushActions();
       }
 
       /**
@@ -898,8 +1051,9 @@
           item.title = 'Click to preview diff';
 
           const badge = document.createElement('span');
-          badge.className = 'file-change-badge ' + (change.isNew ? 'new' : 'modified');
-          badge.textContent = change.isNew ? 'NEW' : 'MOD';
+          const badgeClass = change.isDelete ? 'deleted' : change.isNew ? 'new' : 'modified';
+          badge.className = 'file-change-badge ' + badgeClass;
+          badge.textContent = change.isDelete ? 'DEL' : change.isNew ? 'NEW' : 'MOD';
 
           const pathEl = document.createElement('span');
           pathEl.className = 'file-change-path';

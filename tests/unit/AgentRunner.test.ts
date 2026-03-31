@@ -412,5 +412,81 @@ describe('AgentRunner', () => {
       const subAgentCall = copilotProvider.sendRequest.mock.calls[1];
       expect(subAgentCall[0].conversationHistory).toBeUndefined();
     });
+
+    it('includes prior user turns in sub-agent verification message', async () => {
+      let callCount = 0;
+      const copilotProvider = {
+        sendRequest: jest.fn().mockImplementation(() => {
+          callCount++;
+          if (callCount === 1) return Promise.resolve('Main response');
+          if (callCount === 2) return Promise.resolve('Sub feedback');
+          return Promise.resolve('Reflected');
+        }),
+        isAvailable: jest.fn().mockResolvedValue(true),
+        invalidateModelCache: jest.fn(),
+      };
+
+      const runner = new AgentRunner({
+        copilotProvider: copilotProvider as never,
+        apiKeyProvider: makeApiKeyProvider() as never,
+        providerMode: ProviderMode.COPILOT,
+      });
+
+      await runner.runRound(
+        makeRoundRequest({
+          subAgents: [AgentName.GPT],
+          userMessage: 'Add error handling',
+          conversationHistory: [
+            { role: 'user' as const, content: 'Build a TODO app' },
+            { role: 'assistant' as const, content: 'Here is the implementation...' },
+          ],
+        }),
+        makeCancellationToken(),
+        jest.fn(),
+      );
+
+      // Sub-agent user message should include prior user turns but not assistant turns
+      const subAgentCall = copilotProvider.sendRequest.mock.calls[1];
+      const subAgentUserMessage = subAgentCall[0].userMessage as string;
+      expect(subAgentUserMessage).toContain('Build a TODO app');
+      expect(subAgentUserMessage).not.toContain('Here is the implementation');
+      expect(subAgentUserMessage).toContain('Add error handling');
+    });
+
+    it('sends plain verification message when no prior conversation history exists', async () => {
+      let callCount = 0;
+      const copilotProvider = {
+        sendRequest: jest.fn().mockImplementation(() => {
+          callCount++;
+          if (callCount === 1) return Promise.resolve('Main response');
+          if (callCount === 2) return Promise.resolve('Sub feedback');
+          return Promise.resolve('Reflected');
+        }),
+        isAvailable: jest.fn().mockResolvedValue(true),
+        invalidateModelCache: jest.fn(),
+      };
+
+      const runner = new AgentRunner({
+        copilotProvider: copilotProvider as never,
+        apiKeyProvider: makeApiKeyProvider() as never,
+        providerMode: ProviderMode.COPILOT,
+      });
+
+      await runner.runRound(
+        makeRoundRequest({
+          subAgents: [AgentName.GPT],
+          userMessage: 'Build a TODO app',
+          conversationHistory: [],
+        }),
+        makeCancellationToken(),
+        jest.fn(),
+      );
+
+      const subAgentCall = copilotProvider.sendRequest.mock.calls[1];
+      const subAgentUserMessage = subAgentCall[0].userMessage as string;
+      expect(subAgentUserMessage).toContain('Build a TODO app');
+      // No "Prior user requests" prefix when history is empty
+      expect(subAgentUserMessage).not.toContain('Prior user requests');
+    });
   });
 });

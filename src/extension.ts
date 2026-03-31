@@ -232,7 +232,9 @@ export async function activate(
     }),
 
     vscode.commands.registerCommand(COMMANDS.CONFIGURE_PROVIDER, () => {
-      void configManager.configureProvider().catch((err: unknown) => {
+      void configManager.configureProvider().then(() => {
+        return ChatPanel.refreshConfig();
+      }).catch((err: unknown) => {
         void vscode.window.showErrorMessage(
           `AI Roundtable: Failed to configure provider. ${err instanceof Error ? err.message : 'Unknown error.'}`,
         );
