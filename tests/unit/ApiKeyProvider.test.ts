@@ -142,7 +142,7 @@ describe('ApiKeyProvider — Claude', () => {
     });
     const p = new ApiKeyProvider({ anthropicApiKey: 'sk-ant' });
     const result = await p.sendRequest(AgentName.CLAUDE, defaultOpts);
-    expect(result).toBe('Hello from Claude');
+    expect(result.content).toBe('Hello from Claude');
   });
 
   it('throws ApiKeyProviderError when anthropicApiKey is missing', async () => {
@@ -220,7 +220,7 @@ describe('ApiKeyProvider — OpenAI', () => {
     });
     const p = new ApiKeyProvider({ openaiApiKey: 'sk-openai' });
     const result = await p.sendRequest(AgentName.GPT, defaultOpts);
-    expect(result).toBe('Hello from GPT');
+    expect(result.content).toBe('Hello from GPT');
   });
 
   it('throws ApiKeyProviderError when openaiApiKey is missing', async () => {
@@ -277,7 +277,7 @@ describe('ApiKeyProvider — Gemini', () => {
     });
     const p = new ApiKeyProvider({ googleApiKey: 'goog-key' });
     const result = await p.sendRequest(AgentName.GEMINI, defaultOpts);
-    expect(result).toBe('Hello from Gemini');
+    expect(result.content).toBe('Hello from Gemini');
   });
 
   it('throws ApiKeyProviderError when googleApiKey is missing', async () => {
@@ -341,7 +341,7 @@ describe('ApiKeyProvider — DeepSeek', () => {
     });
     const p = new ApiKeyProvider({ deepseekApiKey: 'ds-key' });
     const result = await p.sendRequest(AgentName.DEEPSEEK, defaultOpts);
-    expect(result).toBe('Hello from DeepSeek');
+    expect(result.content).toBe('Hello from DeepSeek');
   });
 
   it('throws ApiKeyProviderError when deepseekApiKey is missing', async () => {

@@ -7,6 +7,9 @@ import type {
   RoundRequest,
   RoundResult,
   SubAgentVerification,
+  ToolCall,
+  ToolResult,
+  TokenUsage,
 } from '../types';
 import { ProviderMode } from '../types';
 import {
@@ -19,6 +22,8 @@ import { CopilotProviderError } from './CopilotProvider';
 import type { ApiKeyProvider } from './ApiKeyProvider';
 import { ApiKeyProviderError } from './ApiKeyProvider';
 import { parseFileChanges } from '../workspace/WorkspaceWriter';
+import type { WorkspaceReader } from '../workspace/WorkspaceReader';
+import { MAX_TOOL_CALLS } from '../workspace/WorkspaceReader';
 import { RoundtableError } from '../errors';
 
 export class AgentRunnerError extends RoundtableError {
@@ -32,23 +37,28 @@ interface AgentRunnerDependencies {
   copilotProvider: CopilotProvider;
   apiKeyProvider: ApiKeyProvider;
   providerMode: ProviderMode;
+  workspaceReader: WorkspaceReader;
 }
 
 interface CallAgentOptions {
   systemPrompt: string;
   userMessage: string;
   conversationHistory?: ConversationTurn[];
+  onChunk?: (chunk: string) => void;
+  onToolCall?: (toolCall: ToolCall) => Promise<ToolResult>;
 }
 
 export class AgentRunner {
   private readonly copilotProvider: CopilotProvider;
   private readonly apiKeyProvider: ApiKeyProvider;
   private readonly providerMode: ProviderMode;
+  private readonly workspaceReader: WorkspaceReader;
 
   constructor(deps: AgentRunnerDependencies) {
     this.copilotProvider = deps.copilotProvider;
     this.apiKeyProvider = deps.apiKeyProvider;
     this.providerMode = deps.providerMode;
+    this.workspaceReader = deps.workspaceReader;
   }
 
   async runRound(
@@ -61,19 +71,59 @@ export class AgentRunner {
 
     const systemPrompt = buildSystemPrompt(roundType);
 
-    const contextSection = this.buildContextSection(workspaceContext);
-    const fullUserMessage = contextSection
-      ? `${contextSection}\n\n---\n\nUser Request:\n${userMessage}`
+    // Build initial user message: file list only (AI reads content via tool calls)
+    const fileListSection = this.buildFileListSection(workspaceContext);
+    const fullUserMessage = fileListSection
+      ? `${fileListSection}\n\n---\n\nUser Request:\n${userMessage}`
       : userMessage;
 
-    // Step 1: Main agent initial response
+    // Track files read during main agent tool calls — pass to sub-agents as resolved context
+    const resolvedFiles: Array<{ path: string; content: string }> = [];
+    let toolCallCount = 0;
+
+    const makeToolHandler = (): ((toolCall: ToolCall) => Promise<ToolResult>) => {
+      return async (toolCall: ToolCall): Promise<ToolResult> => {
+        if (toolCallCount >= MAX_TOOL_CALLS) {
+          return {
+            id: toolCall.id,
+            content: `Tool call limit (${MAX_TOOL_CALLS}) reached. Work with the files already provided.`,
+            isError: true,
+          };
+        }
+        toolCallCount++;
+        onProgress({ type: 'tool_read', agentName: mainAgent, filePath: toolCall.filePath });
+        const result = await this.workspaceReader.readFileForTool(toolCall.filePath);
+        if (!result.isError) {
+          resolvedFiles.push({ path: toolCall.filePath, content: result.content });
+        }
+        return { id: toolCall.id, content: result.content, isError: result.isError };
+      };
+    };
+
+    // Accumulate token usage across all calls
+    const totalUsage: TokenUsage = { inputTokens: 0, outputTokens: 0 };
+    const addUsage = (usage?: TokenUsage) => {
+      if (usage) {
+        totalUsage.inputTokens += usage.inputTokens;
+        totalUsage.outputTokens += usage.outputTokens;
+      }
+    };
+
+    // Step 1: Main agent initial response (with tool calls for file reading)
     onProgress({ type: 'main_agent_start', agentName: mainAgent });
 
-    const mainAgentResponse = await this.callAgent(
+    const { content: mainAgentResponse, usage: mainUsage } = await this.callAgent(
       mainAgent,
-      { systemPrompt, userMessage: fullUserMessage, conversationHistory },
+      {
+        systemPrompt,
+        userMessage: fullUserMessage,
+        conversationHistory,
+        onChunk: (chunk) => onProgress({ type: 'main_agent_chunk', agentName: mainAgent, chunk }),
+        onToolCall: makeToolHandler(),
+      },
       cancellationToken,
     );
+    addUsage(mainUsage);
 
     // Propagate cancellation immediately after each await
     if (cancellationToken.isCancellationRequested) {
@@ -103,13 +153,24 @@ export class AgentRunner {
         .map((t, i) => `[User request ${i + 1}]: ${t.content}`)
         .join('\n');
 
-      const subAgentUserMessage = priorUserTurns
+      // Include files the main agent read via tool calls so sub-agents have the same context
+      const resolvedFilesSection = resolvedFiles.length > 0
+        ? `[FILES READ BY PRIMARY AGENT]\n\n${resolvedFiles
+            .map((f) => `FILE: ${f.path}\n\`\`\`\n${f.content}\n\`\`\``)
+            .join('\n\n')}\n\n[END FILES]`
+        : '';
+
+      const baseMessage = priorUserTurns
         ? `Prior user requests for context:\n${priorUserTurns}\n\nCurrent request:\n${fullUserMessage}`
         : `Please verify the primary agent's response for the following request:\n\n${fullUserMessage}`;
 
+      const subAgentUserMessage = resolvedFilesSection
+        ? `${resolvedFilesSection}\n\n${baseMessage}`
+        : baseMessage;
+
       const verificationPromises = uniqueSubAgents.map(async (agentName) => {
         try {
-          const feedback = await this.callAgent(
+          const { content: feedback, usage: subUsage } = await this.callAgent(
             agentName,
             {
               systemPrompt: verificationSystemPrompt,
@@ -117,6 +178,7 @@ export class AgentRunner {
             },
             cancellationToken,
           );
+          addUsage(subUsage);
           return { agentName, feedback };
         } catch (err) {
           if (err instanceof vscode.CancellationError) {
@@ -171,14 +233,17 @@ export class AgentRunner {
         })),
       );
 
-      reflectedResponse = await this.callAgent(
+      const { content: reflected, usage: reflectUsage } = await this.callAgent(
         mainAgent,
         {
           systemPrompt,
           userMessage: reflectionUserMessage,
+          onChunk: (chunk) => onProgress({ type: 'reflection_chunk', agentName: mainAgent, chunk }),
         },
         cancellationToken,
       );
+      reflectedResponse = reflected;
+      addUsage(reflectUsage);
 
       if (cancellationToken.isCancellationRequested) {
         throw new vscode.CancellationError();
@@ -192,11 +257,14 @@ export class AgentRunner {
     // Step 4: Parse file changes from the final response
     const fileChanges = parseFileChanges(reflectedResponse);
 
+    const hasUsage = totalUsage.inputTokens > 0 || totalUsage.outputTokens > 0;
+
     return {
       mainAgentResponse,
       subAgentVerifications,
       reflectedResponse,
       fileChanges,
+      tokenUsage: hasUsage ? totalUsage : undefined,
     };
   }
 
@@ -204,14 +272,15 @@ export class AgentRunner {
     agentName: AgentName,
     options: CallAgentOptions,
     cancellationToken: vscode.CancellationToken,
-  ): Promise<string> {
+  ): Promise<{ content: string; usage?: TokenUsage }> {
     try {
       if (this.providerMode === ProviderMode.COPILOT) {
-        return await this.copilotProvider.sendRequest(
-          options,
+        const content = await this.copilotProvider.sendRequest(
+          { ...options, onChunk: options.onChunk },
           agentName,
           cancellationToken,
         );
+        return { content };
       }
 
       // API key mode — route to the appropriate provider
@@ -221,10 +290,14 @@ export class AgentRunner {
         );
       }
 
-      return await this.apiKeyProvider.sendRequest(agentName, options);
+      return await this.apiKeyProvider.sendRequest(agentName, { ...options, cancellationToken });
     } catch (err) {
       if (err instanceof vscode.CancellationError) {
         throw err;
+      }
+      // CancellationError from ApiKeyProvider (panel closed mid-request)
+      if (err instanceof Error && err.name === 'CancellationError') {
+        throw new vscode.CancellationError();
       }
       if (err instanceof AgentRunnerError) {
         throw err;
@@ -257,35 +330,32 @@ export class AgentRunner {
     return 'An unexpected error occurred.';
   }
 
-  private buildContextSection(
+  private buildFileListSection(
     workspaceContext: RoundRequest['workspaceContext'],
   ): string {
     if (workspaceContext.files.length === 0) {
       return '';
     }
 
-    const fileSections = workspaceContext.files
-      .map(
-        (f) =>
-          `FILE: ${f.path} (${f.language})\n\`\`\`${f.language}\n${f.content}\n\`\`\``,
-      )
-      .join('\n\n');
-
+    const fileList = workspaceContext.files.map((f) => f.path).join('\n');
     const activeNote = workspaceContext.activeFilePath
-      ? `\nCurrently active file: ${workspaceContext.activeFilePath}`
+      ? `Currently active file: ${workspaceContext.activeFilePath}\n\n`
       : '';
 
-    return `[WORKSPACE CONTEXT]${activeNote}\n\n${fileSections}\n\n[END WORKSPACE CONTEXT]`;
+    return `[WORKSPACE FILES]\n${activeNote}${fileList}\n[END WORKSPACE FILES]\n\nUse the read_file tool to read any file you need.`;
   }
 }
 
 export type ProgressEvent =
   | { type: 'main_agent_start'; agentName: AgentName }
+  | { type: 'main_agent_chunk'; agentName: AgentName; chunk: string }
   | { type: 'main_agent_done'; agentName: AgentName }
+  | { type: 'tool_read'; agentName: AgentName; filePath: string }
   | { type: 'sub_agents_start'; agentNames: AgentName[] }
   | { type: 'sub_agent_feedback'; agentName: AgentName; feedback: string }
   | { type: 'sub_agents_done'; agentNames: AgentName[] }
   | { type: 'reflection_start'; agentName: AgentName }
+  | { type: 'reflection_chunk'; agentName: AgentName; chunk: string }
   | { type: 'reflection_done'; agentName: AgentName };
 
 export type { AgentResponse, FileChange };

@@ -2,11 +2,12 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import type { FileChange } from '../types';
 import { WorkspaceError } from '../errors';
+import { DIFF_SCHEME, diffContentStore } from '../extension';
 
-const FILE_BLOCK_PATTERN =
-  /^FILE:\s*(.+?)\s*\n```(?:\w+)?\n([\s\S]*?)```/gm;
-
-const DELETE_BLOCK_PATTERN = /^DELETE:\s*(.+?)\s*$/gm;
+const FILE_LINE_PATTERN = /^FILE:\s*(.+?)\s*$/;
+const DELETE_LINE_PATTERN = /^DELETE:\s*(.+?)\s*$/;
+const OPEN_FENCE_PATTERN = /^(`{3,})\w*/;
+const CLOSE_FENCE_PATTERN = /^(`{3,})\s*$/;
 
 /** Maximum number of file changes accepted from a single agent response. */
 const MAX_FILE_CHANGES = 50;
@@ -32,6 +33,21 @@ function normalizePath(rawPath: string): string | null {
   return normalized;
 }
 
+/**
+ * Parses FILE: and DELETE: blocks from an agent response.
+ *
+ * Uses a line-by-line parser with fence-depth tracking so that nested
+ * code blocks inside a FILE: block (e.g. ```bash inside a README) do
+ * not prematurely terminate the outer block.
+ *
+ * Expected format:
+ *   FILE: path/to/file
+ *   ```[lang]
+ *   ...content...
+ *   ```
+ *
+ *   DELETE: path/to/file
+ */
 export function parseFileChanges(agentResponse: string): FileChange[] {
   if (typeof agentResponse !== 'string') {
     return [];
@@ -39,49 +55,77 @@ export function parseFileChanges(agentResponse: string): FileChange[] {
 
   const changes: FileChange[] = [];
   const seen = new Set<string>();
+  const lines = agentResponse.split('\n');
+  let i = 0;
 
-  // Parse FILE: blocks
-  let match: RegExpExecArray | null;
-  FILE_BLOCK_PATTERN.lastIndex = 0;
+  while (i < lines.length && changes.length < MAX_FILE_CHANGES) {
+    const line = lines[i];
 
-  while ((match = FILE_BLOCK_PATTERN.exec(agentResponse)) !== null) {
-    if (changes.length >= MAX_FILE_CHANGES) {
-      break;
-    }
-
-    const normalizedPath = normalizePath(match[1].trim());
-    if (!normalizedPath || seen.has(normalizedPath)) {
+    // DELETE: line
+    const deleteMatch = DELETE_LINE_PATTERN.exec(line);
+    if (deleteMatch) {
+      const normalizedPath = normalizePath(deleteMatch[1]);
+      if (normalizedPath && !seen.has(normalizedPath)) {
+        seen.add(normalizedPath);
+        changes.push({ filePath: normalizedPath, content: '', isNew: false, isDelete: true });
+      }
+      i++;
       continue;
     }
 
-    seen.add(normalizedPath);
-    changes.push({
-      filePath: normalizedPath,
-      content: match[2],
-      isNew: false, // Determined at write time by checking if file exists
-    });
-  }
+    // FILE: line
+    const fileMatch = FILE_LINE_PATTERN.exec(line);
+    if (fileMatch) {
+      const normalizedPath = normalizePath(fileMatch[1]);
+      i++;
 
-  // Parse DELETE: lines
-  DELETE_BLOCK_PATTERN.lastIndex = 0;
+      // Next non-empty line must be the opening fence
+      if (i >= lines.length) break;
+      const openMatch = OPEN_FENCE_PATTERN.exec(lines[i]);
+      if (!openMatch) {
+        // Not a code fence — skip this FILE: block
+        continue;
+      }
+      const fenceStr = openMatch[1]; // e.g. "```"
+      i++;
 
-  while ((match = DELETE_BLOCK_PATTERN.exec(agentResponse)) !== null) {
-    if (changes.length >= MAX_FILE_CHANGES) {
-      break;
-    }
+      // Collect content lines until the matching closing fence, tracking depth
+      const contentLines: string[] = [];
+      let depth = 1;
 
-    const normalizedPath = normalizePath(match[1].trim());
-    if (!normalizedPath || seen.has(normalizedPath)) {
+      while (i < lines.length) {
+        const contentLine = lines[i];
+        const closeMatch = CLOSE_FENCE_PATTERN.exec(contentLine);
+        if (closeMatch && closeMatch[1] === fenceStr) {
+          // Bare fence of the same length → close
+          depth--;
+          if (depth === 0) {
+            i++; // consume closing fence
+            break;
+          }
+          contentLines.push(contentLine);
+        } else if (OPEN_FENCE_PATTERN.exec(contentLine)?.[1] === fenceStr) {
+          // Opening fence of the same length (e.g. ```bash) inside content → deepen
+          depth++;
+          contentLines.push(contentLine);
+        } else {
+          contentLines.push(contentLine);
+        }
+        i++;
+      }
+
+      if (normalizedPath && !seen.has(normalizedPath)) {
+        seen.add(normalizedPath);
+        changes.push({
+          filePath: normalizedPath,
+          content: contentLines.join('\n'),
+          isNew: false,
+        });
+      }
       continue;
     }
 
-    seen.add(normalizedPath);
-    changes.push({
-      filePath: normalizedPath,
-      content: '',
-      isNew: false,
-      isDelete: true,
-    });
+    i++;
   }
 
   return changes;
@@ -234,10 +278,10 @@ export class WorkspaceWriter {
     }
   }
 
-  private createVirtualDocument(label: string, _content: string): vscode.Uri {
-    return vscode.Uri.parse(
-      `untitled:${label.replace(/[/\\]/g, '_')}`,
-    );
+  private createVirtualDocument(label: string, content: string): vscode.Uri {
+    const key = '/' + label.replace(/[/\\]/g, '_');
+    diffContentStore.set(key, content);
+    return vscode.Uri.parse(`${DIFF_SCHEME}:${key}`);
   }
 }
 

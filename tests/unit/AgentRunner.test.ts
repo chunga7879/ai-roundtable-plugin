@@ -34,8 +34,14 @@ function makeCopilotProvider(response = 'Copilot response') {
 
 function makeApiKeyProvider(response = 'API key response', hasKey = true) {
   return {
-    sendRequest: jest.fn().mockResolvedValue(response),
+    sendRequest: jest.fn().mockResolvedValue({ content: response }),
     hasKeyForAgent: jest.fn().mockReturnValue(hasKey),
+  };
+}
+
+function makeWorkspaceReader() {
+  return {
+    readFileForTool: jest.fn().mockResolvedValue({ content: 'file content', isError: false }),
   };
 }
 
@@ -50,6 +56,7 @@ describe('AgentRunner', () => {
         copilotProvider: copilotProvider as never,
         apiKeyProvider: apiKeyProvider as never,
         providerMode: ProviderMode.COPILOT,
+        workspaceReader: makeWorkspaceReader() as never,
       });
 
       const result = await runner.runRound(
@@ -83,6 +90,7 @@ describe('AgentRunner', () => {
         copilotProvider: copilotProvider as never,
         apiKeyProvider: apiKeyProvider as never,
         providerMode: ProviderMode.COPILOT,
+        workspaceReader: makeWorkspaceReader() as never,
       });
 
       const result = await runner.runRound(
@@ -108,6 +116,7 @@ describe('AgentRunner', () => {
         copilotProvider: copilotProvider as never,
         apiKeyProvider: makeApiKeyProvider() as never,
         providerMode: ProviderMode.COPILOT,
+        workspaceReader: makeWorkspaceReader() as never,
       });
 
       const result = await runner.runRound(
@@ -139,6 +148,7 @@ describe('AgentRunner', () => {
         copilotProvider: copilotProvider as never,
         apiKeyProvider: makeApiKeyProvider() as never,
         providerMode: ProviderMode.COPILOT,
+        workspaceReader: makeWorkspaceReader() as never,
       });
 
       await runner.runRound(
@@ -173,6 +183,7 @@ describe('AgentRunner', () => {
         copilotProvider: copilotProvider as never,
         apiKeyProvider: makeApiKeyProvider() as never,
         providerMode: ProviderMode.COPILOT,
+        workspaceReader: makeWorkspaceReader() as never,
       });
 
       const result = await runner.runRound(
@@ -211,6 +222,7 @@ describe('AgentRunner', () => {
         copilotProvider: copilotProvider as never,
         apiKeyProvider: makeApiKeyProvider() as never,
         providerMode: ProviderMode.COPILOT,
+        workspaceReader: makeWorkspaceReader() as never,
       });
 
       const result = await runner.runRound(
@@ -240,6 +252,7 @@ describe('AgentRunner', () => {
         copilotProvider: copilotProvider as never,
         apiKeyProvider: makeApiKeyProvider() as never,
         providerMode: ProviderMode.COPILOT,
+        workspaceReader: makeWorkspaceReader() as never,
       });
 
       await expect(
@@ -263,6 +276,7 @@ describe('AgentRunner', () => {
         copilotProvider: copilotProvider as never,
         apiKeyProvider: makeApiKeyProvider() as never,
         providerMode: ProviderMode.COPILOT,
+        workspaceReader: makeWorkspaceReader() as never,
       });
 
       await expect(
@@ -283,6 +297,7 @@ describe('AgentRunner', () => {
         copilotProvider: makeCopilotProvider() as never,
         apiKeyProvider: apiKeyProvider as never,
         providerMode: ProviderMode.API_KEYS,
+        workspaceReader: makeWorkspaceReader() as never,
       });
 
       await expect(
@@ -297,6 +312,7 @@ describe('AgentRunner', () => {
         copilotProvider: makeCopilotProvider() as never,
         apiKeyProvider: apiKeyProvider as never,
         providerMode: ProviderMode.API_KEYS,
+        workspaceReader: makeWorkspaceReader() as never,
       });
 
       const result = await runner.runRound(
@@ -311,12 +327,13 @@ describe('AgentRunner', () => {
   });
 
   describe('workspace context', () => {
-    it('includes workspace files in the user message', async () => {
+    it('includes workspace file list in the user message', async () => {
       const copilotProvider = makeCopilotProvider('Response');
       const runner = new AgentRunner({
         copilotProvider: copilotProvider as never,
         apiKeyProvider: makeApiKeyProvider() as never,
         providerMode: ProviderMode.COPILOT,
+        workspaceReader: makeWorkspaceReader() as never,
       });
 
       await runner.runRound(
@@ -332,8 +349,9 @@ describe('AgentRunner', () => {
 
       const callArgs = copilotProvider.sendRequest.mock.calls[0];
       const userMessage = callArgs[0].userMessage as string;
+      // File path is listed; content is read on-demand via tool calls
       expect(userMessage).toContain('src/app.ts');
-      expect(userMessage).toContain('const app = 1;');
+      expect(userMessage).toContain('read_file');
     });
 
     it('sends the user message directly when workspace has no files', async () => {
@@ -342,6 +360,7 @@ describe('AgentRunner', () => {
         copilotProvider: copilotProvider as never,
         apiKeyProvider: makeApiKeyProvider() as never,
         providerMode: ProviderMode.COPILOT,
+        workspaceReader: makeWorkspaceReader() as never,
       });
 
       await runner.runRound(
@@ -363,6 +382,7 @@ describe('AgentRunner', () => {
         copilotProvider: copilotProvider as never,
         apiKeyProvider: makeApiKeyProvider() as never,
         providerMode: ProviderMode.COPILOT,
+        workspaceReader: makeWorkspaceReader() as never,
       });
 
       const history = [
@@ -397,6 +417,7 @@ describe('AgentRunner', () => {
         copilotProvider: copilotProvider as never,
         apiKeyProvider: makeApiKeyProvider() as never,
         providerMode: ProviderMode.COPILOT,
+        workspaceReader: makeWorkspaceReader() as never,
       });
 
       await runner.runRound(
@@ -430,6 +451,7 @@ describe('AgentRunner', () => {
         copilotProvider: copilotProvider as never,
         apiKeyProvider: makeApiKeyProvider() as never,
         providerMode: ProviderMode.COPILOT,
+        workspaceReader: makeWorkspaceReader() as never,
       });
 
       await runner.runRound(
@@ -470,6 +492,7 @@ describe('AgentRunner', () => {
         copilotProvider: copilotProvider as never,
         apiKeyProvider: makeApiKeyProvider() as never,
         providerMode: ProviderMode.COPILOT,
+        workspaceReader: makeWorkspaceReader() as never,
       });
 
       await runner.runRound(

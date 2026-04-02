@@ -84,6 +84,13 @@
           "default": "copilot",
           "description": "Which AI provider to use for agent calls."
         },
+        "aiRoundtable.runnerTimeout": {
+          "type": "number",
+          "default": 60,
+          "minimum": 10,
+          "maximum": 600,
+          "description": "Timeout in seconds for shell commands run in the Runner round (10–600)."
+        },
         "aiRoundtable.copilotModelFamily": {
           "type": "string",
           "enum": [

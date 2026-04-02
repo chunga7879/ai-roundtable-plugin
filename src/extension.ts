@@ -31,6 +31,9 @@ export class ConfigManager {
     const rawCopilotFamily = vsConfig.get<string>('copilotModelFamily') ?? 'auto';
     const copilotModelFamily = rawCopilotFamily === 'auto' ? undefined : rawCopilotFamily;
 
+    const rawTimeout = vsConfig.get<number>('runnerTimeout') ?? 60;
+    const runnerTimeoutMs = Math.min(Math.max(rawTimeout, 10), 600) * 1000;
+
     let anthropicApiKey: string | undefined;
     let openaiApiKey: string | undefined;
     let googleApiKey: string | undefined;
@@ -57,6 +60,7 @@ export class ConfigManager {
       googleApiKey: googleApiKey ?? undefined,
       deepseekApiKey: deepseekApiKey ?? undefined,
       copilotModelFamily,
+      runnerTimeoutMs,
     };
   }
 
@@ -220,10 +224,28 @@ export class ConfigManager {
   }
 }
 
+/** Scheme used for virtual diff documents (proposed file content). */
+export const DIFF_SCHEME = 'ai-roundtable-diff';
+
+/**
+ * In-memory store for virtual diff document content.
+ * Key: URI path, Value: file content string.
+ */
+export const diffContentStore = new Map<string, string>();
+
 export async function activate(
   context: vscode.ExtensionContext,
 ): Promise<void> {
   const configManager = new ConfigManager(context.secrets);
+
+  // Register virtual document provider for diff previews
+  context.subscriptions.push(
+    vscode.workspace.registerTextDocumentContentProvider(DIFF_SCHEME, {
+      provideTextDocumentContent(uri: vscode.Uri): string {
+        return diffContentStore.get(uri.path) ?? '';
+      },
+    }),
+  );
 
   // Register commands
   context.subscriptions.push(

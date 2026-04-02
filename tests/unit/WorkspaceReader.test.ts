@@ -146,10 +146,10 @@ describe('WorkspaceReader', () => {
       expect(context.files[0].content.length).toBeLessThan(largeContent.length);
     });
 
-    it('respects MAX_FILES_TO_INCLUDE (20 files)', async () => {
+    it('respects MAX_FILES_TO_INCLUDE (50 files)', async () => {
       setupWorkspaceRoot('/workspace');
-      // Return 30 files
-      const files: [string, FileType][] = Array.from({ length: 30 }, (_, i) => [
+      // Return 60 files
+      const files: [string, FileType][] = Array.from({ length: 60 }, (_, i) => [
         `file${i}.ts`,
         FileType.File,
       ]);
@@ -159,7 +159,7 @@ describe('WorkspaceReader', () => {
 
       const reader = new WorkspaceReader();
       const context = await reader.buildContext();
-      expect(context.files.length).toBeLessThanOrEqual(20);
+      expect(context.files.length).toBeLessThanOrEqual(50);
     });
 
     it('stops adding files when total bytes would exceed MAX_TOTAL_CONTEXT_BYTES', async () => {

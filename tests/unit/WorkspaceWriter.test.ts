@@ -154,6 +154,71 @@ Let me know if you want changes.
       expect(result[0].filePath).toBe('src/handler.ts');
     });
 
+    it('captures full content when file contains nested code blocks (e.g. README with bash blocks)', () => {
+      const input = [
+        'FILE: README.md',
+        '```markdown',
+        '# Title',
+        '',
+        'Install:',
+        '',
+        '```bash',
+        'npm install',
+        '```',
+        '',
+        'More content here.',
+        '```',
+      ].join('\n');
+      const result = parseFileChanges(input);
+      expect(result).toHaveLength(1);
+      expect(result[0].filePath).toBe('README.md');
+      expect(result[0].content).toContain('# Title');
+      expect(result[0].content).toContain('```bash');
+      expect(result[0].content).toContain('npm install');
+      expect(result[0].content).toContain('More content here.');
+    });
+
+    it('handles multiple nested code blocks inside a single FILE: block', () => {
+      const input = [
+        'FILE: docs/guide.md',
+        '```markdown',
+        'Step 1:',
+        '```bash',
+        'npm install',
+        '```',
+        'Step 2:',
+        '```typescript',
+        'const x = 1;',
+        '```',
+        'Done.',
+        '```',
+      ].join('\n');
+      const result = parseFileChanges(input);
+      expect(result).toHaveLength(1);
+      expect(result[0].content).toContain('Step 1:');
+      expect(result[0].content).toContain('Step 2:');
+      expect(result[0].content).toContain('Done.');
+    });
+
+    it('treats FILE: appearing inside FILE: content as plain content, not a new block', () => {
+      const input = [
+        'FILE: README.md',
+        '```markdown',
+        'Use this format:',
+        'FILE: src/example.ts',
+        '```typescript',
+        'code',
+        '```',
+        'End.',
+        '```',
+      ].join('\n');
+      const result = parseFileChanges(input);
+      // Only one file change — the inner FILE: is content, not a block
+      expect(result).toHaveLength(1);
+      expect(result[0].filePath).toBe('README.md');
+      expect(result[0].content).toContain('FILE: src/example.ts');
+    });
+
     it('is idempotent when called twice on the same input', () => {
       const input = `FILE: a.ts\n\`\`\`ts\nconst x = 1;\n\`\`\``;
       const r1 = parseFileChanges(input);

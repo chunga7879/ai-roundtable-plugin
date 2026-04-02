@@ -99,13 +99,35 @@ export class WorkspaceEdit {
   }
 }
 
+export class LanguageModelTextPart {
+  constructor(public readonly value: string) {}
+}
+
+export class LanguageModelToolCallPart {
+  constructor(
+    public readonly callId: string,
+    public readonly name: string,
+    public readonly input: unknown,
+  ) {}
+}
+
+export class LanguageModelToolResultPart {
+  constructor(
+    public readonly callId: string,
+    public readonly content: unknown[],
+  ) {}
+}
+
 export class LanguageModelChatMessage {
-  static User(content: string): LanguageModelChatMessage {
+  static User(content: string | unknown[]): LanguageModelChatMessage {
     return new LanguageModelChatMessage('user', content);
+  }
+  static Assistant(content: string | unknown[]): LanguageModelChatMessage {
+    return new LanguageModelChatMessage('assistant', content);
   }
   constructor(
     public readonly role: string,
-    public readonly content: string,
+    public readonly content: string | unknown[],
   ) {}
 }
 

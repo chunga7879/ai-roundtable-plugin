@@ -5,7 +5,7 @@ import { WorkspaceError } from '../errors';
 
 const MAX_FILE_SIZE_BYTES = 50_000;
 const MAX_TOTAL_CONTEXT_BYTES = 200_000;
-const MAX_FILES_TO_INCLUDE = 20;
+const MAX_FILES_TO_INCLUDE = 50;
 
 const EXCLUDED_DIRS = new Set([
   'node_modules',
@@ -119,6 +119,9 @@ const EXTENSION_TO_LANGUAGE: Readonly<Record<string, string>> = {
   '.env': 'dotenv',
 };
 
+/** Maximum number of tool-initiated file reads per agent turn. */
+export const MAX_TOOL_CALLS = 100;
+
 /** Re-exported for backwards compatibility */
 export class WorkspaceReaderError extends WorkspaceError {
   constructor(message: string, cause?: unknown) {
@@ -209,6 +212,50 @@ export class WorkspaceReader {
     };
   }
 
+  /**
+   * Returns a flat list of all non-excluded file paths relative to the workspace root.
+   * Used to give the AI the full file tree without reading content upfront.
+   */
+  async listWorkspaceFiles(): Promise<string[]> {
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (!workspaceFolders || workspaceFolders.length === 0) {
+      return [];
+    }
+    const rootUri = workspaceFolders[0].uri;
+    const result: vscode.Uri[] = [];
+    await this.traverseDirectory(rootUri, rootUri.fsPath, result, 2000, []);
+    return result.map((u) => this.toRelativePath(u.fsPath, rootUri.fsPath));
+  }
+
+  /**
+   * Reads a single file by relative path, applying all security exclusion checks.
+   * Returns file content (truncated to MAX_FILE_SIZE_BYTES) or an error string.
+   */
+  async readFileForTool(relativePath: string): Promise<{ content: string; isError: boolean }> {
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (!workspaceFolders || workspaceFolders.length === 0) {
+      return { content: 'No workspace folder is open.', isError: true };
+    }
+
+    const rootUri = workspaceFolders[0].uri;
+    const rootFsPath = rootUri.fsPath;
+
+    // Normalize and validate path
+    const normalized = relativePath.replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\//, '');
+    if (!normalized || normalized.includes('..') || path.isAbsolute(normalized)) {
+      return { content: `Invalid file path: ${relativePath}`, isError: true };
+    }
+
+    const targetUri = vscode.Uri.joinPath(rootUri, normalized);
+    const workspaceFile = await this.readWorkspaceFile(targetUri, rootFsPath);
+
+    if (!workspaceFile) {
+      return { content: `File not found or excluded: ${relativePath}`, isError: true };
+    }
+
+    return { content: workspaceFile.content, isError: false };
+  }
+
   private async readWorkspaceFile(
     uri: vscode.Uri,
     workspaceRoot: string,
@@ -261,6 +308,7 @@ export class WorkspaceReader {
           path: relativePath,
           content: `${truncated}\n\n[... truncated at ${MAX_FILE_SIZE_BYTES} bytes ...]`,
           language: this.getLanguage(ext),
+          truncated: true,
         };
       }
 

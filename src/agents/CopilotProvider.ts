@@ -1,11 +1,13 @@
 import * as vscode from 'vscode';
-import type { AgentName, ConversationTurn } from '../types';
+import type { AgentName, ConversationTurn, ToolCall, ToolResult } from '../types';
 import { ProviderError } from '../errors';
 
 export interface LLMRequestOptions {
   systemPrompt: string;
   userMessage: string;
   conversationHistory?: ConversationTurn[];
+  onChunk?: (chunk: string) => void;
+  onToolCall?: (toolCall: ToolCall) => Promise<ToolResult>;
 }
 
 /** Re-exported for backwards compatibility with AgentRunner imports */
@@ -137,19 +139,117 @@ export class CopilotProvider {
     cancellationToken: vscode.CancellationToken,
   ): Promise<string> {
     const model = await this.selectModel();
+    const messages = this.buildMessages(options);
 
+    // Tool definition for read_file
+    const tools: vscode.LanguageModelChatTool[] = options.onToolCall
+      ? [
+          {
+            name: 'read_file',
+            description: 'Read the content of a file in the workspace by its relative path.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                path: { type: 'string', description: 'Relative path to the file from workspace root.' },
+              },
+              required: ['path'],
+            },
+          },
+        ]
+      : [];
+
+    let finalText = '';
+
+    // Agentic loop: keep calling until no more tool calls
+    while (true) {
+      if (cancellationToken.isCancellationRequested) {
+        throw new vscode.CancellationError();
+      }
+
+      let response: vscode.LanguageModelChatResponse;
+      try {
+        response = await model.sendRequest(messages, { tools }, cancellationToken);
+      } catch (err) {
+        if (err instanceof vscode.CancellationError) throw err;
+        this.invalidateModelCache();
+        throw new CopilotProviderError(
+          `Copilot request failed for agent ${agentName}: ${err instanceof Error ? err.message : String(err)}`,
+          err,
+        );
+      }
+
+      const textChunks: string[] = [];
+      const toolCallParts: vscode.LanguageModelToolCallPart[] = [];
+
+      try {
+        for await (const part of response.stream) {
+          if (cancellationToken.isCancellationRequested) {
+            throw new vscode.CancellationError();
+          }
+          if (part instanceof vscode.LanguageModelTextPart) {
+            textChunks.push(part.value);
+            options.onChunk?.(part.value);
+          } else if (part instanceof vscode.LanguageModelToolCallPart) {
+            toolCallParts.push(part);
+          }
+        }
+      } catch (err) {
+        if (err instanceof vscode.CancellationError) throw err;
+        throw new CopilotProviderError(
+          `Failed to read Copilot response stream for agent ${agentName}: ${err instanceof Error ? err.message : String(err)}`,
+          err,
+        );
+      }
+
+      const text = textChunks.join('');
+      if (text) finalText = text;
+
+      // No tool calls → done
+      if (toolCallParts.length === 0 || !options.onToolCall) {
+        break;
+      }
+
+      // Append assistant message with text + tool calls
+      const assistantParts: (vscode.LanguageModelTextPart | vscode.LanguageModelToolCallPart)[] = [];
+      if (text) assistantParts.push(new vscode.LanguageModelTextPart(text));
+      for (const tc of toolCallParts) assistantParts.push(tc);
+      messages.push(vscode.LanguageModelChatMessage.Assistant(assistantParts));
+
+      // Execute tool calls and append results
+      const resultParts: vscode.LanguageModelToolResultPart[] = [];
+      for (const tc of toolCallParts) {
+        const input = tc.input as Record<string, unknown>;
+        const filePath = typeof input['path'] === 'string' ? input['path'] : '';
+        const result = await options.onToolCall({ id: tc.callId, name: 'read_file', filePath });
+        resultParts.push(
+          new vscode.LanguageModelToolResultPart(tc.callId, [
+            new vscode.LanguageModelTextPart(result.content),
+          ]),
+        );
+      }
+      messages.push(vscode.LanguageModelChatMessage.User(resultParts));
+    }
+
+    if (finalText.trim().length === 0) {
+      throw new CopilotProviderError(
+        `Copilot returned an empty response for agent ${agentName}.`,
+      );
+    }
+
+    return finalText;
+  }
+
+  private buildMessages(options: LLMRequestOptions): vscode.LanguageModelChatMessage[] {
     const history = options.conversationHistory ?? [];
     const messages: vscode.LanguageModelChatMessage[] = [];
 
     if (history.length === 0) {
-      // No history: prepend system prompt to the first user message
       messages.push(
         vscode.LanguageModelChatMessage.User(
           `${options.systemPrompt}\n\n---\n\n${options.userMessage}`,
         ),
       );
     } else {
-      // With history: system prompt goes with the first historical user message
       for (let i = 0; i < history.length; i++) {
         const turn = history[i];
         if (turn.role === 'user') {
@@ -162,47 +262,7 @@ export class CopilotProvider {
       messages.push(vscode.LanguageModelChatMessage.User(options.userMessage));
     }
 
-    let response: vscode.LanguageModelChatResponse;
-    try {
-      response = await model.sendRequest(messages, {}, cancellationToken);
-    } catch (err) {
-      if (err instanceof vscode.CancellationError) {
-        throw err;
-      }
-      // Invalidate the cached model so the next request re-selects a healthy one
-      this.invalidateModelCache();
-      throw new CopilotProviderError(
-        `Copilot request failed for agent ${agentName}: ${err instanceof Error ? err.message : String(err)}`,
-        err,
-      );
-    }
-
-    const chunks: string[] = [];
-    try {
-      for await (const chunk of response.text) {
-        if (cancellationToken.isCancellationRequested) {
-          throw new vscode.CancellationError();
-        }
-        chunks.push(chunk);
-      }
-    } catch (err) {
-      if (err instanceof vscode.CancellationError) {
-        throw err;
-      }
-      throw new CopilotProviderError(
-        `Failed to read Copilot response stream for agent ${agentName}: ${err instanceof Error ? err.message : String(err)}`,
-        err,
-      );
-    }
-
-    const result = chunks.join('');
-    if (result.trim().length === 0) {
-      throw new CopilotProviderError(
-        `Copilot returned an empty response for agent ${agentName}.`,
-      );
-    }
-
-    return result;
+    return messages;
   }
 
   invalidateModelCache(): void {

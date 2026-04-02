@@ -11,9 +11,9 @@ function makeToken(cancelled = false): vscode.CancellationToken {
   } as unknown as vscode.CancellationToken;
 }
 
-async function* toAsyncIterable(chunks: string[]): AsyncIterable<string> {
+async function* toAsyncIterable(chunks: string[]): AsyncIterable<vscode.LanguageModelTextPart> {
   for (const chunk of chunks) {
-    yield chunk;
+    yield new vscode.LanguageModelTextPart(chunk);
   }
 }
 
@@ -23,7 +23,7 @@ function makeModel(chunks: string[] = ['hello ', 'world'], throwOnSend?: Error) 
       if (throwOnSend) {
         throw throwOnSend;
       }
-      return Promise.resolve({ text: toAsyncIterable(chunks) });
+      return Promise.resolve({ stream: toAsyncIterable(chunks) });
     }),
   };
 }
@@ -185,17 +185,14 @@ describe('CopilotProvider.sendRequest — errors', () => {
 
   it('throws CancellationError when cancelled mid-stream', async () => {
     const token = makeToken();
-    let firstChunk = true;
-    async function* cancellingStream(): AsyncIterable<string> {
-      yield 'first chunk';
+    async function* cancellingStream(): AsyncIterable<vscode.LanguageModelTextPart> {
+      yield new vscode.LanguageModelTextPart('first chunk');
       // Simulate cancellation after first chunk
       (token as { isCancellationRequested: boolean }).isCancellationRequested = true;
-      if (!firstChunk) return;
-      firstChunk = false;
-      yield 'second chunk';
+      yield new vscode.LanguageModelTextPart('second chunk');
     }
     const model = {
-      sendRequest: jest.fn().mockResolvedValue({ text: cancellingStream() }),
+      sendRequest: jest.fn().mockResolvedValue({ stream: cancellingStream() }),
     };
     (vscode.lm.selectChatModels as jest.Mock).mockResolvedValue([model]);
     const provider = new CopilotProvider();
@@ -205,12 +202,12 @@ describe('CopilotProvider.sendRequest — errors', () => {
   });
 
   it('wraps stream iteration errors as CopilotProviderError', async () => {
-    async function* throwingStream(): AsyncIterable<string> {
-      yield 'partial';
+    async function* throwingStream(): AsyncIterable<vscode.LanguageModelTextPart> {
+      yield new vscode.LanguageModelTextPart('partial');
       throw new Error('stream error');
     }
     const model = {
-      sendRequest: jest.fn().mockResolvedValue({ text: throwingStream() }),
+      sendRequest: jest.fn().mockResolvedValue({ stream: throwingStream() }),
     };
     (vscode.lm.selectChatModels as jest.Mock).mockResolvedValue([model]);
     const provider = new CopilotProvider();

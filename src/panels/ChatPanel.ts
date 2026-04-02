@@ -47,10 +47,12 @@ export class ChatPanel implements vscode.Disposable {
 
   private conversationHistory: ConversationTurn[] = [];
   private currentRoundType: RoundType | undefined;
-  private lastRunCommand: string | undefined;
-  private lastRunMainAgent: AgentName = AgentName.CLAUDE;
-  private lastRunSubAgents: AgentName[] = [];
+  private lastSendMessage: { userMessage: string; roundType: RoundType; mainAgent: AgentName; subAgents: AgentName[] } | undefined;
 
+  /** ID of the currently streaming agent message bubble (main or reflection). */
+  private streamingMsgId: string | undefined;
+  /** Agent name for the current streaming bubble. */
+  private streamingAgentName: AgentName | undefined;
   private constructor(
     panel: vscode.WebviewPanel,
     extensionUri: vscode.Uri,
@@ -190,23 +192,18 @@ export class ChatPanel implements vscode.Disposable {
         await this.handleRequestConfig();
         break;
 
-      case 'runCommand': {
-        const runPayload = msg.payload as { command?: unknown; mainAgent?: unknown; subAgents?: unknown };
-        if (typeof runPayload?.command === 'string' && runPayload.command.trim().length > 0) {
-          const mainAgent = typeof runPayload.mainAgent === 'string' && Object.values(AgentName).includes(runPayload.mainAgent as AgentName)
-            ? runPayload.mainAgent as AgentName
-            : AgentName.COPILOT;
-          const subAgents = Array.isArray(runPayload.subAgents)
-            ? (runPayload.subAgents as string[]).filter((a): a is AgentName => Object.values(AgentName).includes(a as AgentName))
-            : [];
-          await this.handleRunCommand(runPayload.command.trim(), mainAgent, subAgents);
-        }
+      case 'clearChat':
+        this.conversationHistory = [];
+        this.currentRoundType = undefined;
+        this.lastSendMessage = undefined;
+        this.postMessage({ type: 'clearMessages' });
+        this.postMessage({ type: 'clearFileChanges' });
         break;
-      }
 
-      case 'runAgain':
-        if (this.lastRunCommand) {
-          await this.handleRunCommand(this.lastRunCommand, this.lastRunMainAgent, this.lastRunSubAgents);
+      case 'retryLastMessage':
+        if (this.lastSendMessage) {
+          const { userMessage, roundType, mainAgent, subAgents } = this.lastSendMessage;
+          await this.handleSendMessage(userMessage, roundType, mainAgent, subAgents);
         }
         break;
 
@@ -220,7 +217,10 @@ export class ChatPanel implements vscode.Disposable {
             'Run',
           );
           if (choice === 'Run') {
-            await this.handleRunCommand(command, this.lastRunMainAgent, this.lastRunSubAgents);
+            const lastMsg = this.lastSendMessage;
+            const mainAgent = lastMsg?.mainAgent ?? AgentName.CLAUDE;
+            const subAgents = lastMsg?.subAgents ?? [];
+            await this.handleRunCommand(command, mainAgent, subAgents);
           }
         }
         break;
@@ -238,6 +238,9 @@ export class ChatPanel implements vscode.Disposable {
     mainAgent: AgentName,
     subAgents: AgentName[],
   ): Promise<void> {
+    // Save for retry
+    this.lastSendMessage = { userMessage, roundType, mainAgent, subAgents };
+
     // Reset history when round type changes
     if (roundType !== this.currentRoundType) {
       this.conversationHistory = [];
@@ -263,6 +266,7 @@ export class ChatPanel implements vscode.Disposable {
 
     this.postMessage({ type: 'setLoading', payload: { loading: true } });
     this.postMessage({ type: 'clearFileChanges' });
+    this.postMessage({ type: 'clearContextFiles' });
 
     try {
       const config = await this.configManager.getConfig();
@@ -295,17 +299,30 @@ export class ChatPanel implements vscode.Disposable {
       this.conversationHistory.push({ role: 'user', content: userMessage });
       this.conversationHistory.push({ role: 'assistant', content: result.reflectedResponse });
 
-      // Show final response
-      this.postMessage({
-        type: 'addMessage',
-        payload: {
-          id: crypto.randomUUID(),
-          role: 'agent',
-          agentName: mainAgent,
-          content: result.reflectedResponse,
-          timestamp: Date.now(),
-        },
-      });
+      // Finalize the streaming bubble (or create a new message if streaming was not used)
+      const agentContent = result.tokenUsage
+        ? `${result.reflectedResponse}\n\nIn: ${result.tokenUsage.inputTokens.toLocaleString()}  Out: ${result.tokenUsage.outputTokens.toLocaleString()} tokens`
+        : result.reflectedResponse;
+
+      if (this.streamingMsgId) {
+        this.postMessage({
+          type: 'finalizeMessage',
+          payload: { id: this.streamingMsgId, content: agentContent },
+        });
+        this.streamingMsgId = undefined;
+        this.streamingAgentName = undefined;
+      } else {
+        this.postMessage({
+          type: 'addMessage',
+          payload: {
+            id: crypto.randomUUID(),
+            role: 'agent',
+            agentName: mainAgent,
+            content: agentContent,
+            timestamp: Date.now(),
+          },
+        });
+      }
 
       // Show file changes if any
       if (result.fileChanges.length > 0) {
@@ -331,8 +348,10 @@ export class ChatPanel implements vscode.Disposable {
         return;
       }
 
-      this.postErrorMessage(this.toSafeUserMessage(err));
+      this.postErrorMessage(this.toSafeUserMessage(err), true);
     } finally {
+      this.streamingMsgId = undefined;
+      this.streamingAgentName = undefined;
       this.postMessage({ type: 'setLoading', payload: { loading: false } });
       this.currentCancellationTokenSource?.dispose();
       this.currentCancellationTokenSource = undefined;
@@ -378,7 +397,10 @@ export class ChatPanel implements vscode.Disposable {
           'Run',
         );
         if (choice === 'Run') {
-          await this.handleRunCommand(installCommand, this.lastRunMainAgent, this.lastRunSubAgents);
+          const lastMsg = this.lastSendMessage;
+          const mainAgent = lastMsg?.mainAgent ?? AgentName.CLAUDE;
+          const subAgents = lastMsg?.subAgents ?? [];
+          await this.handleRunCommand(installCommand, mainAgent, subAgents);
         }
       }
     } catch (err) {
@@ -400,30 +422,34 @@ export class ChatPanel implements vscode.Disposable {
       return;
     }
 
-    this.lastRunCommand = command;
-    this.lastRunMainAgent = mainAgent;
-    this.lastRunSubAgents = subAgents;
-
     this.postMessage({ type: 'setLoading', payload: { loading: true } });
-    this.postMessage({ type: 'executionStarted', payload: { command } });
+    this.postMessage({
+      type: 'addMessage',
+      payload: { id: crypto.randomUUID(), role: 'system', content: `Running: ${command}`, timestamp: Date.now() },
+    });
 
     const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     const MAX_OUTPUT = 50_000;
+    const config = await this.configManager.getConfig();
 
     const { output, exitCode } = await new Promise<{ output: string; exitCode: number }>((resolve) => {
-      cp.exec(command, { cwd: workspaceRoot, timeout: 60_000, maxBuffer: MAX_OUTPUT }, (err, stdout, stderr) => {
+      cp.exec(command, { cwd: workspaceRoot, timeout: config.runnerTimeoutMs, maxBuffer: MAX_OUTPUT }, (err, stdout, stderr) => {
         const combined = [stdout, stderr].filter(Boolean).join('\n').slice(0, MAX_OUTPUT);
         resolve({ output: combined || '(no output)', exitCode: err?.code ?? (err ? 1 : 0) });
       });
     });
 
-    this.postMessage({ type: 'executionComplete', payload: { command, output, exitCode } });
     this.postMessage({ type: 'setLoading', payload: { loading: false } });
 
-    // Only feed to Runner AI if the command failed
     if (exitCode !== 0) {
       const analysisMessage = `[Execution Output]\nCommand: ${command}\nExit code: ${exitCode}\n\n${output}`;
-      await this.handleSendMessage(analysisMessage, RoundType.RUNNER, mainAgent, subAgents);
+      const roundType = this.currentRoundType ?? RoundType.DEVELOPER;
+      await this.handleSendMessage(analysisMessage, roundType, mainAgent, subAgents);
+    } else {
+      this.postMessage({
+        type: 'addMessage',
+        payload: { id: crypto.randomUUID(), role: 'system', content: `✓ ${command} completed successfully.`, timestamp: Date.now() },
+      });
     }
   }
 
@@ -464,31 +490,41 @@ export class ChatPanel implements vscode.Disposable {
   }
 
   private handleProgressEvent(event: ProgressEvent): void {
-    const systemMsgId = crypto.randomUUID();
-
     switch (event.type) {
-      case 'main_agent_start':
+      case 'main_agent_start': {
+        this.postMessage({ type: 'pipelineProgress', payload: { stage: 'thinking' } });
+        // Create streaming bubble for main agent
+        this.streamingMsgId = crypto.randomUUID();
+        this.streamingAgentName = event.agentName;
         this.postMessage({
           type: 'addMessage',
           payload: {
-            id: systemMsgId,
-            role: 'system',
-            content: `${this.formatAgentName(event.agentName)} is thinking\u2026`,
+            id: this.streamingMsgId,
+            role: 'agent',
+            agentName: event.agentName,
+            content: '',
             timestamp: Date.now(),
+            streaming: true,
           },
         });
         break;
+      }
+
+      case 'main_agent_chunk':
+        if (this.streamingMsgId) {
+          this.postMessage({ type: 'streamChunk', payload: { id: this.streamingMsgId, chunk: event.chunk } });
+        }
+        break;
+
+      case 'tool_read':
+        if (this.streamingMsgId) {
+          this.postMessage({ type: 'streamChunk', payload: { id: this.streamingMsgId, chunk: `\n*Reading \`${event.filePath}\`...*\n` } });
+        }
+        this.postMessage({ type: 'contextFileRead', payload: { path: event.filePath } });
+        break;
 
       case 'sub_agents_start':
-        this.postMessage({
-          type: 'addMessage',
-          payload: {
-            id: systemMsgId,
-            role: 'system',
-            content: `Verifiers running: ${event.agentNames.map((n) => this.formatAgentName(n)).join(', ')}\u2026`,
-            timestamp: Date.now(),
-          },
-        });
+        this.postMessage({ type: 'pipelineProgress', payload: { stage: 'verifying' } });
         break;
 
       case 'sub_agent_feedback':
@@ -496,7 +532,7 @@ export class ChatPanel implements vscode.Disposable {
           this.postMessage({
             type: 'addMessage',
             payload: {
-              id: systemMsgId,
+              id: crypto.randomUUID(),
               role: 'agent',
               agentName: event.agentName,
               content: event.feedback,
@@ -507,16 +543,28 @@ export class ChatPanel implements vscode.Disposable {
         }
         break;
 
-      case 'reflection_start':
+      case 'reflection_start': {
+        this.postMessage({ type: 'pipelineProgress', payload: { stage: 'reflecting' } });
+        // Create a new streaming bubble for the reflected response
+        this.streamingMsgId = crypto.randomUUID();
         this.postMessage({
           type: 'addMessage',
           payload: {
-            id: systemMsgId,
-            role: 'system',
-            content: `${this.formatAgentName(event.agentName)} is reflecting on feedback\u2026`,
+            id: this.streamingMsgId,
+            role: 'agent',
+            agentName: this.streamingAgentName ?? event.agentName,
+            content: '',
             timestamp: Date.now(),
+            streaming: true,
           },
         });
+        break;
+      }
+
+      case 'reflection_chunk':
+        if (this.streamingMsgId) {
+          this.postMessage({ type: 'streamChunk', payload: { id: this.streamingMsgId, chunk: event.chunk } });
+        }
         break;
 
       default:
@@ -524,16 +572,6 @@ export class ChatPanel implements vscode.Disposable {
     }
   }
 
-  private formatAgentName(agentName: AgentName): string {
-    const names: Record<AgentName, string> = {
-      [AgentName.COPILOT]: 'GitHub Copilot',
-      [AgentName.CLAUDE]: 'Claude',
-      [AgentName.GPT]: 'GPT',
-      [AgentName.GEMINI]: 'Gemini',
-      [AgentName.DEEPSEEK]: 'DeepSeek',
-    };
-    return names[agentName] ?? agentName;
-  }
 
   private async enrichFileChanges(
     fileChanges: FileChange[],
@@ -572,6 +610,7 @@ export class ChatPanel implements vscode.Disposable {
       copilotProvider,
       apiKeyProvider,
       providerMode: config.providerMode,
+      workspaceReader: this.workspaceReader,
     });
   }
 
@@ -586,7 +625,7 @@ export class ChatPanel implements vscode.Disposable {
    * Posts a sanitized error message to the webview.
    * Truncates to MAX_ERROR_MESSAGE_LENGTH to prevent information leakage.
    */
-  private postErrorMessage(message: string): void {
+  private postErrorMessage(message: string, retryable = false): void {
     const safe =
       message.length > MAX_ERROR_MESSAGE_LENGTH
         ? message.slice(0, MAX_ERROR_MESSAGE_LENGTH) + '…'
@@ -598,6 +637,7 @@ export class ChatPanel implements vscode.Disposable {
         role: 'error',
         content: safe,
         timestamp: Date.now(),
+        retryable,
       },
     });
   }

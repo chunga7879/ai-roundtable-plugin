@@ -7,7 +7,6 @@ export enum RoundType {
   REVIEWER = 'reviewer',
   QA = 'qa',
   DEVOPS = 'devops',
-  RUNNER = 'runner',
   DOCUMENTATION = 'documentation',
 }
 
@@ -36,6 +35,8 @@ export interface Message {
   content: string;
   timestamp: number;
   isSubAgentFeedback?: boolean;
+  retryable?: boolean;
+  streaming?: boolean;
 }
 
 export interface FileChange {
@@ -73,6 +74,7 @@ export interface WorkspaceFile {
   path: string;
   content: string;
   language: string;
+  truncated?: boolean;
 }
 
 export interface ExtensionConfig {
@@ -82,6 +84,7 @@ export interface ExtensionConfig {
   googleApiKey?: string;
   deepseekApiKey?: string;
   copilotModelFamily?: string;
+  runnerTimeoutMs: number;
 }
 
 export interface SubAgentVerification {
@@ -89,11 +92,29 @@ export interface SubAgentVerification {
   feedback: string;
 }
 
+export interface ToolCall {
+  id: string;
+  name: 'read_file';
+  filePath: string;
+}
+
+export interface ToolResult {
+  id: string;
+  content: string;
+  isError: boolean;
+}
+
+export interface TokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+}
+
 export interface RoundResult {
   mainAgentResponse: string;
   subAgentVerifications: SubAgentVerification[];
   reflectedResponse: string;
   fileChanges: FileChange[];
+  tokenUsage?: TokenUsage;
 }
 
 export type WebviewToExtensionMessage =
@@ -102,9 +123,9 @@ export type WebviewToExtensionMessage =
   | { type: 'rejectChanges' }
   | { type: 'requestConfig' }
   | { type: 'configureProvider' }
-  | { type: 'runCommand'; payload: { command: string; mainAgent: string; subAgents: string[] } }
-  | { type: 'runAgain' }
-  | { type: 'executeCommand'; payload: { command: string } };
+  | { type: 'executeCommand'; payload: { command: string } }
+  | { type: 'clearChat' }
+  | { type: 'retryLastMessage' };
 
 export interface SendMessagePayload {
   userMessage: string;
@@ -117,17 +138,26 @@ export interface ApplyChangesPayload {
   fileChanges: FileChange[];
 }
 
+export interface ContextFileSummary {
+  path: string;
+  truncated: boolean;
+}
+
 export type ExtensionToWebviewMessage =
   | { type: 'addMessage'; payload: Message }
   | { type: 'updateMessage'; payload: { id: string; content: string } }
+  | { type: 'streamChunk'; payload: { id: string; chunk: string } }
+  | { type: 'finalizeMessage'; payload: { id: string; content: string } }
   | { type: 'setLoading'; payload: { loading: boolean } }
   | { type: 'showFileChanges'; payload: { fileChanges: FileChange[] } }
   | { type: 'clearFileChanges' }
   | { type: 'configLoaded'; payload: { providerMode: ProviderMode; hasApiKeys: boolean; availableAgents: AgentName[] } }
   | { type: 'error'; payload: { message: string } }
-  | { type: 'executionStarted'; payload: { command: string } }
-  | { type: 'executionComplete'; payload: { command: string; output: string; exitCode: number } }
-  | { type: 'suggestInstall'; payload: { command: string } };
+  | { type: 'suggestInstall'; payload: { command: string } }
+  | { type: 'contextFileRead'; payload: { path: string } }
+  | { type: 'pipelineProgress'; payload: { stage: 'thinking' | 'verifying' | 'reflecting' } }
+  | { type: 'clearMessages' }
+  | { type: 'clearContextFiles' };
 
 // ── Input validation helpers ──────────────────────────────────────────────────
 
