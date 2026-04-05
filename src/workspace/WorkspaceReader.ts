@@ -146,11 +146,11 @@ export class WorkspaceReader {
       // activeTextEditor may throw in some environments — degrade gracefully
     }
 
-    const filesToRead: vscode.Uri[] = [];
+    const filesToInclude: vscode.Uri[] = [];
 
     // Priority 1: Currently open/active file
     if (activeEditor && !activeEditor.document.isUntitled) {
-      filesToRead.push(activeEditor.document.uri);
+      filesToInclude.push(activeEditor.document.uri);
     }
 
     // Priority 2: All visible editors
@@ -158,8 +158,8 @@ export class WorkspaceReader {
       for (const editor of vscode.window.visibleTextEditors) {
         if (!editor.document.isUntitled && editor !== activeEditor) {
           const uri = editor.document.uri;
-          if (!filesToRead.some((f) => f.fsPath === uri.fsPath)) {
-            filesToRead.push(uri);
+          if (!filesToInclude.some((f) => f.fsPath === uri.fsPath)) {
+            filesToInclude.push(uri);
           }
         }
       }
@@ -171,37 +171,37 @@ export class WorkspaceReader {
     const rootUri = workspaceFolders[0].uri;
     const workspaceFiles = await this.collectWorkspaceFiles(
       rootUri,
-      MAX_FILES_TO_INCLUDE - filesToRead.length,
-      filesToRead.map((u) => u.fsPath),
+      MAX_FILES_TO_INCLUDE - filesToInclude.length,
+      filesToInclude.map((u) => u.fsPath),
     );
 
     for (const uri of workspaceFiles) {
-      if (!filesToRead.some((f) => f.fsPath === uri.fsPath)) {
-        filesToRead.push(uri);
+      if (!filesToInclude.some((f) => f.fsPath === uri.fsPath)) {
+        filesToInclude.push(uri);
       }
     }
 
-    // Read files up to total context limit
+    // Build file list without reading content — agent reads what it needs via read_file tool
     const files: WorkspaceFile[] = [];
-    let totalBytes = 0;
-
-    for (const uri of filesToRead) {
+    for (const uri of filesToInclude) {
       if (files.length >= MAX_FILES_TO_INCLUDE) {
         break;
       }
-
-      const workspaceFile = await this.readWorkspaceFile(uri, rootUri.fsPath);
-      if (!workspaceFile) {
+      const fsPath = uri.fsPath;
+      const relativePath = this.toRelativePath(fsPath, rootUri.fsPath);
+      const ext = path.extname(fsPath).toLowerCase();
+      // Apply the same exclusion checks as readWorkspaceFile to keep the list clean
+      const basename = path.basename(fsPath);
+      const lowerBasename = basename.toLowerCase();
+      if (
+        EXCLUDED_EXTENSIONS.has(ext) ||
+        EXCLUDED_SENSITIVE_EXTENSIONS.has(ext) ||
+        EXCLUDED_FILENAMES.has(basename) ||
+        EXCLUDED_FILENAME_PATTERNS.some((p) => p.test(lowerBasename))
+      ) {
         continue;
       }
-
-      const fileBytes = Buffer.byteLength(workspaceFile.content, 'utf-8');
-      if (totalBytes + fileBytes > MAX_TOTAL_CONTEXT_BYTES) {
-        break;
-      }
-
-      files.push(workspaceFile);
-      totalBytes += fileBytes;
+      files.push({ path: relativePath, content: '', language: this.getLanguage(ext) });
     }
 
     return {

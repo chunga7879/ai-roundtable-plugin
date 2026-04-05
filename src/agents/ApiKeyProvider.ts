@@ -50,6 +50,18 @@ const READ_FILE_TOOL_ANTHROPIC = {
   },
 };
 
+const RUN_COMMAND_TOOL_ANTHROPIC = {
+  name: 'run_command',
+  description: 'Run a shell command in the workspace root. The user will be prompted to approve before it runs. Use this when you need command output to complete your task (e.g. build verification, dependency audit). For post-response suggestions, use RUN: syntax instead.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      command: { type: 'string', description: 'Shell command to execute in the workspace root.' },
+    },
+    required: ['command'],
+  },
+};
+
 const READ_FILE_TOOL_OPENAI = {
   type: 'function',
   function: {
@@ -65,6 +77,21 @@ const READ_FILE_TOOL_OPENAI = {
   },
 };
 
+const RUN_COMMAND_TOOL_OPENAI = {
+  type: 'function',
+  function: {
+    name: 'run_command',
+    description: 'Run a shell command in the workspace root. The user will be prompted to approve before it runs. Use this when you need command output to complete your task (e.g. build verification, dependency audit). For post-response suggestions, use RUN: syntax instead.',
+    parameters: {
+      type: 'object',
+      properties: {
+        command: { type: 'string', description: 'Shell command to execute in the workspace root.' },
+      },
+      required: ['command'],
+    },
+  },
+};
+
 const READ_FILE_TOOL_GEMINI = {
   name: 'read_file',
   description: 'Read the content of a file in the workspace by its relative path.',
@@ -74,6 +101,18 @@ const READ_FILE_TOOL_GEMINI = {
       path: { type: 'string', description: 'Relative path to the file from workspace root.' },
     },
     required: ['path'],
+  },
+};
+
+const RUN_COMMAND_TOOL_GEMINI = {
+  name: 'run_command',
+  description: 'Run a shell command in the workspace root. The user will be prompted to approve before it runs. Use this when you need command output to complete your task (e.g. build verification, dependency audit). For post-response suggestions, use RUN: syntax instead.',
+  parameters: {
+    type: 'object',
+    properties: {
+      command: { type: 'string', description: 'Shell command to execute in the workspace root.' },
+    },
+    required: ['command'],
   },
 };
 
@@ -182,7 +221,7 @@ export class ApiKeyProvider {
       { role: 'user', content: options.userMessage },
     ];
 
-    const tools = options.onToolCall ? [READ_FILE_TOOL_ANTHROPIC] : undefined;
+    const tools = options.onToolCall ? [READ_FILE_TOOL_ANTHROPIC, RUN_COMMAND_TOOL_ANTHROPIC] : undefined;
     const totalUsage = { inputTokens: 0, outputTokens: 0 };
     let finalText = '';
 
@@ -190,7 +229,7 @@ export class ApiKeyProvider {
       const body = JSON.stringify({
         model: CLAUDE_MODEL,
         max_tokens: DEFAULT_MAX_TOKENS,
-        system: options.systemPrompt,
+        system: [{ type: 'text', text: options.systemPrompt, cache_control: { type: 'ephemeral' } }],
         messages,
         ...(tools ? { tools } : {}),
       });
@@ -203,6 +242,7 @@ export class ApiKeyProvider {
           'Content-Type': 'application/json',
           'x-api-key': apiKey,
           'anthropic-version': '2023-06-01',
+          'anthropic-beta': 'prompt-caching-2024-07-31',
           'Content-Length': Buffer.byteLength(body).toString(),
         },
         body,
@@ -240,8 +280,9 @@ export class ApiKeyProvider {
       // Execute tool calls and build tool_result message
       const toolResults: Array<{ type: string; tool_use_id: string; content: string }> = [];
       for (const block of toolUseBlocks) {
-        const filePath = typeof block.input?.['path'] === 'string' ? block.input['path'] : '';
-        const result = await options.onToolCall({ id: block.id ?? '', name: 'read_file', filePath });
+        const result = block.name === 'run_command'
+          ? await options.onToolCall({ id: block.id ?? '', name: 'run_command', command: typeof block.input?.['command'] === 'string' ? block.input['command'] : '' })
+          : await options.onToolCall({ id: block.id ?? '', name: 'read_file', filePath: typeof block.input?.['path'] === 'string' ? block.input['path'] : '' });
         toolResults.push({ type: 'tool_result', tool_use_id: block.id ?? '', content: result.content });
       }
       messages.push({ role: 'user', content: toolResults });
@@ -296,7 +337,7 @@ export class ApiKeyProvider {
       { role: 'user', content: options.userMessage },
     ];
 
-    const tools = options.onToolCall ? [READ_FILE_TOOL_OPENAI] : undefined;
+    const tools = options.onToolCall ? [READ_FILE_TOOL_OPENAI, RUN_COMMAND_TOOL_OPENAI] : undefined;
     const totalUsage = { inputTokens: 0, outputTokens: 0 };
     let finalText = '';
 
@@ -358,8 +399,9 @@ export class ApiKeyProvider {
         } catch {
           args = {};
         }
-        const filePath = typeof args['path'] === 'string' ? args['path'] : '';
-        const result = await options.onToolCall({ id: tc.id, name: 'read_file', filePath });
+        const result = tc.function.name === 'run_command'
+          ? await options.onToolCall({ id: tc.id, name: 'run_command', command: typeof args['command'] === 'string' ? args['command'] : '' })
+          : await options.onToolCall({ id: tc.id, name: 'read_file', filePath: typeof args['path'] === 'string' ? args['path'] : '' });
         messages.push({ role: 'tool', tool_call_id: tc.id, content: result.content });
       }
     }
@@ -392,7 +434,7 @@ export class ApiKeyProvider {
     ];
 
     const tools = options.onToolCall
-      ? [{ functionDeclarations: [READ_FILE_TOOL_GEMINI] }]
+      ? [{ functionDeclarations: [READ_FILE_TOOL_GEMINI, RUN_COMMAND_TOOL_GEMINI] }]
       : undefined;
     const totalUsage = { inputTokens: 0, outputTokens: 0 };
     let finalText = '';
@@ -452,8 +494,9 @@ export class ApiKeyProvider {
       const responseParts: Array<Record<string, unknown>> = [];
       for (const part of functionCalls) {
         const fc = part.functionCall!;
-        const filePath = typeof fc.args['path'] === 'string' ? fc.args['path'] : '';
-        const result = await options.onToolCall({ id: fc.name, name: 'read_file', filePath });
+        const result = fc.name === 'run_command'
+          ? await options.onToolCall({ id: fc.name, name: 'run_command', command: typeof fc.args['command'] === 'string' ? fc.args['command'] : '' })
+          : await options.onToolCall({ id: fc.name, name: 'read_file', filePath: typeof fc.args['path'] === 'string' ? fc.args['path'] : '' });
         responseParts.push({ functionResponse: { name: fc.name, response: { content: result.content } } });
       }
       contents.push({ role: 'user', parts: responseParts });
@@ -477,64 +520,124 @@ export class ApiKeyProvider {
       );
     }
 
+    const tools = options.onToolCall ? [READ_FILE_TOOL_ANTHROPIC, RUN_COMMAND_TOOL_ANTHROPIC] : undefined;
     const history = options.conversationHistory ?? [];
-    const body = JSON.stringify({
-      model: CLAUDE_MODEL,
-      max_tokens: DEFAULT_MAX_TOKENS,
-      stream: true,
-      system: options.systemPrompt,
-      messages: [
-        ...history.map((turn) => ({ role: turn.role, content: turn.content })),
-        { role: 'user', content: options.userMessage },
-      ],
-    });
+    const messages: Array<{ role: string; content: unknown }> = [
+      ...history.map((turn) => ({ role: turn.role, content: turn.content })),
+      { role: 'user', content: options.userMessage },
+    ];
 
     let inputTokens = 0;
     let outputTokens = 0;
-    const contentChunks: string[] = [];
+    let finalText = '';
 
-    await this.makeHttpsStreamRequest({
-      hostname: 'api.anthropic.com',
-      path: '/v1/messages',
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-        'Content-Length': Buffer.byteLength(body).toString(),
-      },
-      body,
-      agentLabel: AgentName.CLAUDE,
-      onLine: (line) => {
-        if (!line.startsWith('data: ')) return;
-        const data = line.slice(6);
-        if (data === '[DONE]') return;
-        try {
-          const parsed = JSON.parse(data) as Record<string, unknown>;
-          if (parsed['type'] === 'content_block_delta') {
-            const delta = parsed['delta'] as Record<string, unknown> | undefined;
-            if (delta?.['type'] === 'text_delta' && typeof delta['text'] === 'string') {
-              contentChunks.push(delta['text']);
-              options.onChunk?.(delta['text']);
+    while (true) {
+      const body = JSON.stringify({
+        model: CLAUDE_MODEL,
+        max_tokens: DEFAULT_MAX_TOKENS,
+        stream: true,
+        system: [{ type: 'text', text: options.systemPrompt, cache_control: { type: 'ephemeral' } }],
+        messages,
+        ...(tools ? { tools } : {}),
+      });
+
+      const contentChunks: string[] = [];
+      let stopReason = '';
+      // index → { id, name, accumulated input JSON }
+      const toolBlocks = new Map<number, { id: string; name: string; inputJson: string }>();
+
+      await this.makeHttpsStreamRequest({
+        hostname: 'api.anthropic.com',
+        path: '/v1/messages',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+          'anthropic-beta': 'prompt-caching-2024-07-31',
+          'Content-Length': Buffer.byteLength(body).toString(),
+        },
+        body,
+        agentLabel: AgentName.CLAUDE,
+        cancellationToken: options.cancellationToken,
+        onLine: (line) => {
+          if (!line.startsWith('data: ')) return;
+          const data = line.slice(6);
+          if (data === '[DONE]') return;
+          try {
+            const parsed = JSON.parse(data) as Record<string, unknown>;
+            const type = parsed['type'] as string | undefined;
+
+            if (type === 'message_start') {
+              const msg = parsed['message'] as Record<string, unknown> | undefined;
+              const usage = msg?.['usage'] as Record<string, unknown> | undefined;
+              inputTokens += (usage?.['input_tokens'] as number) ?? 0;
+            } else if (type === 'content_block_start') {
+              const index = parsed['index'] as number;
+              const block = parsed['content_block'] as Record<string, unknown> | undefined;
+              if (block?.['type'] === 'tool_use') {
+                toolBlocks.set(index, {
+                  id: (block['id'] as string) ?? '',
+                  name: (block['name'] as string) ?? '',
+                  inputJson: '',
+                });
+              }
+            } else if (type === 'content_block_delta') {
+              const index = parsed['index'] as number;
+              const delta = parsed['delta'] as Record<string, unknown> | undefined;
+              const deltaType = delta?.['type'] as string | undefined;
+              if (deltaType === 'text_delta' && typeof delta?.['text'] === 'string') {
+                contentChunks.push(delta['text']);
+                options.onChunk?.(delta['text']);
+              } else if (deltaType === 'input_json_delta' && typeof delta?.['partial_json'] === 'string') {
+                const block = toolBlocks.get(index);
+                if (block) block.inputJson += delta['partial_json'];
+              }
+            } else if (type === 'message_delta') {
+              const delta = parsed['delta'] as Record<string, unknown> | undefined;
+              stopReason = (delta?.['stop_reason'] as string) ?? stopReason;
+              const usage = parsed['usage'] as Record<string, unknown> | undefined;
+              outputTokens += (usage?.['output_tokens'] as number) ?? 0;
             }
-          } else if (parsed['type'] === 'message_start') {
-            const msg = parsed['message'] as Record<string, unknown> | undefined;
-            const usage = msg?.['usage'] as Record<string, unknown> | undefined;
-            inputTokens = (usage?.['input_tokens'] as number) ?? 0;
-          } else if (parsed['type'] === 'message_delta') {
-            const usage = parsed['usage'] as Record<string, unknown> | undefined;
-            outputTokens = (usage?.['output_tokens'] as number) ?? 0;
-          }
-        } catch { /* ignore malformed SSE lines */ }
-      },
-    });
+          } catch { /* ignore malformed SSE lines */ }
+        },
+      });
 
-    const content = contentChunks.join('');
-    if (!content.trim()) {
+      const text = contentChunks.join('');
+      if (text) finalText = text;
+
+      if (stopReason !== 'tool_use' || !options.onToolCall || toolBlocks.size === 0) {
+        break;
+      }
+
+      // Append assistant message with text + tool_use blocks
+      const assistantContent: Array<Record<string, unknown>> = [];
+      if (text) assistantContent.push({ type: 'text', text });
+      for (const [, block] of toolBlocks) {
+        let input: Record<string, unknown> = {};
+        try { input = JSON.parse(block.inputJson) as Record<string, unknown>; } catch { /* use empty */ }
+        assistantContent.push({ type: 'tool_use', id: block.id, name: block.name, input });
+      }
+      messages.push({ role: 'assistant', content: assistantContent });
+
+      // Execute tool calls and collect results
+      const toolResults: Array<{ type: string; tool_use_id: string; content: string }> = [];
+      for (const [, block] of toolBlocks) {
+        let input: Record<string, unknown> = {};
+        try { input = JSON.parse(block.inputJson) as Record<string, unknown>; } catch { /* use empty */ }
+        const result = block.name === 'run_command'
+          ? await options.onToolCall({ id: block.id, name: 'run_command', command: typeof input['command'] === 'string' ? input['command'] : '' })
+          : await options.onToolCall({ id: block.id, name: 'read_file', filePath: typeof input['path'] === 'string' ? input['path'] : '' });
+        toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: result.content });
+      }
+      messages.push({ role: 'user', content: toolResults });
+    }
+
+    if (!finalText.trim()) {
       throw new ApiKeyProviderError('Anthropic API returned an empty streaming response.');
     }
     return {
-      content,
+      content: finalText,
       usage: inputTokens || outputTokens ? { inputTokens, outputTokens } : undefined,
     };
   }
@@ -546,64 +649,14 @@ export class ApiKeyProvider {
         'OpenAI API key is not configured. Please run "AI Roundtable: Configure Provider".',
       );
     }
-
-    const history = options.conversationHistory ?? [];
-    const body = JSON.stringify({
-      model: OPENAI_MODEL,
-      max_tokens: DEFAULT_MAX_TOKENS,
-      stream: true,
-      stream_options: { include_usage: true },
-      messages: [
-        { role: 'system', content: options.systemPrompt },
-        ...history.map((turn) => ({ role: turn.role, content: turn.content })),
-        { role: 'user', content: options.userMessage },
-      ],
-    });
-
-    let inputTokens = 0;
-    let outputTokens = 0;
-    const contentChunks: string[] = [];
-
-    await this.makeHttpsStreamRequest({
+    return this.sendOpenAICompatibleStreamRequest(options, {
+      apiKey,
       hostname: 'api.openai.com',
       path: '/v1/chat/completions',
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Length': Buffer.byteLength(body).toString(),
-      },
-      body,
+      model: OPENAI_MODEL,
       agentLabel: AgentName.GPT,
-      onLine: (line) => {
-        if (!line.startsWith('data: ')) return;
-        const data = line.slice(6);
-        if (data === '[DONE]') return;
-        try {
-          const parsed = JSON.parse(data) as Record<string, unknown>;
-          const choices = parsed['choices'] as Array<Record<string, unknown>> | undefined;
-          const delta = choices?.[0]?.['delta'] as Record<string, unknown> | undefined;
-          if (typeof delta?.['content'] === 'string' && delta['content']) {
-            contentChunks.push(delta['content']);
-            options.onChunk?.(delta['content']);
-          }
-          const usage = parsed['usage'] as Record<string, unknown> | undefined;
-          if (usage) {
-            inputTokens = (usage['prompt_tokens'] as number) ?? 0;
-            outputTokens = (usage['completion_tokens'] as number) ?? 0;
-          }
-        } catch { /* ignore malformed SSE lines */ }
-      },
+      errorPrefix: 'OpenAI',
     });
-
-    const content = contentChunks.join('');
-    if (!content.trim()) {
-      throw new ApiKeyProviderError('OpenAI API returned an empty streaming response.');
-    }
-    return {
-      content,
-      usage: inputTokens || outputTokens ? { inputTokens, outputTokens } : undefined,
-    };
   }
 
   private async sendDeepSeekStreamRequest(options: LLMRequestOptions): Promise<ApiKeyResponse> {
@@ -613,61 +666,131 @@ export class ApiKeyProvider {
         'DeepSeek API key is not configured. Please run "AI Roundtable: Configure Provider".',
       );
     }
-
-    const history = options.conversationHistory ?? [];
-    const body = JSON.stringify({
+    return this.sendOpenAICompatibleStreamRequest(options, {
+      apiKey,
+      hostname: 'api.deepseek.com',
+      path: '/v1/chat/completions',
       model: DEEPSEEK_MODEL,
-      max_tokens: DEFAULT_MAX_TOKENS,
-      stream: true,
-      messages: [
-        { role: 'system', content: options.systemPrompt },
-        ...history.map((turn) => ({ role: turn.role, content: turn.content })),
-        { role: 'user', content: options.userMessage },
-      ],
+      agentLabel: AgentName.DEEPSEEK,
+      errorPrefix: 'DeepSeek',
     });
+  }
+
+  private async sendOpenAICompatibleStreamRequest(
+    options: LLMRequestOptions,
+    params: { apiKey: string; hostname: string; path: string; model: string; agentLabel: AgentName; errorPrefix: string },
+  ): Promise<ApiKeyResponse> {
+    const tools = options.onToolCall ? [READ_FILE_TOOL_OPENAI, RUN_COMMAND_TOOL_OPENAI] : undefined;
+    const history = options.conversationHistory ?? [];
+    const messages: Array<Record<string, unknown>> = [
+      { role: 'system', content: options.systemPrompt },
+      ...history.map((turn) => ({ role: turn.role, content: turn.content })),
+      { role: 'user', content: options.userMessage },
+    ];
 
     let inputTokens = 0;
     let outputTokens = 0;
-    const contentChunks: string[] = [];
+    let finalText = '';
 
-    await this.makeHttpsStreamRequest({
-      hostname: 'api.deepseek.com',
-      path: '/v1/chat/completions',
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Length': Buffer.byteLength(body).toString(),
-      },
-      body,
-      agentLabel: AgentName.DEEPSEEK,
-      onLine: (line) => {
-        if (!line.startsWith('data: ')) return;
-        const data = line.slice(6);
-        if (data === '[DONE]') return;
-        try {
-          const parsed = JSON.parse(data) as Record<string, unknown>;
-          const choices = parsed['choices'] as Array<Record<string, unknown>> | undefined;
-          const delta = choices?.[0]?.['delta'] as Record<string, unknown> | undefined;
-          if (typeof delta?.['content'] === 'string' && delta['content']) {
-            contentChunks.push(delta['content']);
-            options.onChunk?.(delta['content']);
-          }
-          const usage = parsed['usage'] as Record<string, unknown> | undefined;
-          if (usage) {
-            inputTokens = (usage['prompt_tokens'] as number) ?? 0;
-            outputTokens = (usage['completion_tokens'] as number) ?? 0;
-          }
-        } catch { /* ignore malformed SSE lines */ }
-      },
-    });
+    while (true) {
+      const body = JSON.stringify({
+        model: params.model,
+        max_tokens: DEFAULT_MAX_TOKENS,
+        stream: true,
+        stream_options: { include_usage: true },
+        messages,
+        ...(tools ? { tools, tool_choice: 'auto' } : {}),
+      });
 
-    const content = contentChunks.join('');
-    if (!content.trim()) {
-      throw new ApiKeyProviderError('DeepSeek API returned an empty streaming response.');
+      const contentChunks: string[] = [];
+      let finishReason = '';
+      // index → { id, name, accumulated arguments JSON }
+      const toolCalls = new Map<number, { id: string; name: string; argsJson: string }>();
+
+      await this.makeHttpsStreamRequest({
+        hostname: params.hostname,
+        path: params.path,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${params.apiKey}`,
+          'Content-Length': Buffer.byteLength(body).toString(),
+        },
+        body,
+        agentLabel: params.agentLabel,
+        cancellationToken: options.cancellationToken,
+        onLine: (line) => {
+          if (!line.startsWith('data: ')) return;
+          const data = line.slice(6);
+          if (data === '[DONE]') return;
+          try {
+            const parsed = JSON.parse(data) as Record<string, unknown>;
+            const choices = parsed['choices'] as Array<Record<string, unknown>> | undefined;
+            const choice = choices?.[0];
+            const delta = choice?.['delta'] as Record<string, unknown> | undefined;
+            const fr = choice?.['finish_reason'] as string | undefined;
+            if (fr) finishReason = fr;
+
+            if (typeof delta?.['content'] === 'string' && delta['content']) {
+              contentChunks.push(delta['content']);
+              options.onChunk?.(delta['content']);
+            }
+
+            const tcDeltas = delta?.['tool_calls'] as Array<Record<string, unknown>> | undefined;
+            if (tcDeltas) {
+              for (const tc of tcDeltas) {
+                const index = tc['index'] as number;
+                if (!toolCalls.has(index)) {
+                  toolCalls.set(index, { id: '', name: '', argsJson: '' });
+                }
+                const existing = toolCalls.get(index)!;
+                if (tc['id']) existing.id = tc['id'] as string;
+                const fn = tc['function'] as Record<string, unknown> | undefined;
+                if (fn?.['name']) existing.name = fn['name'] as string;
+                if (fn?.['arguments']) existing.argsJson += fn['arguments'] as string;
+              }
+            }
+
+            const usage = parsed['usage'] as Record<string, unknown> | undefined;
+            if (usage) {
+              inputTokens = (usage['prompt_tokens'] as number) ?? 0;
+              outputTokens = (usage['completion_tokens'] as number) ?? 0;
+            }
+          } catch { /* ignore malformed SSE lines */ }
+        },
+      });
+
+      const text = contentChunks.join('');
+      if (text) finalText = text;
+
+      if (finishReason !== 'tool_calls' || !options.onToolCall || toolCalls.size === 0) {
+        break;
+      }
+
+      // Append assistant message with tool calls
+      const tcArray = Array.from(toolCalls.values()).map((tc) => ({
+        id: tc.id,
+        type: 'function',
+        function: { name: tc.name, arguments: tc.argsJson },
+      }));
+      messages.push({ role: 'assistant', content: text || null, tool_calls: tcArray });
+
+      // Execute tool calls and append results
+      for (const tc of toolCalls.values()) {
+        let args: Record<string, unknown> = {};
+        try { args = JSON.parse(tc.argsJson) as Record<string, unknown>; } catch { /* use empty */ }
+        const result = tc.name === 'run_command'
+          ? await options.onToolCall({ id: tc.id, name: 'run_command', command: typeof args['command'] === 'string' ? args['command'] : '' })
+          : await options.onToolCall({ id: tc.id, name: 'read_file', filePath: typeof args['path'] === 'string' ? args['path'] : '' });
+        messages.push({ role: 'tool', tool_call_id: tc.id, content: result.content });
+      }
+    }
+
+    if (!finalText.trim()) {
+      throw new ApiKeyProviderError(`${params.errorPrefix} API returned an empty streaming response.`);
     }
     return {
-      content,
+      content: finalText,
       usage: inputTokens || outputTokens ? { inputTokens, outputTokens } : undefined,
     };
   }
@@ -680,70 +803,109 @@ export class ApiKeyProvider {
       );
     }
 
+    const tools = options.onToolCall ? [{ functionDeclarations: [READ_FILE_TOOL_GEMINI, RUN_COMMAND_TOOL_GEMINI] }] : undefined;
     const history = options.conversationHistory ?? [];
-    const body = JSON.stringify({
-      system_instruction: { parts: [{ text: options.systemPrompt }] },
-      contents: [
-        ...history.map((turn) => ({
-          role: turn.role === 'assistant' ? 'model' : 'user',
-          parts: [{ text: turn.content }],
-        })),
-        { role: 'user', parts: [{ text: options.userMessage }] },
-      ],
-      generationConfig: { maxOutputTokens: DEFAULT_MAX_TOKENS },
-    });
+    const contents: Array<Record<string, unknown>> = [
+      ...history.map((turn) => ({
+        role: turn.role === 'assistant' ? 'model' : 'user',
+        parts: [{ text: turn.content }],
+      })),
+      { role: 'user', parts: [{ text: options.userMessage }] },
+    ];
 
     let inputTokens = 0;
     let outputTokens = 0;
-    const contentChunks: string[] = [];
+    let finalText = '';
 
-    await this.makeHttpsStreamRequest({
-      hostname: 'generativelanguage.googleapis.com',
-      path: `/v1beta/models/${GEMINI_MODEL}:streamGenerateContent?alt=sse`,
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-goog-api-key': apiKey,
-        'Content-Length': Buffer.byteLength(body).toString(),
-      },
-      body,
-      agentLabel: AgentName.GEMINI,
-      onLine: (line) => {
-        if (!line.startsWith('data: ')) return;
-        const data = line.slice(6);
-        try {
-          const parsed = JSON.parse(data) as Record<string, unknown>;
-          if (parsed['error']) {
-            const err = parsed['error'] as Record<string, unknown>;
-            throw new ApiKeyProviderError(
-              `Google Gemini API error (${err['status'] ?? 'unknown'}): ${err['message']}`,
-            );
-          }
-          const candidates = parsed['candidates'] as Array<Record<string, unknown>> | undefined;
-          const parts = (candidates?.[0]?.['content'] as Record<string, unknown> | undefined)?.['parts'] as Array<Record<string, unknown>> | undefined;
-          const text = parts?.[0]?.['text'];
-          if (typeof text === 'string' && text) {
-            contentChunks.push(text);
-            options.onChunk?.(text);
-          }
-          const usageMeta = parsed['usageMetadata'] as Record<string, unknown> | undefined;
-          if (usageMeta) {
-            inputTokens = (usageMeta['promptTokenCount'] as number) ?? inputTokens;
-            outputTokens = (usageMeta['candidatesTokenCount'] as number) ?? outputTokens;
-          }
-        } catch (err) {
-          if (err instanceof ApiKeyProviderError) throw err;
-          /* ignore malformed SSE lines */
-        }
-      },
-    });
+    while (true) {
+      const body = JSON.stringify({
+        system_instruction: { parts: [{ text: options.systemPrompt }] },
+        contents,
+        generationConfig: { maxOutputTokens: DEFAULT_MAX_TOKENS },
+        ...(tools ? { tools } : {}),
+      });
 
-    const content = contentChunks.join('');
-    if (!content.trim()) {
+      const contentChunks: string[] = [];
+      const functionCallParts: Array<Record<string, unknown>> = [];
+
+      await this.makeHttpsStreamRequest({
+        hostname: 'generativelanguage.googleapis.com',
+        path: `/v1beta/models/${GEMINI_MODEL}:streamGenerateContent?alt=sse`,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': apiKey,
+          'Content-Length': Buffer.byteLength(body).toString(),
+        },
+        body,
+        agentLabel: AgentName.GEMINI,
+        cancellationToken: options.cancellationToken,
+        onLine: (line) => {
+          if (!line.startsWith('data: ')) return;
+          const data = line.slice(6);
+          try {
+            const parsed = JSON.parse(data) as Record<string, unknown>;
+            if (parsed['error']) {
+              const err = parsed['error'] as Record<string, unknown>;
+              throw new ApiKeyProviderError(
+                `Google Gemini API error (${err['status'] ?? 'unknown'}): ${err['message']}`,
+              );
+            }
+            const candidates = parsed['candidates'] as Array<Record<string, unknown>> | undefined;
+            const parts = (candidates?.[0]?.['content'] as Record<string, unknown> | undefined)?.['parts'] as Array<Record<string, unknown>> | undefined;
+            if (parts) {
+              for (const part of parts) {
+                if (typeof part['text'] === 'string' && part['text']) {
+                  contentChunks.push(part['text']);
+                  options.onChunk?.(part['text']);
+                }
+                if (part['functionCall']) {
+                  functionCallParts.push(part);
+                }
+              }
+            }
+            const usageMeta = parsed['usageMetadata'] as Record<string, unknown> | undefined;
+            if (usageMeta) {
+              inputTokens = (usageMeta['promptTokenCount'] as number) ?? inputTokens;
+              outputTokens = (usageMeta['candidatesTokenCount'] as number) ?? outputTokens;
+            }
+          } catch (err) {
+            if (err instanceof ApiKeyProviderError) throw err;
+            /* ignore malformed SSE lines */
+          }
+        },
+      });
+
+      const text = contentChunks.join('');
+      if (text) finalText = text;
+
+      if (!functionCallParts.length || !options.onToolCall) {
+        break;
+      }
+
+      // Append model turn with text + function calls
+      const modelParts: Array<Record<string, unknown>> = [];
+      if (text) modelParts.push({ text });
+      modelParts.push(...functionCallParts);
+      contents.push({ role: 'model', parts: modelParts });
+
+      // Execute tool calls and collect function responses
+      const responseParts: Array<Record<string, unknown>> = [];
+      for (const part of functionCallParts) {
+        const fc = part['functionCall'] as { name: string; args: Record<string, unknown> };
+        const result = fc.name === 'run_command'
+          ? await options.onToolCall({ id: fc.name, name: 'run_command', command: typeof fc.args['command'] === 'string' ? fc.args['command'] : '' })
+          : await options.onToolCall({ id: fc.name, name: 'read_file', filePath: typeof fc.args['path'] === 'string' ? fc.args['path'] : '' });
+        responseParts.push({ functionResponse: { name: fc.name, response: { content: result.content } } });
+      }
+      contents.push({ role: 'user', parts: responseParts });
+    }
+
+    if (!finalText.trim()) {
       throw new ApiKeyProviderError('Google Gemini API returned an empty streaming response.');
     }
     return {
-      content,
+      content: finalText,
       usage: inputTokens || outputTokens ? { inputTokens, outputTokens } : undefined,
     };
   }

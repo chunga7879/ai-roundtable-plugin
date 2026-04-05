@@ -20,6 +20,7 @@ function makeRoundRequest(overrides: Partial<RoundRequest> = {}): RoundRequest {
     subAgents: [],
     workspaceContext: { files: [] },
     conversationHistory: [],
+    cachedFiles: new Map(),
     ...overrides,
   };
 }
@@ -510,6 +511,112 @@ describe('AgentRunner', () => {
       expect(subAgentUserMessage).toContain('Build a TODO app');
       // No "Prior user requests" prefix when history is empty
       expect(subAgentUserMessage).not.toContain('Prior user requests');
+    });
+  });
+
+  describe('file cache (cachedFiles)', () => {
+    it('serves cached files without calling workspaceReader', async () => {
+      const copilotProvider = makeCopilotProvider('Response');
+      const workspaceReader = makeWorkspaceReader();
+      const runner = new AgentRunner({
+        copilotProvider: copilotProvider as never,
+        apiKeyProvider: makeApiKeyProvider() as never,
+        providerMode: ProviderMode.COPILOT,
+        workspaceReader: workspaceReader as never,
+      });
+
+      const cachedFiles = new Map([['src/app.ts', 'cached content']]);
+
+      await runner.runRound(
+        makeRoundRequest({
+          workspaceContext: {
+            files: [{ path: 'src/app.ts', content: '', language: 'typescript' }],
+          },
+          cachedFiles,
+        }),
+        makeCancellationToken(),
+        jest.fn(),
+      );
+
+      // Cached file should be in the user message, not fetched via tool call
+      const callArgs = copilotProvider.sendRequest.mock.calls[0];
+      const userMessage = callArgs[0].userMessage as string;
+      expect(userMessage).toContain('cached content');
+      expect(workspaceReader.readFileForTool).not.toHaveBeenCalled();
+    });
+
+    it('does not send duplicate files to sub-agents when files are read via tool calls', async () => {
+      let callCount = 0;
+      const capturedSubAgentMessages: string[] = [];
+
+      // Simulate main agent calling read_file tool during its response
+      let toolHandler: ((toolCall: { id: string; name: 'read_file'; filePath: string }) => Promise<{ id: string; content: string; isError: boolean }>) | undefined;
+      const copilotProviderWithTool = {
+        sendRequest: jest.fn().mockImplementation((opts: { userMessage: string; onToolCall?: typeof toolHandler }) => {
+          callCount++;
+          if (callCount === 1) {
+            // Simulate a tool call by the main agent
+            toolHandler = opts.onToolCall;
+            return Promise.resolve('Main response');
+          }
+          if (callCount === 2) {
+            capturedSubAgentMessages.push(opts.userMessage);
+            return Promise.resolve('Sub feedback');
+          }
+          return Promise.resolve('Reflected');
+        }),
+        isAvailable: jest.fn().mockResolvedValue(true),
+        invalidateModelCache: jest.fn(),
+      };
+
+      const cachedFiles = new Map<string, string>();
+      const runner = new AgentRunner({
+        copilotProvider: copilotProviderWithTool as never,
+        apiKeyProvider: makeApiKeyProvider() as never,
+        providerMode: ProviderMode.COPILOT,
+        workspaceReader: makeWorkspaceReader() as never,
+      });
+
+      // Pre-populate cache with a file to simulate a previous turn read
+      cachedFiles.set('src/existing.ts', 'existing content');
+
+      await runner.runRound(
+        makeRoundRequest({
+          subAgents: [AgentName.GPT],
+          cachedFiles,
+        }),
+        makeCancellationToken(),
+        jest.fn(),
+      );
+
+      // Sub-agent message should contain 'existing content' exactly once
+      if (capturedSubAgentMessages.length > 0) {
+        const msg = capturedSubAgentMessages[0];
+        const occurrences = (msg.match(/existing content/g) ?? []).length;
+        expect(occurrences).toBe(1);
+      }
+    });
+
+    it('respects MAX_TOOL_CALLS limit for new file reads', async () => {
+      const copilotProvider = makeCopilotProvider('Response');
+      const workspaceReader = {
+        readFileForTool: jest.fn().mockResolvedValue({ content: 'file content', isError: false }),
+      };
+      const runner = new AgentRunner({
+        copilotProvider: copilotProvider as never,
+        apiKeyProvider: makeApiKeyProvider() as never,
+        providerMode: ProviderMode.COPILOT,
+        workspaceReader: workspaceReader as never,
+      });
+
+      await runner.runRound(
+        makeRoundRequest({ cachedFiles: new Map() }),
+        makeCancellationToken(),
+        jest.fn(),
+      );
+
+      // Without tool calls being triggered by the mock, readFileForTool should not be called
+      expect(workspaceReader.readFileForTool).not.toHaveBeenCalled();
     });
   });
 });

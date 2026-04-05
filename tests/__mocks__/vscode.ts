@@ -131,7 +131,21 @@ export class LanguageModelChatMessage {
   ) {}
 }
 
+export class RelativePattern {
+  constructor(
+    public readonly base: unknown,
+    public readonly pattern: string,
+  ) {}
+}
+
 // ── workspace namespace ──────────────────────────────────────────────────────
+
+const mockWatcher = {
+  onDidChange: jest.fn(),
+  onDidCreate: jest.fn(),
+  onDidDelete: jest.fn(),
+  dispose: jest.fn(),
+};
 
 export const workspace = {
   workspaceFolders: undefined as
@@ -148,6 +162,7 @@ export const workspace = {
   },
   applyEdit: jest.fn().mockResolvedValue(true),
   onDidChangeWorkspaceFolders: jest.fn(),
+  createFileSystemWatcher: jest.fn().mockReturnValue(mockWatcher),
 };
 
 // ── window namespace ─────────────────────────────────────────────────────────

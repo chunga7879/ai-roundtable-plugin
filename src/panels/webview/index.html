@@ -197,6 +197,20 @@
       color: var(--vscode-foreground);
     }
 
+    .tool-call-block {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      font-family: var(--vscode-editor-font-family, monospace);
+      color: var(--vscode-descriptionForeground);
+      background: var(--vscode-editor-background);
+      border-left: 2px solid var(--vscode-focusBorder, #007acc);
+      padding: 2px 6px;
+      margin: 2px 0;
+      border-radius: 2px;
+    }
+
     .stream-cursor {
       display: inline-block;
       color: var(--vscode-terminal-foreground, var(--vscode-foreground));
@@ -205,6 +219,22 @@
     }
     @keyframes blink {
       50% { opacity: 0; }
+    }
+
+    /* Streaming text: slightly dim to signal "work in progress" */
+    .stream-text {
+      opacity: 0.8;
+      transition: opacity 0.1s ease;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    /* Finalize fade-in */
+    .message-body.finalizing {
+      opacity: 0;
+    }
+    .message-body {
+      transition: opacity 0.25s ease;
     }
 
     .message-body.user {
@@ -283,11 +313,10 @@
     }
 
     .message-body.sub-agent {
-      background-color: var(--vscode-editor-background);
-      padding: var(--spacing-sm) var(--spacing-md);
+      background-color: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+      padding: var(--spacing-md) var(--spacing-lg);
       border-radius: var(--border-radius);
-      opacity: 0.8;
-      border-left: 3px solid var(--vscode-descriptionForeground);
+      border-left: 3px solid var(--vscode-focusBorder, var(--vscode-descriptionForeground));
       white-space: normal;
     }
 
@@ -299,7 +328,7 @@
       display: flex;
       align-items: center;
       gap: 5px;
-      padding: 2px 0;
+      padding: 4px 0;
       user-select: none;
     }
     .sub-agent-summary::-webkit-details-marker { display: none; }
@@ -311,7 +340,7 @@
       width: 10px;
     }
     details[open] .sub-agent-toggle { transform: rotate(90deg); }
-    .sub-agent-details-body { padding-top: var(--spacing-xs); }
+    .sub-agent-details-body { padding-top: var(--spacing-sm); }
 
     .message-body.error {
       background-color: var(--vscode-inputValidation-errorBackground);
@@ -365,6 +394,41 @@
     .pipeline-stage.active { opacity: 1; font-weight: 500; color: var(--vscode-foreground); }
     .pipeline-stage.done { opacity: 0.3; }
     .pipeline-arrow { opacity: 0.3; font-size: 10px; }
+
+    /* ── Context gauge ── */
+    #context-gauge-bar {
+      display: none;
+      padding: 4px var(--spacing-md);
+      background-color: var(--vscode-editor-background);
+      border-top: 1px solid var(--vscode-panel-border, var(--vscode-widget-border));
+      align-items: center;
+      gap: var(--spacing-sm);
+      flex-shrink: 0;
+    }
+    #context-gauge-bar.visible { display: flex; }
+    #context-gauge-track {
+      flex: 1;
+      height: 3px;
+      background: var(--vscode-panel-border);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+    #context-gauge-fill {
+      height: 100%;
+      width: 0%;
+      border-radius: 2px;
+      transition: width 0.3s ease, background-color 0.3s ease;
+      background: var(--vscode-progressBar-background, #0e70c0);
+    }
+    #context-gauge-fill.warn { background: #cca700; }
+    #context-gauge-fill.danger { background: var(--vscode-errorForeground, #f48771); }
+    #context-gauge-label {
+      font-size: 11px;
+      color: var(--vscode-descriptionForeground);
+      white-space: nowrap;
+    }
+    #context-gauge-label.warn { color: #cca700; }
+    #context-gauge-label.danger { color: var(--vscode-errorForeground, #f48771); }
 
     /* ── Loading indicator ── */
     .loading-dots {
@@ -535,6 +599,60 @@
       opacity: 0.5;
       cursor: not-allowed;
     }
+    #stop-btn {
+      padding: var(--spacing-sm) var(--spacing-md);
+      background-color: var(--vscode-button-secondaryBackground);
+      color: var(--vscode-button-secondaryForeground);
+      border: none;
+      border-radius: var(--border-radius);
+      cursor: pointer;
+      font-family: inherit;
+      font-size: var(--font-size-md);
+      white-space: nowrap;
+      height: 38px;
+    }
+    #stop-btn:hover {
+      background-color: var(--vscode-button-secondaryHoverBackground);
+    }
+
+    /* ── Execution output collapsible ── */
+    .exec-output-details { margin: 2px 0; }
+    .exec-output-summary {
+      cursor: pointer;
+      list-style: none;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      padding: 4px var(--spacing-sm);
+      background-color: var(--vscode-inputValidation-errorBackground, rgba(244,71,71,0.1));
+      border-left: 3px solid var(--vscode-errorForeground, #f48771);
+      border-radius: var(--border-radius);
+      user-select: none;
+      font-size: var(--font-size-sm);
+      color: var(--vscode-errorForeground, #f48771);
+    }
+    .exec-output-summary::-webkit-details-marker { display: none; }
+    .exec-output-toggle {
+      font-size: 9px;
+      transition: transform 0.15s;
+      display: inline-block;
+      width: 10px;
+      flex-shrink: 0;
+    }
+    details[open] .exec-output-toggle { transform: rotate(90deg); }
+    .exec-output-body {
+      margin-top: 4px;
+      padding: var(--spacing-sm) var(--spacing-md);
+      background-color: var(--vscode-textCodeBlock-background, rgba(128,128,128,0.1));
+      border-radius: var(--border-radius);
+      font-family: var(--vscode-editor-font-family, monospace);
+      font-size: 11px;
+      white-space: pre-wrap;
+      word-break: break-all;
+      max-height: 300px;
+      overflow-y: auto;
+      color: var(--vscode-foreground);
+    }
 
     /* ── RUN command chip ── */
     .run-command-chip {
@@ -687,6 +805,14 @@
     </div>
   </div>
 
+  <!-- Context Usage Gauge -->
+  <div id="context-gauge-bar">
+    <span id="context-gauge-label"></span>
+    <div id="context-gauge-track">
+      <div id="context-gauge-fill"></div>
+    </div>
+  </div>
+
   <!-- Pipeline Status Bar -->
   <div id="pipeline-bar">
     <div class="pipeline-spinner"></div>
@@ -720,6 +846,7 @@
       aria-label="Message input"
     ></textarea>
     <button id="send-btn" type="button">Send</button>
+    <button id="stop-btn" type="button" title="Stop" style="display:none;">&#9632;</button>
   </div>
 
   <script nonce="{{NONCE}}">
@@ -739,12 +866,16 @@
       const messagesEl = /** @type {HTMLElement} */ (document.getElementById('messages'));
       const messageInput = /** @type {HTMLTextAreaElement} */ (document.getElementById('message-input'));
       const sendBtn = /** @type {HTMLButtonElement} */ (document.getElementById('send-btn'));
+      const stopBtn = /** @type {HTMLButtonElement} */ (document.getElementById('stop-btn'));
       const roundSelect = /** @type {HTMLSelectElement} */ (document.getElementById('round-select'));
       const mainAgentSelect = /** @type {HTMLSelectElement} */ (document.getElementById('main-agent-select'));
       const fileChangesPanel = /** @type {HTMLElement} */ (document.getElementById('file-changes-panel'));
       const fileChangesList = /** @type {HTMLElement} */ (document.getElementById('file-changes-list'));
       const applyChangesBtn = /** @type {HTMLButtonElement} */ (document.getElementById('apply-changes-btn'));
       const rejectChangesBtn = /** @type {HTMLButtonElement} */ (document.getElementById('reject-changes-btn'));
+      const contextGaugeBar = /** @type {HTMLElement} */ (document.getElementById('context-gauge-bar'));
+      const contextGaugeFill = /** @type {HTMLElement} */ (document.getElementById('context-gauge-fill'));
+      const contextGaugeLabel = /** @type {HTMLElement} */ (document.getElementById('context-gauge-label'));
       const pipelineBar = /** @type {HTMLElement} */ (document.getElementById('pipeline-bar'));
       const psThinking = /** @type {HTMLElement} */ (document.getElementById('ps-thinking'));
       const psVerifying = /** @type {HTMLElement} */ (document.getElementById('ps-verifying'));
@@ -758,7 +889,7 @@
 
       // ── Send message on Enter (Shift+Enter for newline) ────────────────────
       messageInput.addEventListener('keydown', function (e) {
-        if (e.key === 'Enter' && !e.shiftKey) {
+        if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
           e.preventDefault();
           handleSend();
         }
@@ -917,10 +1048,9 @@
 
         labelEl.textContent = buildLabel(msg);
         header.appendChild(labelEl);
-        wrapper.appendChild(header);
 
         if (msg.isSubAgentFeedback) {
-          // Render sub-agent feedback as a collapsible details element
+          // Render sub-agent feedback as a collapsible details element (no separate header row)
           const details = document.createElement('details');
           details.className = 'sub-agent-details';
 
@@ -949,10 +1079,14 @@
           if (msg.role === 'agent' && !msg.streaming) {
             renderAgentContent(bodyEl, msg.content);
           } else if (msg.streaming) {
-            // Show only a blinking cursor while streaming; raw text is buffered invisibly
+            // Status placeholder + cursor; raw text is buffered and only shown on finalize
+            const textNode = document.createElement('span');
+            textNode.className = 'stream-text';
+            textNode.textContent = msg.isSubAgentFeedback ? 'Verifying\u2026' : 'Thinking\u2026';
             const cursor = document.createElement('span');
             cursor.className = 'stream-cursor';
             cursor.textContent = '\u258C';
+            bodyEl.appendChild(textNode);
             bodyEl.appendChild(cursor);
           } else {
             bodyEl.textContent = msg.content;
@@ -973,7 +1107,8 @@
         }
 
         messagesEl.appendChild(wrapper);
-        scrollToBottom();
+        autoScroll = true;
+        scrollToBottom(true);
       }
 
       /**
@@ -1321,10 +1456,14 @@
       function handleStreamChunk(payload) {
         const wrapper = document.getElementById('msg-' + payload.id);
         if (!wrapper) return;
-        // Accumulate raw content in a data attribute (hidden from view)
-        const prev = wrapper.dataset.streamBuffer ?? '';
-        wrapper.dataset.streamBuffer = prev + payload.chunk;
-        // Scroll to keep the bubble in view
+        // Accumulate full response for final render; show stripped version live
+        wrapper.dataset.streamBuffer = (wrapper.dataset.streamBuffer ?? '') + payload.chunk;
+        const textNode = wrapper.querySelector('.stream-text');
+        if (textNode) {
+          // Strip FILE: blocks so reasoning is visible but raw code isn't
+          const stripped = stripFileBlocks(wrapper.dataset.streamBuffer);
+          textNode.textContent = stripped || '';
+        }
         scrollToBottom();
       }
 
@@ -1337,8 +1476,68 @@
         if (!wrapper) return;
         const bodyEl = wrapper.querySelector('.message-body');
         if (!bodyEl) return;
-        bodyEl.innerHTML = '';
-        renderAgentContent(bodyEl, payload.content);
+        // Fade out → swap content → fade in
+        bodyEl.classList.add('finalizing');
+        setTimeout(() => {
+          bodyEl.innerHTML = '';
+          renderAgentContent(bodyEl, payload.content);
+          bodyEl.classList.remove('finalizing');
+          scrollToBottom(true);
+        }, 150);
+      }
+
+      /**
+       * Convert a streaming bubble into a collapsed details element (like sub-agent feedback).
+       * @param {{id: string, content: string, label: string}} payload
+       */
+      function handleCollapseMessage(payload) {
+        const wrapper = document.getElementById('msg-' + payload.id);
+        if (!wrapper) return;
+        // Clear existing content
+        wrapper.innerHTML = '';
+
+        const details = document.createElement('details');
+        details.className = 'sub-agent-details';
+
+        const summary = document.createElement('summary');
+        summary.className = 'sub-agent-summary';
+
+        const toggle = document.createElement('span');
+        toggle.className = 'sub-agent-toggle';
+        toggle.textContent = '\u25B6';
+
+        const labelEl = document.createElement('span');
+        labelEl.className = 'message-label agent sub-agent';
+        labelEl.textContent = payload.label;
+
+        summary.appendChild(toggle);
+        summary.appendChild(labelEl);
+        details.appendChild(summary);
+
+        const body = document.createElement('div');
+        body.className = 'sub-agent-details-body message-body sub-agent';
+        renderAgentContent(body, payload.content);
+        details.appendChild(body);
+
+        wrapper.appendChild(details);
+        scrollToBottom(true);
+      }
+
+      function handleToolCallProgress(payload) {
+        const wrapper = document.getElementById('msg-' + payload.msgId);
+        if (!wrapper) return;
+        const bodyEl = wrapper.querySelector('.message-body');
+        if (!bodyEl) return;
+        const textNode = bodyEl.querySelector('.stream-text');
+        const cursor = bodyEl.querySelector('.stream-cursor');
+        // Clear "Thinking..." on first tool call
+        if (textNode) textNode.textContent = '';
+        wrapper.dataset.streamBuffer = '';
+        // Insert tool call block before stream-text: [block1][block2]...[stream-text][cursor]
+        const block = document.createElement('div');
+        block.className = 'tool-call-block';
+        block.textContent = 'Read \u00B7 ' + payload.filePath;
+        bodyEl.insertBefore(block, textNode || cursor);
         scrollToBottom();
       }
 
@@ -1363,8 +1562,31 @@
         return 'Agent';
       }
 
-      function scrollToBottom() {
-        messagesEl.scrollTop = messagesEl.scrollHeight;
+      // Auto-scroll: disabled when user scrolls up, re-enabled when they reach the bottom
+      let autoScroll = true;
+
+      messagesEl.addEventListener('scroll', () => {
+        const distanceFromBottom = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight;
+        autoScroll = distanceFromBottom < 40;
+      });
+
+      /**
+       * @param {{pct: number, label: string}} payload
+       */
+      function updateContextGauge(payload) {
+        const pct = Math.min(100, Math.max(0, payload.pct));
+        contextGaugeBar.classList.toggle('visible', pct > 0);
+        contextGaugeFill.style.width = pct + '%';
+        contextGaugeLabel.textContent = payload.label;
+        const level = pct >= 80 ? 'danger' : pct >= 50 ? 'warn' : '';
+        contextGaugeFill.className = level;
+        contextGaugeLabel.className = level;
+      }
+
+      function scrollToBottom(force = false) {
+        if (force || autoScroll) {
+          messagesEl.scrollTop = messagesEl.scrollHeight;
+        }
       }
 
       // ── Pipeline status bar ────────────────────────────────────────────────
@@ -1401,15 +1623,18 @@
        */
       function setLoading(loading) {
         isLoading = loading;
-        sendBtn.disabled = loading;
         messageInput.disabled = loading;
-
-        sendBtn.textContent = loading ? 'Sending\u2026' : 'Send';
+        sendBtn.style.display = loading ? 'none' : '';
+        stopBtn.style.display = loading ? '' : 'none';
 
         if (!loading) {
           updatePipeline('done');
         }
       }
+
+      stopBtn.addEventListener('click', function () {
+        vscode.postMessage({ type: 'cancelRequest' });
+      });
 
       // ── File changes ───────────────────────────────────────────────────────
       /**
@@ -1465,6 +1690,46 @@
             appendMessage(message.payload);
             break;
 
+          case 'removeMessage': {
+            const el = document.getElementById('msg-' + message.payload.id);
+            if (el) el.remove();
+            break;
+          }
+
+          case 'addCollapsibleMessage': {
+            const { id, title, content } = message.payload;
+            const welcome = document.getElementById('welcome-message');
+            if (welcome) welcome.remove();
+
+            const wrapper = document.createElement('div');
+            wrapper.className = 'message';
+            wrapper.id = 'msg-' + id;
+
+            const details = document.createElement('details');
+            details.className = 'exec-output-details';
+
+            const summary = document.createElement('summary');
+            summary.className = 'exec-output-summary';
+
+            const toggle = document.createElement('span');
+            toggle.className = 'exec-output-toggle';
+            toggle.textContent = '\u25B6';
+            summary.appendChild(toggle);
+            summary.appendChild(document.createTextNode(title));
+            details.appendChild(summary);
+
+            const body = document.createElement('div');
+            body.className = 'exec-output-body';
+            body.textContent = content;
+            details.appendChild(body);
+
+            wrapper.appendChild(details);
+            messagesEl.appendChild(wrapper);
+            autoScroll = true;
+            scrollToBottom(true);
+            break;
+          }
+
           case 'updateMessage':
             updateMessage(message.payload);
             break;
@@ -1475,6 +1740,14 @@
 
           case 'finalizeMessage':
             handleFinalizeMessage(message.payload);
+            break;
+
+          case 'collapseMessage':
+            handleCollapseMessage(message.payload);
+            break;
+
+          case 'toolCallProgress':
+            handleToolCallProgress(message.payload);
             break;
 
           case 'setLoading':
@@ -1493,6 +1766,10 @@
             updatePipeline(message.payload.stage);
             break;
 
+          case 'contextUsage':
+            updateContextGauge(message.payload);
+            break;
+
           case 'clearMessages':
             messagesEl.innerHTML = '';
             messagesEl.insertAdjacentHTML('beforeend',
@@ -1501,6 +1778,7 @@
               '</div>'
             );
             hideFileChanges();
+            updateContextGauge({ pct: 0, label: '' });
             // fall through to also clear context files
             // eslint-disable-next-line no-fallthrough
           case 'clearContextFiles': {

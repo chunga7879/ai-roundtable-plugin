@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import type {
   AgentName,
   AgentResponse,
+  CommandOutput,
   ConversationTurn,
   FileChange,
   RoundRequest,
@@ -11,7 +12,7 @@ import type {
   ToolResult,
   TokenUsage,
 } from '../types';
-import { ProviderMode } from '../types';
+import { ProviderMode, RoundType } from '../types';
 import {
   buildReflectionPrompt,
   buildSubAgentVerificationPrompt,
@@ -21,7 +22,7 @@ import type { CopilotProvider } from './CopilotProvider';
 import { CopilotProviderError } from './CopilotProvider';
 import type { ApiKeyProvider } from './ApiKeyProvider';
 import { ApiKeyProviderError } from './ApiKeyProvider';
-import { parseFileChanges } from '../workspace/WorkspaceWriter';
+import { parseFileChanges, stripFileBlocks } from '../workspace/WorkspaceWriter';
 import type { WorkspaceReader } from '../workspace/WorkspaceReader';
 import { MAX_TOOL_CALLS } from '../workspace/WorkspaceReader';
 import { RoundtableError } from '../errors';
@@ -65,24 +66,41 @@ export class AgentRunner {
     request: RoundRequest,
     cancellationToken: vscode.CancellationToken,
     onProgress: (event: ProgressEvent) => void,
+    onRunCommand?: (command: string) => Promise<CommandOutput>,
   ): Promise<RoundResult> {
-    const { roundType, mainAgent, subAgents, userMessage, workspaceContext, conversationHistory } =
+    const { roundType, mainAgent, subAgents, userMessage, workspaceContext, conversationHistory, cachedFiles, cachedCommandOutputs } =
       request;
 
     const systemPrompt = buildSystemPrompt(roundType);
 
-    // Build initial user message: file list only (AI reads content via tool calls)
-    const fileListSection = this.buildFileListSection(workspaceContext);
+    // Build initial user message: file list + any cached file contents from previous turn
+    const fileListSection = this.buildFileListSection(workspaceContext, cachedFiles);
     const fullUserMessage = fileListSection
       ? `${fileListSection}\n\n---\n\nUser Request:\n${userMessage}`
       : userMessage;
 
-    // Track files read during main agent tool calls — pass to sub-agents as resolved context
-    const resolvedFiles: Array<{ path: string; content: string }> = [];
     let toolCallCount = 0;
 
     const makeToolHandler = (): ((toolCall: ToolCall) => Promise<ToolResult>) => {
       return async (toolCall: ToolCall): Promise<ToolResult> => {
+        if (toolCall.name === 'run_command') {
+          if (!onRunCommand) {
+            return { id: toolCall.id, content: 'Command execution is not available in this context.', isError: true };
+          }
+          onProgress({ type: 'tool_run_command', agentName: mainAgent, command: toolCall.command });
+          const output = await onRunCommand(toolCall.command);
+          cachedCommandOutputs.set(toolCall.command, output);
+          const resultText = `Exit code: ${output.exitCode}\n\nOutput:\n${output.stdout || '(no output)'}`;
+          return { id: toolCall.id, content: resultText, isError: output.exitCode !== 0 };
+        }
+
+        // read_file
+        const cached = cachedFiles.get(toolCall.filePath);
+        if (cached !== undefined) {
+          onProgress({ type: 'tool_read', agentName: mainAgent, filePath: toolCall.filePath });
+          return { id: toolCall.id, content: cached, isError: false };
+        }
+
         if (toolCallCount >= MAX_TOOL_CALLS) {
           return {
             id: toolCall.id,
@@ -94,7 +112,7 @@ export class AgentRunner {
         onProgress({ type: 'tool_read', agentName: mainAgent, filePath: toolCall.filePath });
         const result = await this.workspaceReader.readFileForTool(toolCall.filePath);
         if (!result.isError) {
-          resolvedFiles.push({ path: toolCall.filePath, content: result.content });
+          cachedFiles.set(toolCall.filePath, result.content);
         }
         return { id: toolCall.id, content: result.content, isError: result.isError };
       };
@@ -137,9 +155,12 @@ export class AgentRunner {
     let subAgentVerifications: SubAgentVerification[] = [];
 
     if (uniqueSubAgents.length > 0) {
+      // Strip FILE:/DELETE: blocks from mainAgentResponse before embedding in system prompt.
+      // Files are already passed separately in the user message ([FILES READ BY PRIMARY AGENT]),
+      // so including them in the system prompt too would double the input token count.
       const verificationSystemPrompt = buildSubAgentVerificationPrompt(
         roundType,
-        mainAgentResponse,
+        stripFileBlocks(mainAgentResponse),
       );
 
       onProgress({
@@ -153,19 +174,28 @@ export class AgentRunner {
         .map((t, i) => `[User request ${i + 1}]: ${t.content}`)
         .join('\n');
 
-      // Include files the main agent read via tool calls so sub-agents have the same context
-      const resolvedFilesSection = resolvedFiles.length > 0
-        ? `[FILES READ BY PRIMARY AGENT]\n\n${resolvedFiles
+      // Include all files available to the main agent (cachedFiles already contains newly-read files)
+      const allFilesForSubAgent = Array.from(cachedFiles.entries()).map(([path, content]) => ({ path, content }));
+      const resolvedFilesSection = allFilesForSubAgent.length > 0
+        ? `[FILES READ BY PRIMARY AGENT]\n\n${allFilesForSubAgent
             .map((f) => `FILE: ${f.path}\n\`\`\`\n${f.content}\n\`\`\``)
             .join('\n\n')}\n\n[END FILES]`
         : '';
 
-      const baseMessage = priorUserTurns
-        ? `Prior user requests for context:\n${priorUserTurns}\n\nCurrent request:\n${fullUserMessage}`
-        : `Please verify the primary agent's response for the following request:\n\n${fullUserMessage}`;
+      // Include command outputs so sub-agents can verify the primary agent's interpretation
+      const commandOutputsSection = cachedCommandOutputs.size > 0
+        ? `[COMMANDS RUN BY PRIMARY AGENT]\n\n${Array.from(cachedCommandOutputs.values())
+            .map((o) => `Command: ${o.command}\nExit code: ${o.exitCode}\n\`\`\`\n${o.stdout || '(no output)'}\n\`\`\``)
+            .join('\n\n')}\n\n[END COMMANDS]`
+        : '';
 
-      const subAgentUserMessage = resolvedFilesSection
-        ? `${resolvedFilesSection}\n\n${baseMessage}`
+      const baseMessage = priorUserTurns
+        ? `Prior user requests for context:\n${priorUserTurns}\n\nCurrent request:\n${userMessage}`
+        : `Please verify the primary agent's response for the following request:\n\n${userMessage}`;
+
+      const contextSections = [resolvedFilesSection, commandOutputsSection].filter(Boolean).join('\n\n');
+      const subAgentUserMessage = contextSections
+        ? `${contextSections}\n\n${baseMessage}`
         : baseMessage;
 
       const verificationPromises = uniqueSubAgents.map(async (agentName) => {
@@ -223,10 +253,26 @@ export class AgentRunner {
     let reflectedResponse: string;
 
     if (validFeedbacks.length > 0) {
-      onProgress({ type: 'reflection_start', agentName: mainAgent });
+      onProgress({ type: 'reflection_start', agentName: mainAgent, mainAgentResponse });
 
+      // Developer and QA rounds need exact code context to apply precise fixes —
+      // pass the full mainAgentResponse including FILE: blocks.
+      // Other rounds (documentation, requirements, architect, reviewer) only need prose —
+      // strip FILE: blocks to save tokens, then append a file path list so Claude
+      // knows which files to re-emit in the final response.
+      const FILE_WRITING_ROUNDS = new Set([RoundType.DEVELOPER, RoundType.QA]);
+      let reflectionMainResponse: string;
+      if (FILE_WRITING_ROUNDS.has(roundType)) {
+        reflectionMainResponse = mainAgentResponse;
+      } else {
+        const writtenFilePaths = parseFileChanges(mainAgentResponse).map((f) => f.filePath);
+        const filePathNote = writtenFilePaths.length > 0
+          ? `\n\n[FILES YOU WROTE — re-emit all of these as complete FILE: blocks in your final response]\n${writtenFilePaths.map((p) => `- ${p}`).join('\n')}`
+          : '';
+        reflectionMainResponse = stripFileBlocks(mainAgentResponse) + filePathNote;
+      }
       const reflectionUserMessage = buildReflectionPrompt(
-        mainAgentResponse,
+        reflectionMainResponse,
         validFeedbacks.map((v) => ({
           agentName: v.agentName,
           feedback: v.feedback,
@@ -254,15 +300,18 @@ export class AgentRunner {
       reflectedResponse = mainAgentResponse;
     }
 
-    // Step 4: Parse file changes from the final response
+    // Step 4: Parse file changes from the final response (original, before stripping)
     const fileChanges = parseFileChanges(reflectedResponse);
+
+    // Strip FILE:/DELETE: blocks from display text — file contents are shown in the diff panel
+    const displayResponse = stripFileBlocks(reflectedResponse);
 
     const hasUsage = totalUsage.inputTokens > 0 || totalUsage.outputTokens > 0;
 
     return {
-      mainAgentResponse,
+      mainAgentResponse: stripFileBlocks(mainAgentResponse),
       subAgentVerifications,
-      reflectedResponse,
+      reflectedResponse: displayResponse,
       fileChanges,
       tokenUsage: hasUsage ? totalUsage : undefined,
     };
@@ -332,17 +381,32 @@ export class AgentRunner {
 
   private buildFileListSection(
     workspaceContext: RoundRequest['workspaceContext'],
+    cachedFiles: Map<string, string>,
   ): string {
     if (workspaceContext.files.length === 0) {
       return '';
     }
 
-    const fileList = workspaceContext.files.map((f) => f.path).join('\n');
     const activeNote = workspaceContext.activeFilePath
       ? `Currently active file: ${workspaceContext.activeFilePath}\n\n`
       : '';
 
-    return `[WORKSPACE FILES]\n${activeNote}${fileList}\n[END WORKSPACE FILES]\n\nUse the read_file tool to read any file you need.`;
+    // Separate files into cached (include content) and uncached (list only)
+    const cachedSection = workspaceContext.files
+      .filter((f) => cachedFiles.has(f.path))
+      .map((f) => `FILE: ${f.path}\n\`\`\`\n${cachedFiles.get(f.path)}\n\`\`\``)
+      .join('\n\n');
+
+    const uncachedList = workspaceContext.files
+      .filter((f) => !cachedFiles.has(f.path))
+      .map((f) => f.path)
+      .join('\n');
+
+    const parts: string[] = [];
+    if (cachedSection) parts.push(`[FILES FROM PREVIOUS TURN]\n${cachedSection}\n[END FILES FROM PREVIOUS TURN]`);
+    if (uncachedList) parts.push(`[WORKSPACE FILES]\n${activeNote}${uncachedList}\n[END WORKSPACE FILES]\n\nUse the read_file tool to read any file you need.`);
+
+    return parts.join('\n\n');
   }
 }
 
@@ -351,10 +415,11 @@ export type ProgressEvent =
   | { type: 'main_agent_chunk'; agentName: AgentName; chunk: string }
   | { type: 'main_agent_done'; agentName: AgentName }
   | { type: 'tool_read'; agentName: AgentName; filePath: string }
+  | { type: 'tool_run_command'; agentName: AgentName; command: string }
   | { type: 'sub_agents_start'; agentNames: AgentName[] }
   | { type: 'sub_agent_feedback'; agentName: AgentName; feedback: string }
   | { type: 'sub_agents_done'; agentNames: AgentName[] }
-  | { type: 'reflection_start'; agentName: AgentName }
+  | { type: 'reflection_start'; agentName: AgentName; mainAgentResponse: string }
   | { type: 'reflection_chunk'; agentName: AgentName; chunk: string }
   | { type: 'reflection_done'; agentName: AgentName };
 

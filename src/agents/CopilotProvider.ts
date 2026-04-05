@@ -18,6 +18,30 @@ export class CopilotProviderError extends ProviderError {
   }
 }
 
+/**
+ * Parses raw XML tool call text produced by some Copilot models instead of
+ * native LanguageModelToolCallPart, e.g.:
+ *   <function_calls><invoke name="read_file"><parameter name="path">src/foo.ts</parameter></invoke></function_calls>
+ *   <function_calls><invoke name="run_command"><parameter name="command">npm run build</parameter></invoke></function_calls>
+ */
+function extractXmlToolCalls(text: string): Array<{ name: 'read_file'; path: string } | { name: 'run_command'; command: string }> {
+  const calls: Array<{ name: 'read_file'; path: string } | { name: 'run_command'; command: string }> = [];
+  const invokeRe = /<invoke\s+name="(read_file|run_command)">([\s\S]*?)<\/invoke>/g;
+  let m: RegExpExecArray | null;
+  while ((m = invokeRe.exec(text)) !== null) {
+    const toolName = m[1];
+    const body = m[2];
+    if (toolName === 'read_file') {
+      const paramMatch = /<parameter\s+name="path">([^<]+)<\/parameter>/.exec(body);
+      if (paramMatch) calls.push({ name: 'read_file', path: paramMatch[1].trim() });
+    } else if (toolName === 'run_command') {
+      const paramMatch = /<parameter\s+name="command">([^<]+)<\/parameter>/.exec(body);
+      if (paramMatch) calls.push({ name: 'run_command', command: paramMatch[1].trim() });
+    }
+  }
+  return calls;
+}
+
 const COPILOT_MODEL_FAMILIES: readonly string[] = [
   'gpt-4o',
   'gpt-4',
@@ -141,7 +165,7 @@ export class CopilotProvider {
     const model = await this.selectModel();
     const messages = this.buildMessages(options);
 
-    // Tool definition for read_file
+    // Tool definitions for read_file and run_command
     const tools: vscode.LanguageModelChatTool[] = options.onToolCall
       ? [
           {
@@ -153,6 +177,17 @@ export class CopilotProvider {
                 path: { type: 'string', description: 'Relative path to the file from workspace root.' },
               },
               required: ['path'],
+            },
+          },
+          {
+            name: 'run_command',
+            description: 'Run a shell command in the workspace root. The user will be prompted to approve before it runs. Use this when you need command output to complete your task (e.g. build verification, dependency audit). For post-response suggestions, use RUN: syntax instead.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                command: { type: 'string', description: 'Shell command to execute in the workspace root.' },
+              },
+              required: ['command'],
             },
           },
         ]
@@ -201,7 +236,36 @@ export class CopilotProvider {
         );
       }
 
-      const text = textChunks.join('');
+      const rawText = textChunks.join('');
+
+      // Some Copilot models output tool calls as XML text instead of LanguageModelToolCallPart.
+      // Detect and execute them, then strip from the visible response.
+      if (options.onToolCall && toolCallParts.length === 0 && rawText.includes('<function_calls>')) {
+        const xmlCalls = extractXmlToolCalls(rawText);
+        if (xmlCalls.length > 0) {
+          const cleanText = rawText.replace(/<function_calls>[\s\S]*?<\/function_calls>/g, '').trim();
+          if (cleanText) finalText = cleanText;
+
+          const toolResultTexts: string[] = [];
+          for (const call of xmlCalls) {
+            if (call.name === 'run_command') {
+              const result = await options.onToolCall({ id: call.command, name: 'run_command', command: call.command });
+              toolResultTexts.push(`Command: ${call.command}\n${result.content}`);
+            } else {
+              const result = await options.onToolCall({ id: call.path, name: 'read_file', filePath: call.path });
+              toolResultTexts.push(`File: ${call.path}\n${result.content}`);
+            }
+          }
+          // Feed results back as a user message and continue the loop
+          messages.push(vscode.LanguageModelChatMessage.Assistant(cleanText || rawText));
+          messages.push(vscode.LanguageModelChatMessage.User(
+            `Tool results:\n${toolResultTexts.join('\n\n')}`
+          ));
+          continue;
+        }
+      }
+
+      const text = rawText;
       if (text) finalText = text;
 
       // No tool calls → done
@@ -219,8 +283,9 @@ export class CopilotProvider {
       const resultParts: vscode.LanguageModelToolResultPart[] = [];
       for (const tc of toolCallParts) {
         const input = tc.input as Record<string, unknown>;
-        const filePath = typeof input['path'] === 'string' ? input['path'] : '';
-        const result = await options.onToolCall({ id: tc.callId, name: 'read_file', filePath });
+        const result = tc.name === 'run_command'
+          ? await options.onToolCall({ id: tc.callId, name: 'run_command', command: typeof input['command'] === 'string' ? input['command'] : '' })
+          : await options.onToolCall({ id: tc.callId, name: 'read_file', filePath: typeof input['path'] === 'string' ? input['path'] : '' });
         resultParts.push(
           new vscode.LanguageModelToolResultPart(tc.callId, [
             new vscode.LanguageModelTextPart(result.content),

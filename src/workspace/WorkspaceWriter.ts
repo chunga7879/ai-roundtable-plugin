@@ -131,6 +131,58 @@ export function parseFileChanges(agentResponse: string): FileChange[] {
   return changes;
 }
 
+/**
+ * Remove FILE:/DELETE: blocks from agent response text, leaving only the
+ * prose explanation. Used so the chat bubble doesn't show raw file contents
+ * (those are already visible in the File Changes diff panel).
+ */
+export function stripFileBlocks(agentResponse: string): string {
+  if (typeof agentResponse !== 'string') return agentResponse;
+
+  const lines = agentResponse.split('\n');
+  const kept: string[] = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    // DELETE: line — skip it
+    if (DELETE_LINE_PATTERN.exec(line)) {
+      i++;
+      continue;
+    }
+
+    // FILE: line — skip the FILE: header and its fenced block
+    const fileMatch = FILE_LINE_PATTERN.exec(line);
+    if (fileMatch) {
+      i++;
+      if (i >= lines.length) break;
+      const openMatch = OPEN_FENCE_PATTERN.exec(lines[i]);
+      if (!openMatch) continue; // no fence, skip just the FILE: line
+      const fenceStr = openMatch[1];
+      i++; // skip opening fence
+      let depth = 1;
+      while (i < lines.length) {
+        const contentLine = lines[i];
+        const closeMatch = CLOSE_FENCE_PATTERN.exec(contentLine);
+        if (closeMatch && closeMatch[1] === fenceStr) {
+          depth--;
+          if (depth === 0) { i++; break; }
+        } else if (OPEN_FENCE_PATTERN.exec(contentLine)?.[1] === fenceStr) {
+          depth++;
+        }
+        i++;
+      }
+      continue;
+    }
+
+    kept.push(line);
+    i++;
+  }
+
+  return kept.join('\n').trim();
+}
+
 export class WorkspaceWriter {
   async previewChange(fileChange: FileChange): Promise<void> {
     const workspaceFolders = vscode.workspace.workspaceFolders;

@@ -31,6 +31,18 @@ const PANEL_TITLE = 'AI Roundtable';
 /** Maximum length for error messages exposed to the webview (prevents info leakage). */
 const MAX_ERROR_MESSAGE_LENGTH = 300;
 
+/** Approximate context token limits per main agent (conservative estimates). */
+const CONTEXT_LIMIT_TOKENS: Record<string, number> = {
+  [AgentName.CLAUDE]:   200_000,
+  [AgentName.GPT]:      128_000,
+  [AgentName.GEMINI]:   200_000, // 1M but cap at 200k for gauge purposes
+  [AgentName.DEEPSEEK]:  64_000,
+  [AgentName.COPILOT]:  128_000,
+};
+
+/** Rough chars-to-tokens ratio (4 chars ≈ 1 token). */
+const CHARS_PER_TOKEN = 4;
+
 export class ChatPanel implements vscode.Disposable {
   private static instance: ChatPanel | undefined;
 
@@ -48,11 +60,17 @@ export class ChatPanel implements vscode.Disposable {
   private conversationHistory: ConversationTurn[] = [];
   private currentRoundType: RoundType | undefined;
   private lastSendMessage: { userMessage: string; roundType: RoundType; mainAgent: AgentName; subAgents: AgentName[] } | undefined;
+  /** Files read by the agent — reused on next turn within a round, cleared on round change or Apply Changes. */
+  private fileCache: Map<string, string> = new Map();
+  /** Command outputs from the current turn — cleared on round change or Apply Changes. */
+  private commandOutputCache: Map<string, import('../types').CommandOutput> = new Map();
 
   /** ID of the currently streaming agent message bubble (main or reflection). */
   private streamingMsgId: string | undefined;
   /** Agent name for the current streaming bubble. */
   private streamingAgentName: AgentName | undefined;
+  /** Placeholder bubble IDs for sub-agent verifiers: agentName → msgId. */
+  private verifierPlaceholderIds: Map<string, string> = new Map();
   private constructor(
     panel: vscode.WebviewPanel,
     extensionUri: vscode.Uri,
@@ -64,6 +82,8 @@ export class ChatPanel implements vscode.Disposable {
     this.workspaceWriter = new WorkspaceWriter();
 
     this.panel.webview.html = this.buildHtml();
+
+    this.setupFileCacheWatcher();
 
     this.panel.webview.onDidReceiveMessage(
       (message: unknown) => {
@@ -196,6 +216,8 @@ export class ChatPanel implements vscode.Disposable {
         this.conversationHistory = [];
         this.currentRoundType = undefined;
         this.lastSendMessage = undefined;
+        this.fileCache.clear();
+        this.commandOutputCache.clear();
         this.postMessage({ type: 'clearMessages' });
         this.postMessage({ type: 'clearFileChanges' });
         break;
@@ -205,6 +227,10 @@ export class ChatPanel implements vscode.Disposable {
           const { userMessage, roundType, mainAgent, subAgents } = this.lastSendMessage;
           await this.handleSendMessage(userMessage, roundType, mainAgent, subAgents);
         }
+        break;
+
+      case 'cancelRequest':
+        this.currentCancellationTokenSource?.cancel();
         break;
 
       case 'executeCommand': {
@@ -237,32 +263,45 @@ export class ChatPanel implements vscode.Disposable {
     roundType: RoundType,
     mainAgent: AgentName,
     subAgents: AgentName[],
+    suppressUserBubble = false,
   ): Promise<void> {
     // Save for retry
     this.lastSendMessage = { userMessage, roundType, mainAgent, subAgents };
 
-    // Reset history when round type changes
+    // Reset history and file cache when round type changes
     if (roundType !== this.currentRoundType) {
       this.conversationHistory = [];
+      this.fileCache.clear();
       this.currentRoundType = roundType;
     }
 
-    // Cancel any in-flight request
+    // Command outputs are turn-scoped — clear every turn so sub-agents don't
+    // see stale outputs from a previous turn (unlike files, command results can change)
+    this.commandOutputCache.clear();
+
+    // Cancel any in-flight request and remove its orphaned streaming bubble
+    if (this.streamingMsgId) {
+      this.postMessage({ type: 'removeMessage', payload: { id: this.streamingMsgId } });
+      this.streamingMsgId = undefined;
+      this.streamingAgentName = undefined;
+    }
     this.currentCancellationTokenSource?.cancel();
     this.currentCancellationTokenSource?.dispose();
     this.currentCancellationTokenSource = new vscode.CancellationTokenSource();
     const cancellationToken = this.currentCancellationTokenSource.token;
 
     const userMsgId = crypto.randomUUID();
-    this.postMessage({
-      type: 'addMessage',
-      payload: {
-        id: userMsgId,
-        role: 'user',
-        content: userMessage,
-        timestamp: Date.now(),
-      },
-    });
+    if (!suppressUserBubble) {
+      this.postMessage({
+        type: 'addMessage',
+        payload: {
+          id: userMsgId,
+          role: 'user',
+          content: userMessage,
+          timestamp: Date.now(),
+        },
+      });
+    }
 
     this.postMessage({ type: 'setLoading', payload: { loading: true } });
     this.postMessage({ type: 'clearFileChanges' });
@@ -281,6 +320,8 @@ export class ChatPanel implements vscode.Disposable {
         subAgents,
         workspaceContext,
         conversationHistory: [...this.conversationHistory],
+        cachedFiles: this.fileCache,
+        cachedCommandOutputs: this.commandOutputCache,
       };
 
       const result = await runner.runRound(
@@ -289,20 +330,32 @@ export class ChatPanel implements vscode.Disposable {
         (event: ProgressEvent) => {
           this.handleProgressEvent(event);
         },
+        async (command: string) => {
+          return this.runCommandWithApproval(command);
+        },
       );
 
       if (cancellationToken.isCancellationRequested) {
         return;
       }
 
-      // Update conversation history with this turn
-      this.conversationHistory.push({ role: 'user', content: userMessage });
+      // Update conversation history with this turn.
+      // Guard against duplicate user message (already pushed on a previous error + retry).
+      const lastEntry = this.conversationHistory[this.conversationHistory.length - 1];
+      if (!lastEntry || lastEntry.role !== 'user' || lastEntry.content !== userMessage) {
+        this.conversationHistory.push({ role: 'user', content: userMessage });
+      }
       this.conversationHistory.push({ role: 'assistant', content: result.reflectedResponse });
 
+      // Update context usage gauge
+      this.postContextUsage(mainAgent);
+
       // Finalize the streaming bubble (or create a new message if streaming was not used)
+      const prose = result.reflectedResponse.trim() ||
+        (result.fileChanges.length > 0 ? 'Done — see proposed file changes below.' : 'Done.');
       const agentContent = result.tokenUsage
-        ? `${result.reflectedResponse}\n\nIn: ${result.tokenUsage.inputTokens.toLocaleString()}  Out: ${result.tokenUsage.outputTokens.toLocaleString()} tokens`
-        : result.reflectedResponse;
+        ? `${prose}\n\nIn: ${result.tokenUsage.inputTokens.toLocaleString()}  Out: ${result.tokenUsage.outputTokens.toLocaleString()} tokens`
+        : prose;
 
       if (this.streamingMsgId) {
         this.postMessage({
@@ -336,6 +389,7 @@ export class ChatPanel implements vscode.Disposable {
       }
     } catch (err) {
       if (err instanceof vscode.CancellationError) {
+        // Intentional cancel (■ button): discard this turn, history unchanged.
         this.postMessage({
           type: 'addMessage',
           payload: {
@@ -348,6 +402,8 @@ export class ChatPanel implements vscode.Disposable {
         return;
       }
 
+      // Unexpected error: preserve user message in history so retry has context.
+      this.conversationHistory.push({ role: 'user', content: userMessage });
       this.postErrorMessage(this.toSafeUserMessage(err), true);
     } finally {
       this.streamingMsgId = undefined;
@@ -359,6 +415,13 @@ export class ChatPanel implements vscode.Disposable {
   }
 
   private async handleApplyChanges(fileChanges: FileChange[]): Promise<void> {
+    // Invalidate file cache — applied files are now stale
+    this.fileCache.clear();
+    this.commandOutputCache.clear();
+    this.postMessage({ type: 'clearContextFiles' });
+    // Reset gauge to reflect cleared cache
+    const mainAgent = this.lastSendMessage?.mainAgent ?? AgentName.CLAUDE;
+    this.postContextUsage(mainAgent);
     try {
       const result = await this.workspaceWriter.applyChanges(fileChanges);
 
@@ -386,7 +449,6 @@ export class ChatPanel implements vscode.Disposable {
           timestamp: Date.now(),
         },
       });
-
       // Detect dependency file changes and offer to run install command (exclude deletions)
       const allChanged = [...result.appliedFiles, ...result.newFiles];
       const installCommand = detectInstallCommand(allChanged);
@@ -416,6 +478,33 @@ export class ChatPanel implements vscode.Disposable {
     }
   }
 
+  /**
+   * Called by AgentRunner during a tool call — runs a command after user approval
+   * and returns the output inline so the agent can continue reasoning with it.
+   */
+  private async runCommandWithApproval(command: string): Promise<import('../types').CommandOutput> {
+    const choice = await vscode.window.showWarningMessage(
+      `Agent wants to run a command:\n\n${command}`,
+      { modal: true },
+      'Run',
+    );
+
+    if (choice !== 'Run') {
+      return { command, stdout: '[User denied command execution]', exitCode: 1 };
+    }
+
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    const config = await this.configManager.getConfig();
+    const MAX_OUTPUT = 50_000;
+
+    return new Promise((resolve) => {
+      cp.exec(command, { cwd: workspaceRoot, timeout: config.runnerTimeoutMs, maxBuffer: MAX_OUTPUT }, (err, stdout, stderr) => {
+        const combined = [stdout, stderr].filter(Boolean).join('\n').slice(0, MAX_OUTPUT);
+        resolve({ command, stdout: combined || '(no output)', exitCode: err?.code ?? (err ? 1 : 0) });
+      });
+    });
+  }
+
   private async handleRunCommand(command: string, mainAgent: AgentName, subAgents: AgentName[]): Promise<void> {
     // Guard: prevent concurrent executions
     if (this.currentCancellationTokenSource) {
@@ -442,9 +531,15 @@ export class ChatPanel implements vscode.Disposable {
     this.postMessage({ type: 'setLoading', payload: { loading: false } });
 
     if (exitCode !== 0) {
+      // Show collapsible output bubble so the user can inspect it without it flooding the chat
+      this.postMessage({
+        type: 'addCollapsibleMessage',
+        payload: { id: crypto.randomUUID(), title: `${command}  ·  exit ${exitCode}`, content: output },
+      });
       const analysisMessage = `[Execution Output]\nCommand: ${command}\nExit code: ${exitCode}\n\n${output}`;
       const roundType = this.currentRoundType ?? RoundType.DEVELOPER;
-      await this.handleSendMessage(analysisMessage, roundType, mainAgent, subAgents);
+      // suppressUserBubble: the collapsible above already shows the output to the user
+      await this.handleSendMessage(analysisMessage, roundType, mainAgent, subAgents, true);
     } else {
       this.postMessage({
         type: 'addMessage',
@@ -518,33 +613,80 @@ export class ChatPanel implements vscode.Disposable {
 
       case 'tool_read':
         if (this.streamingMsgId) {
-          this.postMessage({ type: 'streamChunk', payload: { id: this.streamingMsgId, chunk: `\n*Reading \`${event.filePath}\`...*\n` } });
+          this.postMessage({ type: 'toolCallProgress', payload: { msgId: this.streamingMsgId, filePath: event.filePath } });
         }
         this.postMessage({ type: 'contextFileRead', payload: { path: event.filePath } });
         break;
 
-      case 'sub_agents_start':
-        this.postMessage({ type: 'pipelineProgress', payload: { stage: 'verifying' } });
+      case 'tool_run_command':
+        if (this.streamingMsgId) {
+          this.postMessage({ type: 'toolCallProgress', payload: { msgId: this.streamingMsgId, filePath: `$ ${event.command}` } });
+        }
         break;
 
-      case 'sub_agent_feedback':
-        if (!event.feedback.startsWith('[Verification unavailable')) {
+      case 'sub_agents_start': {
+        this.postMessage({ type: 'pipelineProgress', payload: { stage: 'verifying' } });
+        this.verifierPlaceholderIds.clear();
+        for (const agentName of event.agentNames) {
+          const placeholderId = crypto.randomUUID();
+          this.verifierPlaceholderIds.set(agentName, placeholderId);
           this.postMessage({
             type: 'addMessage',
             payload: {
-              id: crypto.randomUUID(),
+              id: placeholderId,
               role: 'agent',
-              agentName: event.agentName,
-              content: event.feedback,
+              agentName,
+              content: '',
               timestamp: Date.now(),
               isSubAgentFeedback: true,
+              streaming: true,
             },
           });
         }
         break;
+      }
+
+      case 'sub_agent_feedback': {
+        const placeholderId = this.verifierPlaceholderIds.get(event.agentName);
+        if (event.feedback.startsWith('[Verification unavailable')) {
+          // Remove placeholder — nothing useful to show
+          if (placeholderId) {
+            this.postMessage({ type: 'removeMessage', payload: { id: placeholderId } });
+          }
+        } else {
+          if (placeholderId) {
+            const agentLabel = event.agentName.charAt(0).toUpperCase() + event.agentName.slice(1);
+            this.postMessage({
+              type: 'collapseMessage',
+              payload: { id: placeholderId, content: event.feedback, label: `${agentLabel} (verifier)` },
+            });
+          } else {
+            // Fallback: no placeholder — add message directly
+            this.postMessage({
+              type: 'addMessage',
+              payload: {
+                id: crypto.randomUUID(),
+                role: 'agent',
+                agentName: event.agentName,
+                content: event.feedback,
+                timestamp: Date.now(),
+                isSubAgentFeedback: true,
+              },
+            });
+          }
+        }
+        this.verifierPlaceholderIds.delete(event.agentName);
+        break;
+      }
 
       case 'reflection_start': {
         this.postMessage({ type: 'pipelineProgress', payload: { stage: 'reflecting' } });
+        // Collapse the main agent bubble into a collapsible before creating the reflection bubble
+        if (this.streamingMsgId) {
+          const agentLabel = (this.streamingAgentName ?? event.agentName).charAt(0).toUpperCase()
+            + (this.streamingAgentName ?? event.agentName).slice(1);
+          this.postMessage({ type: 'collapseMessage', payload: { id: this.streamingMsgId, content: event.mainAgentResponse, label: `${agentLabel} (initial)` } });
+        }
         // Create a new streaming bubble for the reflected response
         this.streamingMsgId = crypto.randomUUID();
         this.postMessage({
@@ -583,17 +725,22 @@ export class ChatPanel implements vscode.Disposable {
 
     const workspaceRoot = workspaceFolders[0].uri;
 
-    return Promise.all(
+    const results = await Promise.all(
       fileChanges.map(async (change) => {
         const targetUri = vscode.Uri.joinPath(workspaceRoot, change.filePath);
         try {
-          await vscode.workspace.fs.stat(targetUri);
+          const existing = await vscode.workspace.fs.readFile(targetUri);
+          const existingText = Buffer.from(existing).toString('utf-8');
+          if (existingText === change.content) {
+            return null; // unchanged — exclude from diff panel
+          }
           return { ...change, isNew: false };
         } catch {
           return { ...change, isNew: true };
         }
       }),
     );
+    return results.filter((c): c is FileChange => c !== null);
   }
 
   private buildAgentRunner(config: ExtensionConfig): AgentRunner {
@@ -612,6 +759,29 @@ export class ChatPanel implements vscode.Disposable {
       providerMode: config.providerMode,
       workspaceReader: this.workspaceReader,
     });
+  }
+
+  private postContextUsage(mainAgent: AgentName): void {
+    const limitTokens = CONTEXT_LIMIT_TOKENS[mainAgent] ?? 128_000;
+
+    // Estimate tokens: cached file chars + history chars
+    const fileChars = Array.from(this.fileCache.values()).reduce((sum, c) => sum + c.length, 0);
+    const historyChars = this.conversationHistory.reduce((sum, t) => sum + t.content.length, 0);
+    const estimatedTokens = Math.round((fileChars + historyChars) / CHARS_PER_TOKEN);
+
+    const pct = Math.round((estimatedTokens / limitTokens) * 100);
+    const pctCapped = Math.min(100, pct);
+
+    let label: string;
+    if (pct >= 80) {
+      label = `Context ${pct}% — Consider clearing chat`;
+    } else if (pct >= 50) {
+      label = `Context ${pct}%`;
+    } else {
+      label = `Context ${pct}%`;
+    }
+
+    this.postMessage({ type: 'contextUsage', payload: { pct: pctCapped, label } });
   }
 
   private postMessage(message: ExtensionToWebviewMessage): void {
@@ -690,6 +860,31 @@ export class ChatPanel implements vscode.Disposable {
   </script>
 </body>
 </html>`;
+  }
+
+  private setupFileCacheWatcher(): void {
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (!workspaceFolders || workspaceFolders.length === 0) return;
+
+    const workspaceRoot = workspaceFolders[0].uri.fsPath;
+
+    const watcher = vscode.workspace.createFileSystemWatcher(
+      new vscode.RelativePattern(workspaceFolders[0], '**/*'),
+    );
+
+    const invalidate = (uri: vscode.Uri) => {
+      // Convert absolute path to relative and evict from cache if present
+      const rel = uri.fsPath.startsWith(workspaceRoot)
+        ? uri.fsPath.slice(workspaceRoot.length).replace(/^[\\/]/, '').replace(/\\/g, '/')
+        : undefined;
+      if (rel && this.fileCache.has(rel)) {
+        this.fileCache.delete(rel);
+      }
+    };
+
+    watcher.onDidChange(invalidate, undefined, this.disposables);
+    watcher.onDidDelete(invalidate, undefined, this.disposables);
+    this.disposables.push(watcher);
   }
 
   dispose(): void {
