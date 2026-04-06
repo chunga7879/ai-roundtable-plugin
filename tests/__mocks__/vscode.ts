@@ -159,6 +159,9 @@ export const workspace = {
     stat: jest.fn().mockResolvedValue({ size: 100, type: FileType.File }),
     readFile: jest.fn().mockResolvedValue(Buffer.from('')),
     readDirectory: jest.fn().mockResolvedValue([]),
+    writeFile: jest.fn().mockResolvedValue(undefined),
+    createDirectory: jest.fn().mockResolvedValue(undefined),
+    delete: jest.fn().mockResolvedValue(undefined),
   },
   applyEdit: jest.fn().mockResolvedValue(true),
   onDidChangeWorkspaceFolders: jest.fn(),
@@ -185,6 +188,11 @@ export const window = {
   showErrorMessage: jest.fn().mockResolvedValue(undefined),
   showInputBox: jest.fn().mockResolvedValue(undefined),
   showQuickPick: jest.fn().mockResolvedValue(undefined),
+  createTerminal: jest.fn().mockReturnValue({
+    show: jest.fn(),
+    sendText: jest.fn(),
+    dispose: jest.fn(),
+  }),
 };
 
 // ── lm namespace ─────────────────────────────────────────────────────────────

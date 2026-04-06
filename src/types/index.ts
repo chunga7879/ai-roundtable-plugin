@@ -125,6 +125,28 @@ export interface RoundResult {
   tokenUsage?: TokenUsage;
 }
 
+// ── Session persistence ───────────────────────────────────────────────────────
+
+export interface SessionIndexEntry {
+  id: string;
+  workspaceId: string;
+  roundType: RoundType;
+  createdAt: number;
+  updatedAt: number;
+  turnCount: number;
+  /** First 80 chars of the first user turn — shown in the history list. */
+  preview: string;
+}
+
+export interface PersistedSession {
+  id: string;
+  workspaceId: string;
+  roundType: RoundType;
+  createdAt: number;
+  updatedAt: number;
+  turns: ConversationTurn[];
+}
+
 export type WebviewToExtensionMessage =
   | { type: 'sendMessage'; payload: SendMessagePayload }
   | { type: 'applyChanges'; payload: ApplyChangesPayload }
@@ -134,7 +156,9 @@ export type WebviewToExtensionMessage =
   | { type: 'executeCommand'; payload: { command: string } }
   | { type: 'clearChat' }
   | { type: 'retryLastMessage' }
-  | { type: 'cancelRequest' };
+  | { type: 'cancelRequest' }
+  | { type: 'requestSessionList' }
+  | { type: 'restoreSession'; payload: { sessionId: string } };
 
 export interface SendMessagePayload {
   userMessage: string;
@@ -172,7 +196,9 @@ export type ExtensionToWebviewMessage =
   | { type: 'clearMessages' }
   | { type: 'clearContextFiles' }
   | { type: 'toolCallProgress'; payload: { msgId: string; filePath: string } }
-  | { type: 'contextUsage'; payload: { pct: number; label: string } };
+  | { type: 'contextUsage'; payload: { pct: number; label: string } }
+  | { type: 'sessionListLoaded'; payload: { sessions: SessionIndexEntry[] } }
+  | { type: 'sessionRestored'; payload: { turns: ConversationTurn[]; roundType: RoundType } };
 
 // ── Input validation helpers ──────────────────────────────────────────────────
 

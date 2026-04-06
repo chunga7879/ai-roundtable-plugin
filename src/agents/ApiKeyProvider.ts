@@ -267,11 +267,15 @@ export class ApiKeyProvider {
       }
 
       const textBlock = parsed.content?.find((c) => c.type === 'text');
-      if (textBlock) finalText = textBlock.text;
+      if (textBlock) finalText += textBlock.text;
 
       const toolUseBlocks = parsed.content?.filter((c) => c.type === 'tool_use') ?? [];
       if (toolUseBlocks.length === 0 || !options.onToolCall || parsed.stop_reason !== 'tool_use') {
         break;
+      }
+
+      if (options.cancellationToken?.isCancellationRequested) {
+        throw new CancellationError();
       }
 
       // Append assistant message with full content
@@ -381,11 +385,15 @@ export class ApiKeyProvider {
 
       const message = parsed.choices?.[0]?.message;
       const finishReason = parsed.choices?.[0]?.finish_reason;
-      if (message?.content) finalText = message.content;
+      if (message?.content) finalText += message.content;
 
       const toolCalls = message?.tool_calls;
       if (!toolCalls?.length || !options.onToolCall || finishReason !== 'tool_calls') {
         break;
+      }
+
+      if (options.cancellationToken?.isCancellationRequested) {
+        throw new CancellationError();
       }
 
       // Append assistant message with tool calls
@@ -479,12 +487,16 @@ export class ApiKeyProvider {
 
       const parts = parsed.candidates?.[0]?.content?.parts ?? [];
       const textPart = parts.find((p) => p.text !== undefined);
-      if (textPart?.text) finalText = textPart.text;
+      if (textPart?.text) finalText += textPart.text;
 
       const functionCalls = parts.filter((p) => p.functionCall !== undefined);
       const finishReason = parsed.candidates?.[0]?.finishReason;
       if (!functionCalls.length || !options.onToolCall || finishReason !== 'STOP') {
         break;
+      }
+
+      if (options.cancellationToken?.isCancellationRequested) {
+        throw new CancellationError();
       }
 
       // Append model message with function calls
@@ -604,10 +616,14 @@ export class ApiKeyProvider {
       });
 
       const text = contentChunks.join('');
-      if (text) finalText = text;
+      finalText += text;
 
       if (stopReason !== 'tool_use' || !options.onToolCall || toolBlocks.size === 0) {
         break;
+      }
+
+      if (options.cancellationToken?.isCancellationRequested) {
+        throw new CancellationError();
       }
 
       // Append assistant message with text + tool_use blocks
@@ -761,10 +777,14 @@ export class ApiKeyProvider {
       });
 
       const text = contentChunks.join('');
-      if (text) finalText = text;
+      finalText += text;
 
       if (finishReason !== 'tool_calls' || !options.onToolCall || toolCalls.size === 0) {
         break;
+      }
+
+      if (options.cancellationToken?.isCancellationRequested) {
+        throw new CancellationError();
       }
 
       // Append assistant message with tool calls
@@ -877,10 +897,14 @@ export class ApiKeyProvider {
       });
 
       const text = contentChunks.join('');
-      if (text) finalText = text;
+      finalText += text;
 
       if (!functionCallParts.length || !options.onToolCall) {
         break;
+      }
+
+      if (options.cancellationToken?.isCancellationRequested) {
+        throw new CancellationError();
       }
 
       // Append model turn with text + function calls

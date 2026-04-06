@@ -147,8 +147,16 @@ export class WorkspaceReader {
 
     const filesToInclude: vscode.Uri[] = [];
 
+    // Priority 3: Files in workspace (breadth-first, respecting limits)
+    const rootUri = workspaceFolders[0].uri;
+
+    const isInsideWorkspace = (uri: vscode.Uri): boolean => {
+      const rel = path.relative(rootUri.fsPath, uri.fsPath);
+      return !rel.startsWith('..') && !path.isAbsolute(rel);
+    };
+
     // Priority 1: Currently open/active file
-    if (activeEditor && !activeEditor.document.isUntitled) {
+    if (activeEditor && !activeEditor.document.isUntitled && isInsideWorkspace(activeEditor.document.uri)) {
       filesToInclude.push(activeEditor.document.uri);
     }
 
@@ -157,7 +165,7 @@ export class WorkspaceReader {
       for (const editor of vscode.window.visibleTextEditors) {
         if (!editor.document.isUntitled && editor !== activeEditor) {
           const uri = editor.document.uri;
-          if (!filesToInclude.some((f) => f.fsPath === uri.fsPath)) {
+          if (isInsideWorkspace(uri) && !filesToInclude.some((f) => f.fsPath === uri.fsPath)) {
             filesToInclude.push(uri);
           }
         }
@@ -165,9 +173,6 @@ export class WorkspaceReader {
     } catch {
       // visibleTextEditors access may fail in tests — degrade gracefully
     }
-
-    // Priority 3: Files in workspace (breadth-first, respecting limits)
-    const rootUri = workspaceFolders[0].uri;
     const workspaceFiles = await this.collectWorkspaceFiles(
       rootUri,
       MAX_FILES_TO_INCLUDE - filesToInclude.length,
@@ -196,7 +201,8 @@ export class WorkspaceReader {
         EXCLUDED_EXTENSIONS.has(ext) ||
         EXCLUDED_SENSITIVE_EXTENSIONS.has(ext) ||
         EXCLUDED_FILENAMES.has(basename) ||
-        EXCLUDED_FILENAME_PATTERNS.some((p) => p.test(lowerBasename))
+        EXCLUDED_FILENAME_PATTERNS.some((p) => p.test(lowerBasename)) ||
+        this.isInExcludedDir(fsPath, rootUri.fsPath)
       ) {
         continue;
       }
@@ -239,8 +245,13 @@ export class WorkspaceReader {
     const rootUri = workspaceFolders[0].uri;
     const rootFsPath = rootUri.fsPath;
 
+    // Reject absolute paths and traversal before any normalization
+    if (path.isAbsolute(relativePath) || relativePath.includes('..')) {
+      return { content: `Invalid file path: ${relativePath}`, isError: true };
+    }
+
     // Normalize and validate path
-    const normalized = relativePath.replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\//, '');
+    const normalized = relativePath.replace(/\\/g, '/').replace(/^\.\//, '');
     if (!normalized || normalized.includes('..') || path.isAbsolute(normalized)) {
       return { content: `Invalid file path: ${relativePath}`, isError: true };
     }

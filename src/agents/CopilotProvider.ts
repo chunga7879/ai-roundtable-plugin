@@ -243,8 +243,12 @@ export class CopilotProvider {
       if (options.onToolCall && toolCallParts.length === 0 && rawText.includes('<function_calls>')) {
         const xmlCalls = extractXmlToolCalls(rawText);
         if (xmlCalls.length > 0) {
+          if (cancellationToken.isCancellationRequested) {
+            throw new vscode.CancellationError();
+          }
+
           const cleanText = rawText.replace(/<function_calls>[\s\S]*?<\/function_calls>/g, '').trim();
-          if (cleanText) finalText = cleanText;
+          finalText += cleanText;
 
           const toolResultTexts: string[] = [];
           for (const call of xmlCalls) {
@@ -266,11 +270,15 @@ export class CopilotProvider {
       }
 
       const text = rawText;
-      if (text) finalText = text;
+      finalText += text;
 
       // No tool calls → done
       if (toolCallParts.length === 0 || !options.onToolCall) {
         break;
+      }
+
+      if (cancellationToken.isCancellationRequested) {
+        throw new vscode.CancellationError();
       }
 
       // Append assistant message with text + tool calls
