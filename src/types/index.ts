@@ -63,6 +63,10 @@ export interface RoundRequest {
   subAgents: AgentName[];
   workspaceContext: WorkspaceContext;
   conversationHistory: ConversationTurn[];
+  /** Files already read in a previous turn — skip re-reading these via tool calls. */
+  cachedFiles: Map<string, string>;
+  /** Command outputs from the current turn — passed to sub-agents for verification. */
+  cachedCommandOutputs: Map<string, CommandOutput>;
 }
 
 export interface WorkspaceContext {
@@ -92,10 +96,14 @@ export interface SubAgentVerification {
   feedback: string;
 }
 
-export interface ToolCall {
-  id: string;
-  name: 'read_file';
-  filePath: string;
+export type ToolCall =
+  | { id: string; name: 'read_file'; filePath: string }
+  | { id: string; name: 'run_command'; command: string };
+
+export interface CommandOutput {
+  command: string;
+  stdout: string;
+  exitCode: number;
 }
 
 export interface ToolResult {
@@ -117,6 +125,28 @@ export interface RoundResult {
   tokenUsage?: TokenUsage;
 }
 
+// ── Session persistence ───────────────────────────────────────────────────────
+
+export interface SessionIndexEntry {
+  id: string;
+  workspaceId: string;
+  roundType: RoundType;
+  createdAt: number;
+  updatedAt: number;
+  turnCount: number;
+  /** First 80 chars of the first user turn — shown in the history list. */
+  preview: string;
+}
+
+export interface PersistedSession {
+  id: string;
+  workspaceId: string;
+  roundType: RoundType;
+  createdAt: number;
+  updatedAt: number;
+  turns: ConversationTurn[];
+}
+
 export type WebviewToExtensionMessage =
   | { type: 'sendMessage'; payload: SendMessagePayload }
   | { type: 'applyChanges'; payload: ApplyChangesPayload }
@@ -125,7 +155,10 @@ export type WebviewToExtensionMessage =
   | { type: 'configureProvider' }
   | { type: 'executeCommand'; payload: { command: string } }
   | { type: 'clearChat' }
-  | { type: 'retryLastMessage' };
+  | { type: 'retryLastMessage' }
+  | { type: 'cancelRequest' }
+  | { type: 'requestSessionList' }
+  | { type: 'restoreSession'; payload: { sessionId: string } };
 
 export interface SendMessagePayload {
   userMessage: string;
@@ -145,9 +178,13 @@ export interface ContextFileSummary {
 
 export type ExtensionToWebviewMessage =
   | { type: 'addMessage'; payload: Message }
+  | { type: 'removeMessage'; payload: { id: string } }
+  | { type: 'addCollapsibleMessage'; payload: { id: string; title: string; content: string } }
   | { type: 'updateMessage'; payload: { id: string; content: string } }
   | { type: 'streamChunk'; payload: { id: string; chunk: string } }
   | { type: 'finalizeMessage'; payload: { id: string; content: string } }
+  | { type: 'interruptMessage'; payload: { id: string } }
+  | { type: 'collapseMessage'; payload: { id: string; content: string; label: string } }
   | { type: 'setLoading'; payload: { loading: boolean } }
   | { type: 'showFileChanges'; payload: { fileChanges: FileChange[] } }
   | { type: 'clearFileChanges' }
@@ -157,7 +194,11 @@ export type ExtensionToWebviewMessage =
   | { type: 'contextFileRead'; payload: { path: string } }
   | { type: 'pipelineProgress'; payload: { stage: 'thinking' | 'verifying' | 'reflecting' } }
   | { type: 'clearMessages' }
-  | { type: 'clearContextFiles' };
+  | { type: 'clearContextFiles' }
+  | { type: 'toolCallProgress'; payload: { msgId: string; filePath: string } }
+  | { type: 'contextUsage'; payload: { pct: number; label: string } }
+  | { type: 'sessionListLoaded'; payload: { sessions: SessionIndexEntry[] } }
+  | { type: 'sessionRestored'; payload: { turns: ConversationTurn[]; roundType: RoundType } };
 
 // ── Input validation helpers ──────────────────────────────────────────────────
 

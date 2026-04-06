@@ -201,6 +201,34 @@ describe('CopilotProvider.sendRequest — errors', () => {
       .rejects.toBeInstanceOf(vscode.CancellationError);
   });
 
+  it('native LanguageModelToolCallPart run_command: dispatches and loops', async () => {
+    let callCount = 0;
+    const model = {
+      sendRequest: jest.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          async function* toolStream() {
+            yield new vscode.LanguageModelToolCallPart('cmd1', 'run_command', { command: 'npm test' });
+          }
+          return Promise.resolve({ stream: toolStream() });
+        }
+        return Promise.resolve({ stream: toAsyncIterable(['Tests passed.']) });
+      }),
+    };
+    (vscode.lm.selectChatModels as jest.Mock).mockResolvedValue([model]);
+
+    const onToolCall = jest.fn().mockResolvedValue({ id: 'cmd1', content: 'Exit code: 0\nAll tests passed', isError: false });
+    const provider = new CopilotProvider();
+    const result = await provider.sendRequest(
+      { ...defaultOptions, onToolCall },
+      AgentName.CLAUDE,
+      makeToken(),
+    );
+
+    expect(onToolCall).toHaveBeenCalledWith({ id: 'cmd1', name: 'run_command', command: 'npm test' });
+    expect(result).toBe('Tests passed.');
+  });
+
   it('wraps stream iteration errors as CopilotProviderError', async () => {
     async function* throwingStream(): AsyncIterable<vscode.LanguageModelTextPart> {
       yield new vscode.LanguageModelTextPart('partial');
@@ -216,6 +244,38 @@ describe('CopilotProvider.sendRequest — errors', () => {
       .rejects.toBeInstanceOf(CopilotProviderError);
   });
 
+  it('native LanguageModelToolCallPart read_file: dispatches and loops', async () => {
+    let callCount = 0;
+    const model = {
+      sendRequest: jest.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          async function* toolStream() {
+            yield new vscode.LanguageModelTextPart('Reading file...');
+            yield new vscode.LanguageModelToolCallPart('call1', 'read_file', { path: 'src/app.ts' });
+          }
+          return Promise.resolve({ stream: toolStream() });
+        }
+        return Promise.resolve({ stream: toAsyncIterable(['File content loaded.']) });
+      }),
+    };
+    (vscode.lm.selectChatModels as jest.Mock).mockResolvedValue([model]);
+
+    const onToolCall = jest.fn().mockResolvedValue({ id: 'call1', content: 'const x = 1;', isError: false });
+    const provider = new CopilotProvider();
+    const result = await provider.sendRequest(
+      { ...defaultOptions, onToolCall },
+      AgentName.CLAUDE,
+      makeToken(),
+    );
+
+    expect(onToolCall).toHaveBeenCalledWith({ id: 'call1', name: 'read_file', filePath: 'src/app.ts' });
+    // After the bug fix, text from all iterations is accumulated: first iteration emits
+    // 'Reading file...' before the tool call, second iteration emits 'File content loaded.'
+    expect(result).toBe('Reading file...File content loaded.');
+    expect(model.sendRequest).toHaveBeenCalledTimes(2);
+  });
+
   it('throws CopilotProviderError when family selectChatModels throws (non-timeout)', async () => {
     (vscode.lm.selectChatModels as jest.Mock)
       .mockRejectedValueOnce(new Error('api down')) // gpt-4o throws
@@ -227,5 +287,357 @@ describe('CopilotProvider.sendRequest — errors', () => {
     const provider = new CopilotProvider();
     await expect(provider.sendRequest(defaultOptions, AgentName.CLAUDE, makeToken()))
       .rejects.toBeInstanceOf(CopilotProviderError);
+  });
+});
+
+// ── XML tool call path ────────────────────────────────────────────────────────
+
+describe('CopilotProvider — XML tool calls', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('XML read_file: parses path, strips XML from visible text, dispatches onToolCall', async () => {
+    let callCount = 0;
+    const model = {
+      sendRequest: jest.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          const xml = 'Checking the file.\n\n<function_calls><invoke name="read_file"><parameter name="path">src/app.ts</parameter></invoke></function_calls>';
+          return Promise.resolve({ stream: toAsyncIterable([xml]) });
+        }
+        return Promise.resolve({ stream: toAsyncIterable(['Done reading.']) });
+      }),
+    };
+    (vscode.lm.selectChatModels as jest.Mock).mockResolvedValue([model]);
+
+    const onToolCall = jest.fn().mockResolvedValue({ id: 'src/app.ts', content: 'const x = 1;', isError: false });
+    const provider = new CopilotProvider();
+    const result = await provider.sendRequest({ ...defaultOptions, onToolCall }, AgentName.CLAUDE, makeToken());
+
+    expect(onToolCall).toHaveBeenCalledWith({ id: 'src/app.ts', name: 'read_file', filePath: 'src/app.ts' });
+    // After the bug fix, text from all iterations is accumulated: first iteration contributes
+    // the clean text before the XML tag ('Checking the file.'), second contributes 'Done reading.'
+    expect(result).toBe('Checking the file.Done reading.');
+    // XML should not appear in final text
+    expect(result).not.toContain('<function_calls>');
+  });
+
+  it('XML run_command: parses command and dispatches onToolCall', async () => {
+    let callCount = 0;
+    const model = {
+      sendRequest: jest.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          const xml = '<function_calls><invoke name="run_command"><parameter name="command">npm test</parameter></invoke></function_calls>';
+          return Promise.resolve({ stream: toAsyncIterable([xml]) });
+        }
+        return Promise.resolve({ stream: toAsyncIterable(['Tests executed.']) });
+      }),
+    };
+    (vscode.lm.selectChatModels as jest.Mock).mockResolvedValue([model]);
+
+    const onToolCall = jest.fn().mockResolvedValue({ id: 'npm test', content: 'All passed', isError: false });
+    const provider = new CopilotProvider();
+    const result = await provider.sendRequest({ ...defaultOptions, onToolCall }, AgentName.CLAUDE, makeToken());
+
+    expect(onToolCall).toHaveBeenCalledWith({ id: 'npm test', name: 'run_command', command: 'npm test' });
+    expect(result).toBe('Tests executed.');
+  });
+
+  it('XML mixed: read_file and run_command in same response both dispatched', async () => {
+    let callCount = 0;
+    const model = {
+      sendRequest: jest.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          const xml = 'Analyzing.\n\n<function_calls>'
+            + '<invoke name="read_file"><parameter name="path">src/a.ts</parameter></invoke>'
+            + '<invoke name="run_command"><parameter name="command">npm run build</parameter></invoke>'
+            + '</function_calls>';
+          return Promise.resolve({ stream: toAsyncIterable([xml]) });
+        }
+        return Promise.resolve({ stream: toAsyncIterable(['All done.']) });
+      }),
+    };
+    (vscode.lm.selectChatModels as jest.Mock).mockResolvedValue([model]);
+
+    const onToolCall = jest.fn().mockResolvedValue({ id: 'x', content: 'ok', isError: false });
+    const provider = new CopilotProvider();
+    await provider.sendRequest({ ...defaultOptions, onToolCall }, AgentName.CLAUDE, makeToken());
+
+    expect(onToolCall).toHaveBeenCalledTimes(2);
+    const calls = onToolCall.mock.calls.map((c: unknown[]) => (c[0] as { name: string }).name);
+    expect(calls).toContain('read_file');
+    expect(calls).toContain('run_command');
+  });
+
+  it('XML with no recognized invoke tags is treated as plain text (not dispatched)', async () => {
+    const model = makeModel(['Some text with <function_calls><invoke name="unknown_tool"></invoke></function_calls>']);
+    (vscode.lm.selectChatModels as jest.Mock).mockResolvedValue([model]);
+
+    const onToolCall = jest.fn();
+    const provider = new CopilotProvider();
+    // The provider should either skip unknown tools or return the text as-is
+    // Either way onToolCall should not be called for unknown tool names
+    await provider.sendRequest({ ...defaultOptions, onToolCall }, AgentName.CLAUDE, makeToken()).catch(() => {});
+    // Unknown tool name has no path/command parameter — extractXmlToolCalls returns empty array
+    // so the text is treated as a plain text response (may throw empty if XML stripped leaves nothing)
+    expect(onToolCall).not.toHaveBeenCalled();
+  });
+});
+
+// ── Bug fixes: text accumulation across tool-call iterations ──────────────────
+
+describe('CopilotProvider — Bug fix: finalText accumulation (native tool calls)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('concatenates text from two native tool-call iterations', async () => {
+    let callCount = 0;
+    const model = {
+      sendRequest: jest.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          async function* stream1() {
+            yield new vscode.LanguageModelTextPart('Iteration one. ');
+            yield new vscode.LanguageModelToolCallPart('tc1', 'read_file', { path: 'src/a.ts' });
+          }
+          return Promise.resolve({ stream: stream1() });
+        }
+        return Promise.resolve({ stream: toAsyncIterable(['Iteration two.']) });
+      }),
+    };
+    (vscode.lm.selectChatModels as jest.Mock).mockResolvedValue([model]);
+
+    const onToolCall = jest.fn().mockResolvedValue({ id: 'tc1', content: 'file body', isError: false });
+    const provider = new CopilotProvider();
+    const result = await provider.sendRequest(
+      { ...defaultOptions, onToolCall },
+      AgentName.CLAUDE,
+      makeToken(),
+    );
+
+    expect(result).toBe('Iteration one. Iteration two.');
+    expect(onToolCall).toHaveBeenCalledTimes(1);
+    expect(model.sendRequest).toHaveBeenCalledTimes(2);
+  });
+
+  it('handles first iteration with no text (empty prefix) followed by text in second iteration', async () => {
+    let callCount = 0;
+    const model = {
+      sendRequest: jest.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          async function* stream1() {
+            // No text, only a tool call
+            yield new vscode.LanguageModelToolCallPart('tc1', 'run_command', { command: 'npm install' });
+          }
+          return Promise.resolve({ stream: stream1() });
+        }
+        return Promise.resolve({ stream: toAsyncIterable(['Install complete.']) });
+      }),
+    };
+    (vscode.lm.selectChatModels as jest.Mock).mockResolvedValue([model]);
+
+    const onToolCall = jest.fn().mockResolvedValue({ id: 'tc1', content: 'ok', isError: false });
+    const provider = new CopilotProvider();
+    const result = await provider.sendRequest(
+      { ...defaultOptions, onToolCall },
+      AgentName.CLAUDE,
+      makeToken(),
+    );
+
+    expect(result).toBe('Install complete.');
+  });
+
+  it('concatenates text across three native tool-call iterations', async () => {
+    let callCount = 0;
+    const model = {
+      sendRequest: jest.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          async function* s1() {
+            yield new vscode.LanguageModelTextPart('A');
+            yield new vscode.LanguageModelToolCallPart('t1', 'read_file', { path: 'a.ts' });
+          }
+          return Promise.resolve({ stream: s1() });
+        }
+        if (callCount === 2) {
+          async function* s2() {
+            yield new vscode.LanguageModelTextPart('B');
+            yield new vscode.LanguageModelToolCallPart('t2', 'run_command', { command: 'ls' });
+          }
+          return Promise.resolve({ stream: s2() });
+        }
+        return Promise.resolve({ stream: toAsyncIterable(['C']) });
+      }),
+    };
+    (vscode.lm.selectChatModels as jest.Mock).mockResolvedValue([model]);
+
+    const onToolCall = jest.fn().mockResolvedValue({ id: 'x', content: 'data', isError: false });
+    const provider = new CopilotProvider();
+    const result = await provider.sendRequest(
+      { ...defaultOptions, onToolCall },
+      AgentName.CLAUDE,
+      makeToken(),
+    );
+
+    expect(result).toBe('ABC');
+    expect(onToolCall).toHaveBeenCalledTimes(2);
+    expect(model.sendRequest).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('CopilotProvider — Bug fix: finalText accumulation (XML tool calls)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('concatenates clean text prefix from two XML tool-call iterations', async () => {
+    let callCount = 0;
+    const model = {
+      sendRequest: jest.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          const xml = 'Looking at the code.\n\n<function_calls><invoke name="read_file"><parameter name="path">src/a.ts</parameter></invoke></function_calls>';
+          return Promise.resolve({ stream: toAsyncIterable([xml]) });
+        }
+        return Promise.resolve({ stream: toAsyncIterable(['Analysis done.']) });
+      }),
+    };
+    (vscode.lm.selectChatModels as jest.Mock).mockResolvedValue([model]);
+
+    const onToolCall = jest.fn().mockResolvedValue({ id: 'src/a.ts', content: 'const x = 1;', isError: false });
+    const provider = new CopilotProvider();
+    const result = await provider.sendRequest(
+      { ...defaultOptions, onToolCall },
+      AgentName.CLAUDE,
+      makeToken(),
+    );
+
+    // First iteration contributes the clean text before the XML, second contributes the final answer
+    expect(result).toContain('Analysis done.');
+    expect(result).not.toContain('<function_calls>');
+    expect(onToolCall).toHaveBeenCalledTimes(1);
+    expect(model.sendRequest).toHaveBeenCalledTimes(2);
+  });
+
+  it('concatenates text across two XML iterations where first has prefix text and second adds final answer', async () => {
+    let callCount = 0;
+    const model = {
+      sendRequest: jest.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          const xml = 'Prefix text. <function_calls><invoke name="run_command"><parameter name="command">npm test</parameter></invoke></function_calls>';
+          return Promise.resolve({ stream: toAsyncIterable([xml]) });
+        }
+        return Promise.resolve({ stream: toAsyncIterable(['All tests passed.']) });
+      }),
+    };
+    (vscode.lm.selectChatModels as jest.Mock).mockResolvedValue([model]);
+
+    const onToolCall = jest.fn().mockResolvedValue({ id: 'npm test', content: 'ok', isError: false });
+    const provider = new CopilotProvider();
+    const result = await provider.sendRequest(
+      { ...defaultOptions, onToolCall },
+      AgentName.CLAUDE,
+      makeToken(),
+    );
+
+    expect(result).toContain('Prefix text.');
+    expect(result).toContain('All tests passed.');
+  });
+});
+
+// ── Bug fixes: cancellation between tool-call iterations ──────────────────────
+
+describe('CopilotProvider — Bug fix: cancellation between tool-call iterations (native)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('throws CancellationError and does NOT call onToolCall again after token fires', async () => {
+    const token = makeToken(); // starts uncancelled
+    let callCount = 0;
+    const model = {
+      sendRequest: jest.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          async function* stream1() {
+            yield new vscode.LanguageModelTextPart('Step one. ');
+            yield new vscode.LanguageModelToolCallPart('tc1', 'read_file', { path: 'a.ts' });
+          }
+          return Promise.resolve({ stream: stream1() });
+        }
+        // Should never reach a second sendRequest
+        return Promise.resolve({ stream: toAsyncIterable(['Should not appear.']) });
+      }),
+    };
+    (vscode.lm.selectChatModels as jest.Mock).mockResolvedValue([model]);
+
+    const onToolCall = jest.fn().mockImplementation(async () => {
+      // Cancel the token right after the first tool call executes
+      (token as { isCancellationRequested: boolean }).isCancellationRequested = true;
+      return { id: 'tc1', content: 'file body', isError: false };
+    });
+
+    const provider = new CopilotProvider();
+    await expect(
+      provider.sendRequest({ ...defaultOptions, onToolCall }, AgentName.CLAUDE, token),
+    ).rejects.toBeInstanceOf(vscode.CancellationError);
+
+    // onToolCall was called once; no second HTTP request
+    expect(onToolCall).toHaveBeenCalledTimes(1);
+    expect(model.sendRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it('throws CancellationError immediately when token is pre-cancelled (does not call onToolCall)', async () => {
+    const token = makeToken(true); // already cancelled
+    let callCount = 0;
+    const model = {
+      sendRequest: jest.fn().mockImplementation(() => {
+        callCount++;
+        async function* stream1() {
+          yield new vscode.LanguageModelToolCallPart('tc1', 'read_file', { path: 'a.ts' });
+        }
+        return Promise.resolve({ stream: stream1() });
+      }),
+    };
+    (vscode.lm.selectChatModels as jest.Mock).mockResolvedValue([model]);
+
+    const onToolCall = jest.fn();
+    const provider = new CopilotProvider();
+    await expect(
+      provider.sendRequest({ ...defaultOptions, onToolCall }, AgentName.CLAUDE, token),
+    ).rejects.toBeInstanceOf(vscode.CancellationError);
+
+    expect(onToolCall).not.toHaveBeenCalled();
+  });
+});
+
+describe('CopilotProvider — Bug fix: cancellation between tool-call iterations (XML)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('throws CancellationError and does NOT loop again when token fires in XML path', async () => {
+    const token = makeToken();
+    let callCount = 0;
+    const model = {
+      sendRequest: jest.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          const xml = '<function_calls><invoke name="run_command"><parameter name="command">npm build</parameter></invoke></function_calls>';
+          return Promise.resolve({ stream: toAsyncIterable([xml]) });
+        }
+        return Promise.resolve({ stream: toAsyncIterable(['Should not appear.']) });
+      }),
+    };
+    (vscode.lm.selectChatModels as jest.Mock).mockResolvedValue([model]);
+
+    const onToolCall = jest.fn().mockImplementation(async () => {
+      (token as { isCancellationRequested: boolean }).isCancellationRequested = true;
+      return { id: 'npm build', content: 'built', isError: false };
+    });
+
+    const provider = new CopilotProvider();
+    await expect(
+      provider.sendRequest({ ...defaultOptions, onToolCall }, AgentName.CLAUDE, token),
+    ).rejects.toBeInstanceOf(vscode.CancellationError);
+
+    expect(onToolCall).toHaveBeenCalledTimes(1);
+    expect(model.sendRequest).toHaveBeenCalledTimes(1);
   });
 });

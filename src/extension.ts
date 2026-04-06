@@ -250,7 +250,7 @@ export async function activate(
   // Register commands
   context.subscriptions.push(
     vscode.commands.registerCommand(COMMANDS.OPEN_PANEL, () => {
-      ChatPanel.createOrReveal(context.extensionUri, configManager);
+      ChatPanel.createOrReveal(context, configManager);
     }),
 
     vscode.commands.registerCommand(COMMANDS.CONFIGURE_PROVIDER, () => {

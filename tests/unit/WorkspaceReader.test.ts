@@ -64,7 +64,7 @@ describe('WorkspaceReader', () => {
       const context = await reader.buildContext();
       expect(context.files).toHaveLength(1);
       expect(context.files[0].path).toBe('app.ts');
-      expect(context.files[0].content).toBe('const app = 1;');
+      expect(context.files[0].content).toBe('');
       expect(context.files[0].language).toBe('typescript');
     });
 
@@ -142,8 +142,7 @@ describe('WorkspaceReader', () => {
       const reader = new WorkspaceReader();
       const context = await reader.buildContext();
       expect(context.files).toHaveLength(1);
-      expect(context.files[0].content).toContain('[... truncated at 50000 bytes ...]');
-      expect(context.files[0].content.length).toBeLessThan(largeContent.length);
+      expect(context.files[0].content).toBe('');
     });
 
     it('respects MAX_FILES_TO_INCLUDE (50 files)', async () => {
@@ -162,27 +161,104 @@ describe('WorkspaceReader', () => {
       expect(context.files.length).toBeLessThanOrEqual(50);
     });
 
-    it('stops adding files when total bytes would exceed MAX_TOTAL_CONTEXT_BYTES', async () => {
+    it('returns empty content for all files (content is read on-demand via tool calls)', async () => {
       setupWorkspaceRoot('/workspace');
-      // Each file is 50000 bytes; after 4 files we hit 200000 — 5th should not be included
-      const files: [string, FileType][] = Array.from({ length: 10 }, (_, i) => [
+      const files: [string, FileType][] = Array.from({ length: 5 }, (_, i) => [
         `file${i}.ts`,
         FileType.File,
       ]);
       mockWorkspace.fs.readDirectory = jest.fn().mockResolvedValue(files);
-      mockWorkspace.fs.stat = jest.fn().mockResolvedValue({ size: 49999, type: FileType.File });
-      const content = 'x'.repeat(49999);
-      mockWorkspace.fs.readFile = jest.fn().mockResolvedValue(Buffer.from(content));
+      mockWorkspace.fs.stat = jest.fn().mockResolvedValue({ size: 100, type: FileType.File });
+      mockWorkspace.fs.readFile = jest.fn().mockResolvedValue(Buffer.from('should not be read'));
 
       const reader = new WorkspaceReader();
       const context = await reader.buildContext();
 
-      const totalBytes = context.files.reduce(
-        (sum, f) => sum + Buffer.byteLength(f.content, 'utf-8'),
-        0,
-      );
-      expect(totalBytes).toBeLessThanOrEqual(200_000);
+      // buildContext never reads file contents — agent uses read_file tool on demand
+      expect(context.files.every((f) => f.content === '')).toBe(true);
+      expect(mockWorkspace.fs.readFile).not.toHaveBeenCalled();
     });
+  });
+
+  // ── readFileForTool ───────────────────────────────────────────────────────────
+
+  describe('readFileForTool', () => {
+    it('returns file content for a valid path', async () => {
+      setupWorkspaceRoot('/workspace');
+      mockWorkspace.fs.stat = jest.fn().mockResolvedValue({ size: 100, type: FileType.File });
+      mockWorkspace.fs.readFile = jest.fn().mockResolvedValue(Buffer.from('const x = 1;'));
+
+      const reader = new WorkspaceReader();
+      const result = await reader.readFileForTool('src/app.ts');
+
+      expect(result.isError).toBe(false);
+      expect(result.content).toBe('const x = 1;');
+    });
+
+    it('truncates files exceeding MAX_FILE_SIZE_BYTES (50000 bytes)', async () => {
+      setupWorkspaceRoot('/workspace');
+      const largeContent = 'x'.repeat(60_000);
+      mockWorkspace.fs.stat = jest.fn().mockResolvedValue({ size: 60_000, type: FileType.File });
+      mockWorkspace.fs.readFile = jest.fn().mockResolvedValue(Buffer.from(largeContent));
+
+      const reader = new WorkspaceReader();
+      const result = await reader.readFileForTool('large.ts');
+
+      expect(result.isError).toBe(false);
+      expect(result.content).toContain('[... truncated at 50000 bytes ...]');
+      expect(result.content.length).toBeLessThan(largeContent.length);
+    });
+
+    it('returns error for path traversal attempt', async () => {
+      setupWorkspaceRoot('/workspace');
+
+      const reader = new WorkspaceReader();
+      const result = await reader.readFileForTool('../etc/passwd');
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain('Invalid file path');
+    });
+
+    it('returns error for absolute path', async () => {
+      setupWorkspaceRoot('/workspace');
+
+      const reader = new WorkspaceReader();
+      const result = await reader.readFileForTool('/etc/passwd');
+
+      expect(result.isError).toBe(true);
+    });
+
+    it('returns error for excluded extension', async () => {
+      setupWorkspaceRoot('/workspace');
+      mockWorkspace.fs.stat = jest.fn().mockResolvedValue({ size: 100, type: FileType.File });
+      mockWorkspace.fs.readFile = jest.fn().mockResolvedValue(Buffer.from('data'));
+
+      const reader = new WorkspaceReader();
+      const result = await reader.readFileForTool('key.pem');
+
+      expect(result.isError).toBe(true);
+    });
+
+    it('returns error for excluded filename (.env)', async () => {
+      setupWorkspaceRoot('/workspace');
+      mockWorkspace.fs.stat = jest.fn().mockResolvedValue({ size: 100, type: FileType.File });
+
+      const reader = new WorkspaceReader();
+      const result = await reader.readFileForTool('.env');
+
+      expect(result.isError).toBe(true);
+    });
+
+    it('returns error when no workspace is open', async () => {
+      (mockWorkspace as { workspaceFolders: unknown }).workspaceFolders = undefined;
+
+      const reader = new WorkspaceReader();
+      const result = await reader.readFileForTool('app.ts');
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain('No workspace folder');
+    });
+  });
 
     it('sets activeFilePath relative to workspace root', async () => {
       setupWorkspaceRoot('/workspace');
@@ -198,5 +274,93 @@ describe('WorkspaceReader', () => {
       const context = await reader.buildContext();
       expect(context.activeFilePath).toBe('src/app.ts');
     });
-  });
+
+    // ── Security regression: workspace containment ──────────────────────────────
+
+    it('excludes active editor file located outside the workspace root', async () => {
+      setupWorkspaceRoot('/workspace');
+      mockWindow.activeTextEditor = {
+        document: {
+          uri: makeUri('/etc/passwd'),
+          isUntitled: false,
+        },
+      } as unknown as typeof window.activeTextEditor;
+      mockWorkspace.fs.readDirectory = jest.fn().mockResolvedValue([]);
+
+      const reader = new WorkspaceReader();
+      const context = await reader.buildContext();
+
+      const paths = context.files.map((f) => f.path);
+      expect(paths).not.toContain('../etc/passwd');
+      expect(paths).not.toContain('/etc/passwd');
+      expect(context.files).toHaveLength(0);
+    });
+
+    it('excludes visible editor file located outside the workspace root', async () => {
+      setupWorkspaceRoot('/workspace');
+      mockWindow.visibleTextEditors = [
+        {
+          document: {
+            uri: makeUri('/home/user/.ssh/id_rsa'),
+            isUntitled: false,
+          },
+        },
+      ] as unknown as typeof window.visibleTextEditors;
+      mockWorkspace.fs.readDirectory = jest.fn().mockResolvedValue([]);
+
+      const reader = new WorkspaceReader();
+      const context = await reader.buildContext();
+
+      expect(context.files).toHaveLength(0);
+    });
+
+    it('includes active editor file inside the workspace root', async () => {
+      setupWorkspaceRoot('/workspace');
+      mockWindow.activeTextEditor = {
+        document: {
+          uri: makeUri('/workspace/src/index.ts'),
+          isUntitled: false,
+        },
+      } as unknown as typeof window.activeTextEditor;
+      mockWorkspace.fs.readDirectory = jest.fn().mockResolvedValue([]);
+
+      const reader = new WorkspaceReader();
+      const context = await reader.buildContext();
+
+      expect(context.files.map((f) => f.path)).toContain('src/index.ts');
+    });
+
+    // ── Security regression: excluded directory check in buildContext ───────────
+
+    it('excludes active editor file inside node_modules', async () => {
+      setupWorkspaceRoot('/workspace');
+      mockWindow.activeTextEditor = {
+        document: {
+          uri: makeUri('/workspace/node_modules/lodash/lodash.js'),
+          isUntitled: false,
+        },
+      } as unknown as typeof window.activeTextEditor;
+      mockWorkspace.fs.readDirectory = jest.fn().mockResolvedValue([]);
+
+      const reader = new WorkspaceReader();
+      const context = await reader.buildContext();
+
+      expect(context.files.map((f) => f.path)).not.toContain('node_modules/lodash/lodash.js');
+    });
+
+    it('excludes active editor file inside .git directory', async () => {
+      setupWorkspaceRoot('/workspace');
+      mockWindow.activeTextEditor = {
+        document: {
+          uri: makeUri('/workspace/.git/config'),
+          isUntitled: false,
+        },
+      } as unknown as typeof window.activeTextEditor;
+      mockWorkspace.fs.readDirectory = jest.fn().mockResolvedValue([]);
+
+      const reader = new WorkspaceReader();
+      const context = await reader.buildContext();
+
+      expect(context.files.map((f) => f.path)).not.toContain('.git/config');
+    });
 });
