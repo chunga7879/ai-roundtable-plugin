@@ -22,7 +22,7 @@ import type { CopilotProvider } from './CopilotProvider';
 import { CopilotProviderError } from './CopilotProvider';
 import type { ApiKeyProvider } from './ApiKeyProvider';
 import { ApiKeyProviderError } from './ApiKeyProvider';
-import { parseFileChanges, stripFileBlocks } from '../workspace/WorkspaceWriter';
+import { normalizePath } from '../workspace/WorkspaceWriter';
 import type { WorkspaceReader } from '../workspace/WorkspaceReader';
 import { MAX_TOOL_CALLS } from '../workspace/WorkspaceReader';
 import { RoundtableError } from '../errors';
@@ -80,6 +80,8 @@ export class AgentRunner {
       : userMessage;
 
     let toolCallCount = 0;
+    // Accumulates files written via write_file tool across all callAgent invocations.
+    const allFileChanges: FileChange[] = [];
 
     const makeToolHandler = (): ((toolCall: ToolCall) => Promise<ToolResult>) => {
       return async (toolCall: ToolCall): Promise<ToolResult> => {
@@ -92,6 +94,22 @@ export class AgentRunner {
           cachedCommandOutputs.set(toolCall.command, output);
           const resultText = `Exit code: ${output.exitCode}\n\nOutput:\n${output.stdout || '(no output)'}`;
           return { id: toolCall.id, content: resultText, isError: output.exitCode !== 0 };
+        }
+
+        if (toolCall.name === 'write_file') {
+          const normalized = normalizePath(toolCall.filePath);
+          if (!normalized) {
+            return { id: toolCall.id, content: `Invalid file path: ${toolCall.filePath}`, isError: true };
+          }
+          onProgress({ type: 'tool_write_file', agentName: mainAgent, filePath: normalized });
+          const existing = allFileChanges.findIndex((f) => f.filePath === normalized);
+          const change: FileChange = { filePath: normalized, content: toolCall.content, isNew: false };
+          if (existing >= 0) {
+            allFileChanges[existing] = change;
+          } else {
+            allFileChanges.push(change);
+          }
+          return { id: toolCall.id, content: `Staged write to ${normalized}`, isError: false };
         }
 
         // read_file
@@ -127,7 +145,7 @@ export class AgentRunner {
       }
     };
 
-    // Step 1: Main agent initial response (with tool calls for file reading)
+    // Step 1: Main agent initial response (with tool calls for file reading/writing)
     onProgress({ type: 'main_agent_start', agentName: mainAgent });
 
     const { content: mainAgentResponse, usage: mainUsage } = await this.callAgent(
@@ -150,17 +168,17 @@ export class AgentRunner {
 
     onProgress({ type: 'main_agent_done', agentName: mainAgent });
 
+    // Snapshot files written during the main agent turn — used to build reflection context.
+    const mainAgentFileChanges = [...allFileChanges];
+
     // Step 2: Sub agents verify in parallel (skip if none selected or same as main)
     const uniqueSubAgents = subAgents.filter((a) => a !== mainAgent);
     let subAgentVerifications: SubAgentVerification[] = [];
 
     if (uniqueSubAgents.length > 0) {
-      // Strip FILE:/DELETE: blocks from mainAgentResponse before embedding in system prompt.
-      // Files are already passed separately in the user message ([FILES READ BY PRIMARY AGENT]),
-      // so including them in the system prompt too would double the input token count.
       const verificationSystemPrompt = buildSubAgentVerificationPrompt(
         roundType,
-        stripFileBlocks(mainAgentResponse),
+        mainAgentResponse,
       );
 
       onProgress({
@@ -178,7 +196,7 @@ export class AgentRunner {
       const allFilesForSubAgent = Array.from(cachedFiles.entries()).map(([path, content]) => ({ path, content }));
       const resolvedFilesSection = allFilesForSubAgent.length > 0
         ? `[FILES READ BY PRIMARY AGENT]\n\n${allFilesForSubAgent
-            .map((f) => `FILE: ${f.path}\n\`\`\`\n${f.content}\n\`\`\``)
+            .map((f) => `[FILE: ${f.path}]\n\`\`\`\n${f.content}\n\`\`\``)
             .join('\n\n')}\n\n[END FILES]`
         : '';
 
@@ -256,20 +274,22 @@ export class AgentRunner {
       onProgress({ type: 'reflection_start', agentName: mainAgent, mainAgentResponse });
 
       // Developer and QA rounds need exact code context to apply precise fixes —
-      // pass the full mainAgentResponse including FILE: blocks.
+      // inline written file contents so the reflection agent has full code context.
       // Other rounds (documentation, requirements, architect, reviewer) only need prose —
-      // strip FILE: blocks to save tokens, then append a file path list so Claude
-      // knows which files to re-emit in the final response.
+      // note which files were written so the reflection agent can re-emit them.
       const FILE_WRITING_ROUNDS = new Set([RoundType.DEVELOPER, RoundType.QA]);
       let reflectionMainResponse: string;
       if (FILE_WRITING_ROUNDS.has(roundType)) {
-        reflectionMainResponse = mainAgentResponse;
-      } else {
-        const writtenFilePaths = parseFileChanges(mainAgentResponse).map((f) => f.filePath);
-        const filePathNote = writtenFilePaths.length > 0
-          ? `\n\n[FILES YOU WROTE — re-emit all of these as complete FILE: blocks in your final response]\n${writtenFilePaths.map((p) => `- ${p}`).join('\n')}`
+        const writtenFilesSection = mainAgentFileChanges.length > 0
+          ? `\n\n[FILES WRITTEN VIA write_file TOOL]\n${mainAgentFileChanges.map((f) => `FILE: ${f.filePath}\n\`\`\`\n${f.content}\n\`\`\``).join('\n\n')}`
           : '';
-        reflectionMainResponse = stripFileBlocks(mainAgentResponse) + filePathNote;
+        reflectionMainResponse = mainAgentResponse + writtenFilesSection;
+      } else {
+        const writtenFilePaths = mainAgentFileChanges.map((f) => f.filePath);
+        const filePathNote = writtenFilePaths.length > 0
+          ? `\n\n[FILES YOU WROTE — re-emit all of these using write_file tool in your final response]\n${writtenFilePaths.map((p) => `- ${p}`).join('\n')}`
+          : '';
+        reflectionMainResponse = mainAgentResponse + filePathNote;
       }
       const reflectionUserMessage = buildReflectionPrompt(
         reflectionMainResponse,
@@ -300,16 +320,15 @@ export class AgentRunner {
       reflectedResponse = mainAgentResponse;
     }
 
-    // Step 4: Parse file changes from the final response (original, before stripping)
-    const fileChanges = parseFileChanges(reflectedResponse);
+    // Step 4: Collect file changes from write_file tool calls.
+    const fileChanges: FileChange[] = [...allFileChanges];
 
-    // Strip FILE:/DELETE: blocks from display text — file contents are shown in the diff panel
-    const displayResponse = stripFileBlocks(reflectedResponse);
+    const displayResponse = reflectedResponse;
 
     const hasUsage = totalUsage.inputTokens > 0 || totalUsage.outputTokens > 0;
 
     return {
-      mainAgentResponse: stripFileBlocks(mainAgentResponse),
+      mainAgentResponse,
       subAgentVerifications,
       reflectedResponse: displayResponse,
       fileChanges,
@@ -391,10 +410,11 @@ export class AgentRunner {
       ? `Currently active file: ${workspaceContext.activeFilePath}\n\n`
       : '';
 
-    // Separate files into cached (include content) and uncached (list only)
+    // Separate files into cached (include content) and uncached (list only).
+    // Use [FILE: path] brackets to distinguish input context from write_file output calls.
     const cachedSection = workspaceContext.files
       .filter((f) => cachedFiles.has(f.path))
-      .map((f) => `FILE: ${f.path}\n\`\`\`\n${cachedFiles.get(f.path)}\n\`\`\``)
+      .map((f) => `[FILE: ${f.path}]\n\`\`\`\n${cachedFiles.get(f.path)}\n\`\`\``)
       .join('\n\n');
 
     const uncachedList = workspaceContext.files
@@ -416,6 +436,7 @@ export type ProgressEvent =
   | { type: 'main_agent_done'; agentName: AgentName }
   | { type: 'tool_read'; agentName: AgentName; filePath: string }
   | { type: 'tool_run_command'; agentName: AgentName; command: string }
+  | { type: 'tool_write_file'; agentName: AgentName; filePath: string }
   | { type: 'sub_agents_start'; agentNames: AgentName[] }
   | { type: 'sub_agent_feedback'; agentName: AgentName; feedback: string }
   | { type: 'sub_agents_done'; agentNames: AgentName[] }

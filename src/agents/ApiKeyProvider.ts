@@ -62,6 +62,19 @@ const RUN_COMMAND_TOOL_ANTHROPIC = {
   },
 };
 
+const WRITE_FILE_TOOL_ANTHROPIC = {
+  name: 'write_file',
+  description: 'Write a file to the workspace. Use this to create new files or overwrite existing ones. Always write the complete file content — never partial content.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: 'Relative path from workspace root (e.g. src/utils/helper.ts).' },
+      content: { type: 'string', description: 'Complete file content to write.' },
+    },
+    required: ['path', 'content'],
+  },
+};
+
 const READ_FILE_TOOL_OPENAI = {
   type: 'function',
   function: {
@@ -92,6 +105,22 @@ const RUN_COMMAND_TOOL_OPENAI = {
   },
 };
 
+const WRITE_FILE_TOOL_OPENAI = {
+  type: 'function',
+  function: {
+    name: 'write_file',
+    description: 'Write a file to the workspace. Use this to create new files or overwrite existing ones. Always write the complete file content — never partial content.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Relative path from workspace root (e.g. src/utils/helper.ts).' },
+        content: { type: 'string', description: 'Complete file content to write.' },
+      },
+      required: ['path', 'content'],
+    },
+  },
+};
+
 const READ_FILE_TOOL_GEMINI = {
   name: 'read_file',
   description: 'Read the content of a file in the workspace by its relative path.',
@@ -113,6 +142,19 @@ const RUN_COMMAND_TOOL_GEMINI = {
       command: { type: 'string', description: 'Shell command to execute in the workspace root.' },
     },
     required: ['command'],
+  },
+};
+
+const WRITE_FILE_TOOL_GEMINI = {
+  name: 'write_file',
+  description: 'Write a file to the workspace. Use this to create new files or overwrite existing ones. Always write the complete file content — never partial content.',
+  parameters: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: 'Relative path from workspace root (e.g. src/utils/helper.ts).' },
+      content: { type: 'string', description: 'Complete file content to write.' },
+    },
+    required: ['path', 'content'],
   },
 };
 
@@ -221,7 +263,7 @@ export class ApiKeyProvider {
       { role: 'user', content: options.userMessage },
     ];
 
-    const tools = options.onToolCall ? [READ_FILE_TOOL_ANTHROPIC, RUN_COMMAND_TOOL_ANTHROPIC] : undefined;
+    const tools = options.onToolCall ? [READ_FILE_TOOL_ANTHROPIC, RUN_COMMAND_TOOL_ANTHROPIC, WRITE_FILE_TOOL_ANTHROPIC] : undefined;
     const totalUsage = { inputTokens: 0, outputTokens: 0 };
     let finalText = '';
 
@@ -286,7 +328,9 @@ export class ApiKeyProvider {
       for (const block of toolUseBlocks) {
         const result = block.name === 'run_command'
           ? await options.onToolCall({ id: block.id ?? '', name: 'run_command', command: typeof block.input?.['command'] === 'string' ? block.input['command'] : '' })
-          : await options.onToolCall({ id: block.id ?? '', name: 'read_file', filePath: typeof block.input?.['path'] === 'string' ? block.input['path'] : '' });
+          : block.name === 'write_file'
+            ? await options.onToolCall({ id: block.id ?? '', name: 'write_file', filePath: typeof block.input?.['path'] === 'string' ? block.input['path'] : '', content: typeof block.input?.['content'] === 'string' ? block.input['content'] : '' })
+            : await options.onToolCall({ id: block.id ?? '', name: 'read_file', filePath: typeof block.input?.['path'] === 'string' ? block.input['path'] : '' });
         toolResults.push({ type: 'tool_result', tool_use_id: block.id ?? '', content: result.content });
       }
       messages.push({ role: 'user', content: toolResults });
@@ -341,7 +385,7 @@ export class ApiKeyProvider {
       { role: 'user', content: options.userMessage },
     ];
 
-    const tools = options.onToolCall ? [READ_FILE_TOOL_OPENAI, RUN_COMMAND_TOOL_OPENAI] : undefined;
+    const tools = options.onToolCall ? [READ_FILE_TOOL_OPENAI, RUN_COMMAND_TOOL_OPENAI, WRITE_FILE_TOOL_OPENAI] : undefined;
     const totalUsage = { inputTokens: 0, outputTokens: 0 };
     let finalText = '';
 
@@ -409,7 +453,9 @@ export class ApiKeyProvider {
         }
         const result = tc.function.name === 'run_command'
           ? await options.onToolCall({ id: tc.id, name: 'run_command', command: typeof args['command'] === 'string' ? args['command'] : '' })
-          : await options.onToolCall({ id: tc.id, name: 'read_file', filePath: typeof args['path'] === 'string' ? args['path'] : '' });
+          : tc.function.name === 'write_file'
+            ? await options.onToolCall({ id: tc.id, name: 'write_file', filePath: typeof args['path'] === 'string' ? args['path'] : '', content: typeof args['content'] === 'string' ? args['content'] : '' })
+            : await options.onToolCall({ id: tc.id, name: 'read_file', filePath: typeof args['path'] === 'string' ? args['path'] : '' });
         messages.push({ role: 'tool', tool_call_id: tc.id, content: result.content });
       }
     }
@@ -442,7 +488,7 @@ export class ApiKeyProvider {
     ];
 
     const tools = options.onToolCall
-      ? [{ functionDeclarations: [READ_FILE_TOOL_GEMINI, RUN_COMMAND_TOOL_GEMINI] }]
+      ? [{ functionDeclarations: [READ_FILE_TOOL_GEMINI, RUN_COMMAND_TOOL_GEMINI, WRITE_FILE_TOOL_GEMINI] }]
       : undefined;
     const totalUsage = { inputTokens: 0, outputTokens: 0 };
     let finalText = '';
@@ -508,7 +554,9 @@ export class ApiKeyProvider {
         const fc = part.functionCall!;
         const result = fc.name === 'run_command'
           ? await options.onToolCall({ id: fc.name, name: 'run_command', command: typeof fc.args['command'] === 'string' ? fc.args['command'] : '' })
-          : await options.onToolCall({ id: fc.name, name: 'read_file', filePath: typeof fc.args['path'] === 'string' ? fc.args['path'] : '' });
+          : fc.name === 'write_file'
+            ? await options.onToolCall({ id: fc.name, name: 'write_file', filePath: typeof fc.args['path'] === 'string' ? fc.args['path'] : '', content: typeof fc.args['content'] === 'string' ? fc.args['content'] : '' })
+            : await options.onToolCall({ id: fc.name, name: 'read_file', filePath: typeof fc.args['path'] === 'string' ? fc.args['path'] : '' });
         responseParts.push({ functionResponse: { name: fc.name, response: { content: result.content } } });
       }
       contents.push({ role: 'user', parts: responseParts });
@@ -532,7 +580,7 @@ export class ApiKeyProvider {
       );
     }
 
-    const tools = options.onToolCall ? [READ_FILE_TOOL_ANTHROPIC, RUN_COMMAND_TOOL_ANTHROPIC] : undefined;
+    const tools = options.onToolCall ? [READ_FILE_TOOL_ANTHROPIC, RUN_COMMAND_TOOL_ANTHROPIC, WRITE_FILE_TOOL_ANTHROPIC] : undefined;
     const history = options.conversationHistory ?? [];
     const messages: Array<{ role: string; content: unknown }> = [
       ...history.map((turn) => ({ role: turn.role, content: turn.content })),
@@ -643,7 +691,9 @@ export class ApiKeyProvider {
         try { input = JSON.parse(block.inputJson) as Record<string, unknown>; } catch { /* use empty */ }
         const result = block.name === 'run_command'
           ? await options.onToolCall({ id: block.id, name: 'run_command', command: typeof input['command'] === 'string' ? input['command'] : '' })
-          : await options.onToolCall({ id: block.id, name: 'read_file', filePath: typeof input['path'] === 'string' ? input['path'] : '' });
+          : block.name === 'write_file'
+            ? await options.onToolCall({ id: block.id, name: 'write_file', filePath: typeof input['path'] === 'string' ? input['path'] : '', content: typeof input['content'] === 'string' ? input['content'] : '' })
+            : await options.onToolCall({ id: block.id, name: 'read_file', filePath: typeof input['path'] === 'string' ? input['path'] : '' });
         toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: result.content });
       }
       messages.push({ role: 'user', content: toolResults });
@@ -696,7 +746,7 @@ export class ApiKeyProvider {
     options: LLMRequestOptions,
     params: { apiKey: string; hostname: string; path: string; model: string; agentLabel: AgentName; errorPrefix: string },
   ): Promise<ApiKeyResponse> {
-    const tools = options.onToolCall ? [READ_FILE_TOOL_OPENAI, RUN_COMMAND_TOOL_OPENAI] : undefined;
+    const tools = options.onToolCall ? [READ_FILE_TOOL_OPENAI, RUN_COMMAND_TOOL_OPENAI, WRITE_FILE_TOOL_OPENAI] : undefined;
     const history = options.conversationHistory ?? [];
     const messages: Array<Record<string, unknown>> = [
       { role: 'system', content: options.systemPrompt },
@@ -801,7 +851,9 @@ export class ApiKeyProvider {
         try { args = JSON.parse(tc.argsJson) as Record<string, unknown>; } catch { /* use empty */ }
         const result = tc.name === 'run_command'
           ? await options.onToolCall({ id: tc.id, name: 'run_command', command: typeof args['command'] === 'string' ? args['command'] : '' })
-          : await options.onToolCall({ id: tc.id, name: 'read_file', filePath: typeof args['path'] === 'string' ? args['path'] : '' });
+          : tc.name === 'write_file'
+            ? await options.onToolCall({ id: tc.id, name: 'write_file', filePath: typeof args['path'] === 'string' ? args['path'] : '', content: typeof args['content'] === 'string' ? args['content'] : '' })
+            : await options.onToolCall({ id: tc.id, name: 'read_file', filePath: typeof args['path'] === 'string' ? args['path'] : '' });
         messages.push({ role: 'tool', tool_call_id: tc.id, content: result.content });
       }
     }
@@ -919,7 +971,9 @@ export class ApiKeyProvider {
         const fc = part['functionCall'] as { name: string; args: Record<string, unknown> };
         const result = fc.name === 'run_command'
           ? await options.onToolCall({ id: fc.name, name: 'run_command', command: typeof fc.args['command'] === 'string' ? fc.args['command'] : '' })
-          : await options.onToolCall({ id: fc.name, name: 'read_file', filePath: typeof fc.args['path'] === 'string' ? fc.args['path'] : '' });
+          : fc.name === 'write_file'
+            ? await options.onToolCall({ id: fc.name, name: 'write_file', filePath: typeof fc.args['path'] === 'string' ? fc.args['path'] : '', content: typeof fc.args['content'] === 'string' ? fc.args['content'] : '' })
+            : await options.onToolCall({ id: fc.name, name: 'read_file', filePath: typeof fc.args['path'] === 'string' ? fc.args['path'] : '' });
         responseParts.push({ functionResponse: { name: fc.name, response: { content: result.content } } });
       }
       contents.push({ role: 'user', parts: responseParts });
