@@ -406,6 +406,9 @@ export class ChatPanel implements vscode.Disposable {
       this.conversationHistory.push({ role: 'user', content: userMessage });
       this.postErrorMessage(this.toSafeUserMessage(err), true);
     } finally {
+      if (this.streamingMsgId) {
+        this.postMessage({ type: 'interruptMessage', payload: { id: this.streamingMsgId } });
+      }
       this.streamingMsgId = undefined;
       this.streamingAgentName = undefined;
       this.postMessage({ type: 'setLoading', payload: { loading: false } });

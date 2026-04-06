@@ -159,6 +159,7 @@ export type ExtensionToWebviewMessage =
   | { type: 'updateMessage'; payload: { id: string; content: string } }
   | { type: 'streamChunk'; payload: { id: string; chunk: string } }
   | { type: 'finalizeMessage'; payload: { id: string; content: string } }
+  | { type: 'interruptMessage'; payload: { id: string } }
   | { type: 'collapseMessage'; payload: { id: string; content: string; label: string } }
   | { type: 'setLoading'; payload: { loading: boolean } }
   | { type: 'showFileChanges'; payload: { fileChanges: FileChange[] } }

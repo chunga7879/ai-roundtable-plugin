@@ -4,7 +4,6 @@ import type { WorkspaceContext, WorkspaceFile } from '../types';
 import { WorkspaceError } from '../errors';
 
 const MAX_FILE_SIZE_BYTES = 50_000;
-const MAX_TOTAL_CONTEXT_BYTES = 200_000;
 const MAX_FILES_TO_INCLUDE = 50;
 
 const EXCLUDED_DIRS = new Set([

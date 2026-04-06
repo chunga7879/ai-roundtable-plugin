@@ -910,16 +910,19 @@ export class ApiKeyProvider {
     };
   }
 
-  private makeHttpsStreamRequest(params: {
-    hostname: string;
-    path: string;
-    method: string;
-    headers: Record<string, string>;
-    body: string;
-    agentLabel: AgentName;
-    onLine: (line: string) => void;
-    cancellationToken?: LLMRequestOptions['cancellationToken'];
-  }): Promise<void> {
+  private makeHttpsStreamRequest(
+    params: {
+      hostname: string;
+      path: string;
+      method: string;
+      headers: Record<string, string>;
+      body: string;
+      agentLabel: AgentName;
+      onLine: (line: string) => void;
+      cancellationToken?: LLMRequestOptions['cancellationToken'];
+    },
+    retriesLeft = 2,
+  ): Promise<void> {
     return new Promise((resolve, reject) => {
       const req = https.request(
         {
@@ -929,6 +932,16 @@ export class ApiKeyProvider {
           headers: params.headers,
         },
         (res: http.IncomingMessage) => {
+          // Rate-limited — drain response, wait, then retry (safe: onLine not yet called)
+          if (res.statusCode === 429 && retriesLeft > 0) {
+            res.resume();
+            const delayMs = this.parseRetryAfterMs(res.headers['retry-after']);
+            setTimeout(() => {
+              this.makeHttpsStreamRequest(params, retriesLeft - 1).then(resolve, reject);
+            }, delayMs);
+            return;
+          }
+
           if (res.statusCode !== undefined && (res.statusCode < 200 || res.statusCode >= 300)) {
             const errorChunks: Buffer[] = [];
             res.on('data', (chunk: Buffer) => errorChunks.push(chunk));
@@ -1016,15 +1029,18 @@ export class ApiKeyProvider {
     });
   }
 
-  private makeHttpsRequest(params: {
-    hostname: string;
-    path: string;
-    method: string;
-    headers: Record<string, string>;
-    body: string;
-    agentLabel: AgentName;
-    cancellationToken?: LLMRequestOptions['cancellationToken'];
-  }): Promise<string> {
+  private makeHttpsRequest(
+    params: {
+      hostname: string;
+      path: string;
+      method: string;
+      headers: Record<string, string>;
+      body: string;
+      agentLabel: AgentName;
+      cancellationToken?: LLMRequestOptions['cancellationToken'];
+    },
+    retriesLeft = 2,
+  ): Promise<string> {
     return new Promise((resolve, reject) => {
       const req = https.request(
         {
@@ -1034,6 +1050,16 @@ export class ApiKeyProvider {
           headers: params.headers,
         },
         (res: http.IncomingMessage) => {
+          // Rate-limited — drain response, wait, then retry
+          if (res.statusCode === 429 && retriesLeft > 0) {
+            res.resume();
+            const delayMs = this.parseRetryAfterMs(res.headers['retry-after']);
+            setTimeout(() => {
+              this.makeHttpsRequest(params, retriesLeft - 1).then(resolve, reject);
+            }, delayMs);
+            return;
+          }
+
           const chunks: Buffer[] = [];
           let totalBytes = 0;
 
@@ -1057,7 +1083,6 @@ export class ApiKeyProvider {
               res.statusCode !== undefined &&
               (res.statusCode < 200 || res.statusCode >= 300)
             ) {
-              // Truncate body to avoid leaking verbose API error payloads into logs
               const snippet = responseText.slice(0, 300);
               reject(
                 new ApiKeyProviderError(
@@ -1091,7 +1116,6 @@ export class ApiKeyProvider {
         );
       });
 
-      // Abort the request immediately if the cancellation token fires
       const cancelDisposable = params.cancellationToken?.onCancellationRequested(() => {
         req.destroy(new CancellationError());
       });
@@ -1114,5 +1138,16 @@ export class ApiKeyProvider {
       req.write(params.body);
       req.end();
     });
+  }
+
+  /** Parses Retry-After header value (seconds) into milliseconds. Defaults to 60s. */
+  private parseRetryAfterMs(retryAfter: string | string[] | undefined): number {
+    const DEFAULT_MS = 60_000;
+    if (!retryAfter) {
+      return DEFAULT_MS;
+    }
+    const val = Array.isArray(retryAfter) ? retryAfter[0] : retryAfter;
+    const seconds = Number(val);
+    return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : DEFAULT_MS;
   }
 }

@@ -217,6 +217,12 @@
       animation: blink 1s step-end infinite;
       opacity: 0.8;
     }
+    .interrupted-indicator {
+      color: var(--vscode-descriptionForeground);
+      font-size: var(--font-size-sm);
+      font-style: italic;
+      margin-left: 4px;
+    }
     @keyframes blink {
       50% { opacity: 0; }
     }
@@ -857,6 +863,8 @@
 
       // ── State ──────────────────────────────────────────────────────────────
       let isLoading = false;
+      /** @type {Set<string>} IDs of interrupted streaming bubbles — cleared on next turn start. */
+      const interruptedBubbleIds = new Set();
       /** @type {Array<{filePath: string, content: string, isNew: boolean}>} */
       let pendingFileChanges = [];
 
@@ -1627,7 +1635,13 @@
         sendBtn.style.display = loading ? 'none' : '';
         stopBtn.style.display = loading ? '' : 'none';
 
-        if (!loading) {
+        if (loading) {
+          for (const id of interruptedBubbleIds) {
+            const el = document.getElementById('msg-' + id);
+            if (el) el.remove();
+          }
+          interruptedBubbleIds.clear();
+        } else {
           updatePipeline('done');
         }
       }
@@ -1741,6 +1755,24 @@
           case 'finalizeMessage':
             handleFinalizeMessage(message.payload);
             break;
+
+          case 'interruptMessage': {
+            const id = message.payload.id;
+            const wrapper = document.getElementById('msg-' + id);
+            if (wrapper) {
+              const cursor = wrapper.querySelector('.stream-cursor');
+              if (cursor) cursor.remove();
+              const textNode = wrapper.querySelector('.stream-text');
+              if (textNode) {
+                const indicator = document.createElement('span');
+                indicator.className = 'interrupted-indicator';
+                indicator.textContent = '\u00b7 interrupted';
+                textNode.after(indicator);
+              }
+              interruptedBubbleIds.add(id);
+            }
+            break;
+          }
 
           case 'collapseMessage':
             handleCollapseMessage(message.payload);
