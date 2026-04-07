@@ -48,7 +48,8 @@ function createPanel(configManager = makeConfigManager()) {
     {
       extensionUri: { fsPath: '/ext', scheme: 'file' } as vscode.Uri,
       globalStorageUri: { fsPath: '/global-storage', scheme: 'file' } as vscode.Uri,
-    } as vscode.ExtensionContext,
+      globalState: { get: jest.fn().mockReturnValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
+    } as unknown as vscode.ExtensionContext,
     configManager as never,
   );
 

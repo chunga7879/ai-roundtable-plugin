@@ -202,7 +202,8 @@ export type ExtensionToWebviewMessage =
   | { type: 'toolCallProgress'; payload: { msgId: string; filePath: string } }
   | { type: 'contextUsage'; payload: { pct: number; label: string } }
   | { type: 'sessionListLoaded'; payload: { sessions: SessionIndexEntry[] } }
-  | { type: 'sessionRestored'; payload: { turns: ConversationTurn[]; roundType: RoundType } };
+  | { type: 'sessionRestored'; payload: { turns: ConversationTurn[]; roundType: RoundType } }
+  | { type: 'restoreDraftFileChanges'; payload: { fileChanges: FileChange[]; roundType: RoundType; savedAt: number } };
 
 // ── Input validation helpers ──────────────────────────────────────────────────
 

@@ -1664,9 +1664,12 @@
       /**
        * @param {Array<{filePath: string, content: string, isNew: boolean}>} fileChanges
        */
-      function showFileChanges(fileChanges) {
+      const fileChangesTitle = /** @type {HTMLElement} */ (document.getElementById('file-changes-title'));
+
+      function showFileChanges(fileChanges, title) {
         pendingFileChanges = fileChanges;
         fileChangesList.innerHTML = '';
+        fileChangesTitle.textContent = title || 'Proposed File Changes';
 
         for (const change of fileChanges) {
           const item = document.createElement('div');
@@ -1703,6 +1706,7 @@
         pendingFileChanges = [];
         fileChangesPanel.classList.remove('visible');
         fileChangesList.innerHTML = '';
+        fileChangesTitle.textContent = 'Proposed File Changes';
       }
 
       // ── Messages from extension ────────────────────────────────────────────
@@ -1799,6 +1803,16 @@
           case 'showFileChanges':
             showFileChanges(message.payload.fileChanges);
             break;
+
+          case 'restoreDraftFileChanges': {
+            const { fileChanges, roundType, savedAt } = message.payload;
+            const ageMs = Date.now() - savedAt;
+            const ageMin = Math.round(ageMs / 60000);
+            const ageLabel = ageMin < 1 ? 'just now' : ageMin === 1 ? '1 min ago' : ageMin + ' mins ago';
+            const title = 'Unsaved changes from ' + ageLabel + ' (' + roundType + ')';
+            showFileChanges(fileChanges, title);
+            break;
+          }
 
           case 'clearFileChanges':
             hideFileChanges();
