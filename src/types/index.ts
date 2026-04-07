@@ -80,6 +80,8 @@ export interface WorkspaceFile {
   truncated?: boolean;
 }
 
+export type ModelTier = 'light' | 'heavy';
+
 export interface ExtensionConfig {
   providerMode: ProviderMode;
   anthropicApiKey?: string;
@@ -87,6 +89,7 @@ export interface ExtensionConfig {
   googleApiKey?: string;
   deepseekApiKey?: string;
   copilotModelFamily?: string;
+  modelTier: ModelTier;
   runnerTimeoutMs: number;
 }
 
@@ -150,6 +153,7 @@ export interface PersistedSession {
 export type WebviewToExtensionMessage =
   | { type: 'sendMessage'; payload: SendMessagePayload }
   | { type: 'applyChanges'; payload: ApplyChangesPayload }
+  | { type: 'setModelTier'; payload: { tier: ModelTier } }
   | { type: 'rejectChanges' }
   | { type: 'requestConfig' }
   | { type: 'configureProvider' }
@@ -188,7 +192,7 @@ export type ExtensionToWebviewMessage =
   | { type: 'setLoading'; payload: { loading: boolean } }
   | { type: 'showFileChanges'; payload: { fileChanges: FileChange[] } }
   | { type: 'clearFileChanges' }
-  | { type: 'configLoaded'; payload: { providerMode: ProviderMode; hasApiKeys: boolean; availableAgents: AgentName[] } }
+  | { type: 'configLoaded'; payload: { providerMode: ProviderMode; hasApiKeys: boolean; availableAgents: AgentName[]; modelTier: ModelTier } }
   | { type: 'error'; payload: { message: string } }
   | { type: 'suggestInstall'; payload: { command: string } }
   | { type: 'contextFileRead'; payload: { path: string } }

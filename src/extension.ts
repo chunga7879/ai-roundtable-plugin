@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import type { ExtensionConfig } from './types';
+import type { ExtensionConfig, ModelTier } from './types';
 import { ProviderMode } from './types';
 import { ChatPanel } from './panels/ChatPanel';
 import { ConfigurationError } from './errors';
@@ -31,6 +31,9 @@ export class ConfigManager {
     const rawCopilotFamily = vsConfig.get<string>('copilotModelFamily') ?? 'auto';
     const copilotModelFamily = rawCopilotFamily === 'auto' ? undefined : rawCopilotFamily;
 
+    const rawTier = vsConfig.get<string>('modelTier');
+    const modelTier: ModelTier = rawTier === 'light' ? 'light' : 'heavy';
+
     const rawTimeout = vsConfig.get<number>('runnerTimeout') ?? 60;
     const runnerTimeoutMs = Math.min(Math.max(rawTimeout, 10), 600) * 1000;
 
@@ -60,8 +63,14 @@ export class ConfigManager {
       googleApiKey: googleApiKey ?? undefined,
       deepseekApiKey: deepseekApiKey ?? undefined,
       copilotModelFamily,
+      modelTier,
       runnerTimeoutMs,
     };
+  }
+
+  async setModelTier(tier: ModelTier): Promise<void> {
+    const vsConfig = vscode.workspace.getConfiguration(CONFIG_SECTION);
+    await vsConfig.update('modelTier', tier, vscode.ConfigurationTarget.Global);
   }
 
   async setProviderMode(mode: ProviderMode): Promise<void> {

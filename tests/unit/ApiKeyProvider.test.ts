@@ -1037,3 +1037,83 @@ describe('ApiKeyProvider — Bug fix: cancellation between tool-call iterations 
     expect(onToolCall).toHaveBeenCalledTimes(1);
   });
 });
+
+// ── Model tier ────────────────────────────────────────────────────────────────
+
+describe('ApiKeyProvider — model tier', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  function captureRequestBody(): { getBody: () => string } {
+    let body = '';
+    (https.request as jest.Mock).mockImplementation(
+      (_opts: unknown, callback: (res: EventEmitter & { statusCode?: number; headers: Record<string, string>; resume: jest.Mock }) => void) => {
+        const mockReq = new EventEmitter() as EventEmitter & {
+          write: jest.Mock; end: jest.Mock; setTimeout: jest.Mock; destroy: jest.Mock;
+        };
+        mockReq.write = jest.fn().mockImplementation((b: string) => { body = b; });
+        mockReq.end = jest.fn();
+        mockReq.setTimeout = jest.fn();
+        mockReq.destroy = jest.fn();
+        const mockRes = new EventEmitter() as EventEmitter & { statusCode?: number; headers: Record<string, string>; resume: jest.Mock };
+        mockRes.statusCode = 200;
+        mockRes.headers = {};
+        mockRes.resume = jest.fn();
+        setImmediate(() => {
+          mockRes.emit('data', Buffer.from(JSON.stringify({ content: [{ type: 'text', text: 'ok' }] })));
+          mockRes.emit('end');
+        });
+        callback(mockRes);
+        return mockReq;
+      },
+    );
+    return { getBody: () => body };
+  }
+
+  it('defaults to heavy tier — uses claude-sonnet-4-6', async () => {
+    const { getBody } = captureRequestBody();
+    const p = new ApiKeyProvider({ anthropicApiKey: 'sk-ant' });
+    await p.sendRequest(AgentName.CLAUDE, defaultOpts);
+    expect(JSON.parse(getBody()).model).toBe('claude-sonnet-4-6');
+  });
+
+  it('light tier — uses claude-haiku for Claude', async () => {
+    const { getBody } = captureRequestBody();
+    const p = new ApiKeyProvider({ anthropicApiKey: 'sk-ant', modelTier: 'light' });
+    await p.sendRequest(AgentName.CLAUDE, defaultOpts);
+    expect(JSON.parse(getBody()).model).toBe('claude-haiku-4-5-20251001');
+  });
+
+  function captureGptBody(): { getBody: () => string } {
+    let body = '';
+    (https.request as jest.Mock).mockImplementation(
+      (_opts: unknown, callback: (res: EventEmitter & { statusCode?: number; headers: Record<string, string>; resume: jest.Mock }) => void) => {
+        const mockReq = new EventEmitter() as EventEmitter & { write: jest.Mock; end: jest.Mock; setTimeout: jest.Mock; destroy: jest.Mock };
+        mockReq.write = jest.fn().mockImplementation((b: string) => { body = b; });
+        mockReq.end = jest.fn(); mockReq.setTimeout = jest.fn(); mockReq.destroy = jest.fn();
+        const mockRes = new EventEmitter() as EventEmitter & { statusCode?: number; headers: Record<string, string>; resume: jest.Mock };
+        mockRes.statusCode = 200; mockRes.headers = {}; mockRes.resume = jest.fn();
+        setImmediate(() => {
+          mockRes.emit('data', Buffer.from(JSON.stringify({ choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }] })));
+          mockRes.emit('end');
+        });
+        callback(mockRes);
+        return mockReq;
+      },
+    );
+    return { getBody: () => body };
+  }
+
+  it('heavy tier — uses gpt-4o for GPT', async () => {
+    const { getBody } = captureGptBody();
+    const p = new ApiKeyProvider({ openaiApiKey: 'sk-openai', modelTier: 'heavy' });
+    await p.sendRequest(AgentName.GPT, defaultOpts);
+    expect(JSON.parse(getBody()).model).toBe('gpt-4o');
+  });
+
+  it('light tier — uses gpt-4o-mini for GPT', async () => {
+    const { getBody } = captureGptBody();
+    const p = new ApiKeyProvider({ openaiApiKey: 'sk-openai', modelTier: 'light' });
+    await p.sendRequest(AgentName.GPT, defaultOpts);
+    expect(JSON.parse(getBody()).model).toBe('gpt-4o-mini');
+  });
+});

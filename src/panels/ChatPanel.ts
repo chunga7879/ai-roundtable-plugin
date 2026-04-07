@@ -273,6 +273,15 @@ export class ChatPanel implements vscode.Disposable {
         this.orchestrator.cancel();
         break;
 
+      case 'setModelTier': {
+        const { tier } = (msg.payload as { tier: string });
+        if (tier === 'light' || tier === 'heavy') {
+          await this.configManager.setModelTier(tier);
+          await this.handleRequestConfig();
+        }
+        break;
+      }
+
       case 'executeCommand': {
         const execPayload = msg.payload as { command?: unknown };
         if (typeof execPayload?.command === 'string' && execPayload.command.trim().length > 0) {
@@ -523,7 +532,7 @@ export class ChatPanel implements vscode.Disposable {
 
       this.postMessage({
         type: 'configLoaded',
-        payload: { providerMode: config.providerMode, hasApiKeys, availableAgents },
+        payload: { providerMode: config.providerMode, hasApiKeys, availableAgents, modelTier: config.modelTier },
       });
     } catch {
       this.postMessage({
@@ -532,6 +541,7 @@ export class ChatPanel implements vscode.Disposable {
           providerMode: ProviderMode.COPILOT,
           hasApiKeys: false,
           availableAgents: [AgentName.CLAUDE, AgentName.GPT, AgentName.GEMINI, AgentName.DEEPSEEK],
+          modelTier: 'heavy',
         },
       });
     }

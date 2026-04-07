@@ -641,3 +641,68 @@ describe('CopilotProvider — Bug fix: cancellation between tool-call iterations
     expect(model.sendRequest).toHaveBeenCalledTimes(1);
   });
 });
+
+// ── Model tier ────────────────────────────────────────────────────────────────
+
+describe('CopilotProvider — model tier', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('heavy tier (default) — queries gpt-4o family first', async () => {
+    (vscode.lm.selectChatModels as jest.Mock).mockResolvedValue([makeModel(['response'])]);
+    const provider = new CopilotProvider();
+    await provider.sendRequest(defaultOptions, AgentName.CLAUDE, makeToken());
+    const firstCall = (vscode.lm.selectChatModels as jest.Mock).mock.calls[0][0];
+    expect(firstCall.family).toBe('gpt-4o');
+  });
+
+  it('light tier — queries gpt-4o-mini family first', async () => {
+    (vscode.lm.selectChatModels as jest.Mock).mockResolvedValue([makeModel(['response'])]);
+    const provider = new CopilotProvider();
+    provider.setModelTier('light');
+    await provider.sendRequest(defaultOptions, AgentName.CLAUDE, makeToken());
+    const firstCall = (vscode.lm.selectChatModels as jest.Mock).mock.calls[0][0];
+    expect(firstCall.family).toBe('gpt-4o-mini');
+  });
+
+  it('switching tier invalidates model cache and re-queries', async () => {
+    (vscode.lm.selectChatModels as jest.Mock).mockResolvedValue([makeModel(['response'])]);
+    const provider = new CopilotProvider();
+
+    // First request — caches heavy model
+    await provider.sendRequest(defaultOptions, AgentName.CLAUDE, makeToken());
+    expect(vscode.lm.selectChatModels).toHaveBeenCalledTimes(1);
+
+    // Switch tier — cache should be invalidated
+    provider.setModelTier('light');
+    await provider.sendRequest(defaultOptions, AgentName.CLAUDE, makeToken());
+    expect(vscode.lm.selectChatModels).toHaveBeenCalledTimes(2);
+    const secondCall = (vscode.lm.selectChatModels as jest.Mock).mock.calls[1][0];
+    expect(secondCall.family).toBe('gpt-4o-mini');
+  });
+
+  it('setting same tier twice does not invalidate cache', async () => {
+    (vscode.lm.selectChatModels as jest.Mock).mockResolvedValue([makeModel(['response'])]);
+    const provider = new CopilotProvider();
+    provider.setModelTier('heavy');
+
+    await provider.sendRequest(defaultOptions, AgentName.CLAUDE, makeToken());
+    provider.setModelTier('heavy'); // same tier — no invalidation
+    await provider.sendRequest(defaultOptions, AgentName.CLAUDE, makeToken());
+
+    // selectChatModels called only once (cache hit on second request)
+    expect(vscode.lm.selectChatModels).toHaveBeenCalledTimes(1);
+  });
+
+  it('light tier falls back to gpt-4o when gpt-4o-mini unavailable', async () => {
+    (vscode.lm.selectChatModels as jest.Mock)
+      .mockResolvedValueOnce([]) // gpt-4o-mini — empty
+      .mockResolvedValue([makeModel(['fallback'])]); // gpt-4o and beyond
+    const provider = new CopilotProvider();
+    provider.setModelTier('light');
+    const result = await provider.sendRequest(defaultOptions, AgentName.CLAUDE, makeToken());
+    expect(result).toBe('fallback');
+    // First call was gpt-4o-mini, second was gpt-4o
+    expect((vscode.lm.selectChatModels as jest.Mock).mock.calls[0][0].family).toBe('gpt-4o-mini');
+    expect((vscode.lm.selectChatModels as jest.Mock).mock.calls[1][0].family).toBe('gpt-4o');
+  });
+});

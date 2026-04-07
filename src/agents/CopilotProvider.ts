@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import type { AgentName, ConversationTurn, ToolCall, ToolResult } from '../types';
+import type { AgentName, ConversationTurn, ModelTier, ToolCall, ToolResult } from '../types';
 import { ProviderError } from '../errors';
 
 export interface LLMRequestOptions {
@@ -47,12 +47,8 @@ function extractXmlToolCalls(text: string): Array<{ name: 'read_file'; path: str
   return calls;
 }
 
-const COPILOT_MODEL_FAMILIES: readonly string[] = [
-  'gpt-4o',
-  'gpt-4',
-  'claude',
-  'gemini',
-];
+const COPILOT_HEAVY_FAMILIES: readonly string[] = ['gpt-4o', 'gpt-4', 'claude', 'gemini'];
+const COPILOT_LIGHT_FAMILIES: readonly string[] = ['gpt-4o-mini', 'gpt-4o', 'claude', 'gemini'];
 
 /** How long (ms) to wait for Copilot model selection before giving up. */
 const MODEL_SELECTION_TIMEOUT_MS = 30_000;
@@ -60,11 +56,19 @@ const MODEL_SELECTION_TIMEOUT_MS = 30_000;
 export class CopilotProvider {
   private cachedModel: vscode.LanguageModelChat | undefined;
   private preferredFamily: string | undefined;
+  private modelTier: ModelTier = 'heavy';
 
   setPreferredFamily(family: string | undefined): void {
     if (this.preferredFamily !== family) {
       this.preferredFamily = family;
-      this.cachedModel = undefined; // invalidate cache when preference changes
+      this.cachedModel = undefined;
+    }
+  }
+
+  setModelTier(tier: ModelTier): void {
+    if (this.modelTier !== tier) {
+      this.modelTier = tier;
+      this.cachedModel = undefined;
     }
   }
 
@@ -120,7 +124,8 @@ export class CopilotProvider {
     }
 
     // Auto selection: try preferred model families in order
-    for (const family of COPILOT_MODEL_FAMILIES) {
+    const familyList = this.modelTier === 'light' ? COPILOT_LIGHT_FAMILIES : COPILOT_HEAVY_FAMILIES;
+    for (const family of familyList) {
       let models: vscode.LanguageModelChat[];
       try {
         models = await selectWithTimeout(

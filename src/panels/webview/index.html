@@ -521,6 +521,20 @@
       display: flex;
       gap: var(--spacing-sm);
     }
+    .tier-btn {
+      padding: 2px 10px;
+      font-size: var(--font-size-sm);
+      border: 1px solid var(--vscode-dropdown-border);
+      border-radius: var(--border-radius);
+      cursor: pointer;
+      background-color: var(--vscode-dropdown-background);
+      color: var(--vscode-descriptionForeground);
+    }
+    .tier-btn-active {
+      background-color: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+      border-color: var(--vscode-button-background);
+    }
     .action-btn {
       flex: 1;
       padding: var(--spacing-xs) var(--spacing-md);
@@ -737,6 +751,14 @@
         <option value="gemini">Gemini (Google)</option>
         <option value="deepseek">DeepSeek</option>
       </select>
+    </div>
+
+    <div class="control-row" style="justify-content:space-between;">
+      <span style="font-size:var(--font-size-sm);color:var(--vscode-descriptionForeground);">Model Tier</span>
+      <div id="tier-toggle" style="display:flex;gap:4px;">
+        <button id="tier-heavy-btn" type="button" class="tier-btn tier-btn-active" data-tier="heavy">Heavy</button>
+        <button id="tier-light-btn" type="button" class="tier-btn" data-tier="light">Light</button>
+      </div>
     </div>
 
     <div id="sub-agents-section">
@@ -1013,6 +1035,24 @@
       updateRoundHint();
 
       // ── Apply availability + same-as-main disabled state to all agent controls
+      const tierHeavyBtn = /** @type {HTMLButtonElement} */ (document.getElementById('tier-heavy-btn'));
+      const tierLightBtn = /** @type {HTMLButtonElement} */ (document.getElementById('tier-light-btn'));
+
+      function setTierUI(tier) {
+        tierHeavyBtn.classList.toggle('tier-btn-active', tier === 'heavy');
+        tierLightBtn.classList.toggle('tier-btn-active', tier === 'light');
+      }
+
+      tierHeavyBtn.addEventListener('click', function () {
+        vscode.postMessage({ type: 'setModelTier', payload: { tier: 'heavy' } });
+        setTierUI('heavy');
+      });
+
+      tierLightBtn.addEventListener('click', function () {
+        vscode.postMessage({ type: 'setModelTier', payload: { tier: 'light' } });
+        setTierUI('light');
+      });
+
       function updateAgentControls() {
         const selectedMain = mainAgentSelect.value;
 
@@ -1807,6 +1847,7 @@
             }
             availableAgentSet = new Set(message.payload.availableAgents || ['claude', 'gpt', 'gemini', 'deepseek']);
             updateAgentControls();
+            setTierUI(message.payload.modelTier || 'heavy');
             break;
 
           case 'contextFileRead': {

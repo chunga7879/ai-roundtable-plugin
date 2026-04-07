@@ -109,6 +109,16 @@
           ],
           "default": "auto",
           "description": "Which model family to request when using GitHub Copilot. Only applies when Provider Mode is 'copilot'. Note: selecting Claude or Gemini here does NOT use your Anthropic/Google API keys — it requests that model through your Copilot subscription."
+        },
+        "aiRoundtable.modelTier": {
+          "type": "string",
+          "enum": ["heavy", "light"],
+          "enumDescriptions": [
+            "Heavy: use the most capable models (Claude Sonnet, GPT-4o, Gemini 1.5 Pro, gpt-4o via Copilot)",
+            "Light: use faster/cheaper models for testing (Claude Haiku, GPT-4o-mini, Gemini 1.5 Flash)"
+          ],
+          "default": "heavy",
+          "description": "Model tier to use across all providers. Switch to Light for quick tests or free-tier usage."
         }
       }
     },

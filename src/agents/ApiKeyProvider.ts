@@ -1,7 +1,7 @@
 import * as https from 'https';
 import type * as http from 'http';
 import { AgentName } from '../types';
-import type { ConversationTurn, TokenUsage, ToolCall, ToolResult } from '../types';
+import type { ConversationTurn, ModelTier, TokenUsage, ToolCall, ToolResult } from '../types';
 import { ProviderError } from '../errors';
 
 export interface ApiKeyProviderOptions {
@@ -9,6 +9,7 @@ export interface ApiKeyProviderOptions {
   openaiApiKey?: string;
   googleApiKey?: string;
   deepseekApiKey?: string;
+  modelTier?: ModelTier;
 }
 
 export interface LLMRequestOptions {
@@ -160,10 +161,20 @@ const WRITE_FILE_TOOL_GEMINI = {
 
 // ── Models ────────────────────────────────────────────────────────────────────
 
-const CLAUDE_MODEL = 'claude-sonnet-4-6';
-const OPENAI_MODEL = 'gpt-4o';
-const GEMINI_MODEL = 'gemini-1.5-pro';
-const DEEPSEEK_MODEL = 'deepseek-coder';
+const MODELS: Record<ModelTier, Record<'claude' | 'openai' | 'gemini' | 'deepseek', string>> = {
+  heavy: {
+    claude: 'claude-sonnet-4-6',
+    openai: 'gpt-4o',
+    gemini: 'gemini-1.5-pro',
+    deepseek: 'deepseek-coder',
+  },
+  light: {
+    claude: 'claude-haiku-4-5-20251001',
+    openai: 'gpt-4o-mini',
+    gemini: 'gemini-1.5-flash',
+    deepseek: 'deepseek-chat',
+  },
+};
 
 const REQUEST_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_TOKENS = 16_384;
@@ -206,6 +217,10 @@ export interface ApiKeyResponse {
 
 export class ApiKeyProvider {
   constructor(private readonly options: ApiKeyProviderOptions) {}
+
+  private get models() {
+    return MODELS[this.options.modelTier ?? 'heavy'];
+  }
 
   async sendRequest(
     agentName: AgentName,
@@ -269,7 +284,7 @@ export class ApiKeyProvider {
 
     while (true) {
       const body = JSON.stringify({
-        model: CLAUDE_MODEL,
+        model: this.models.claude,
         max_tokens: DEFAULT_MAX_TOKENS,
         system: [{ type: 'text', text: options.systemPrompt, cache_control: { type: 'ephemeral' } }],
         messages,
@@ -351,7 +366,7 @@ export class ApiKeyProvider {
       apiKey: this.options.openaiApiKey,
       hostname: 'api.openai.com',
       path: '/v1/chat/completions',
-      model: OPENAI_MODEL,
+      model: this.models.openai,
       agentLabel: AgentName.GPT,
       errorPrefix: 'OpenAI',
     });
@@ -362,7 +377,7 @@ export class ApiKeyProvider {
       apiKey: this.options.deepseekApiKey,
       hostname: 'api.deepseek.com',
       path: '/v1/chat/completions',
-      model: DEEPSEEK_MODEL,
+      model: this.models.deepseek,
       agentLabel: AgentName.DEEPSEEK,
       errorPrefix: 'DeepSeek',
     });
@@ -503,7 +518,7 @@ export class ApiKeyProvider {
 
       const responseText = await this.makeHttpsRequest({
         hostname: 'generativelanguage.googleapis.com',
-        path: `/v1beta/models/${GEMINI_MODEL}:generateContent`,
+        path: `/v1beta/models/${this.models.gemini}:generateContent`,
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -593,7 +608,7 @@ export class ApiKeyProvider {
 
     while (true) {
       const body = JSON.stringify({
-        model: CLAUDE_MODEL,
+        model: this.models.claude,
         max_tokens: DEFAULT_MAX_TOKENS,
         stream: true,
         system: [{ type: 'text', text: options.systemPrompt, cache_control: { type: 'ephemeral' } }],
@@ -719,7 +734,7 @@ export class ApiKeyProvider {
       apiKey,
       hostname: 'api.openai.com',
       path: '/v1/chat/completions',
-      model: OPENAI_MODEL,
+      model: this.models.openai,
       agentLabel: AgentName.GPT,
       errorPrefix: 'OpenAI',
     });
@@ -736,7 +751,7 @@ export class ApiKeyProvider {
       apiKey,
       hostname: 'api.deepseek.com',
       path: '/v1/chat/completions',
-      model: DEEPSEEK_MODEL,
+      model: this.models.deepseek,
       agentLabel: AgentName.DEEPSEEK,
       errorPrefix: 'DeepSeek',
     });
@@ -902,7 +917,7 @@ export class ApiKeyProvider {
 
       await this.makeHttpsStreamRequest({
         hostname: 'generativelanguage.googleapis.com',
-        path: `/v1beta/models/${GEMINI_MODEL}:streamGenerateContent?alt=sse`,
+        path: `/v1beta/models/${this.models.gemini}:streamGenerateContent?alt=sse`,
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
