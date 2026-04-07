@@ -509,10 +509,6 @@
       background-color: var(--vscode-gitDecoration-addedResourceForeground, #73c991);
       color: var(--vscode-editor-background);
     }
-    .file-change-badge.deleted {
-      background-color: var(--vscode-gitDecoration-deletedResourceForeground, #f14c4c);
-      color: var(--vscode-editor-background);
-    }
     .file-change-path {
       font-size: var(--font-size-sm);
       font-family: var(--vscode-editor-font-family, monospace);
@@ -1363,73 +1359,14 @@
         }
       }
 
-      /**
-       * Strip FILE: ... ``` blocks and DELETE: lines from agent content before rendering.
-       * These are shown separately in the file changes panel.
-       * @param {string} content
-       * @returns {string}
-       */
-      function stripFileBlocks(content) {
-        // Line-by-line parser with fence-depth tracking.
-        // Correctly handles nested code blocks inside FILE: blocks (e.g. ```bash inside README).
-        const lines = content.split('\n');
-        const out = [];
-        const FILE_RE = /^FILE:[ \t]*\S/;
-        const DELETE_RE = /^DELETE:[ \t]*\S/;
-        const OPEN_RE = /^(`{3,})\w*/;
-        const CLOSE_RE = /^(`{3,})\s*$/;
-
-        let i = 0;
-        while (i < lines.length) {
-          const line = lines[i];
-
-          if (DELETE_RE.test(line)) {
-            i++;
-            continue;
-          }
-
-          if (FILE_RE.test(line)) {
-            i++;
-            if (i >= lines.length) break;
-            const openM = OPEN_RE.exec(lines[i]);
-            if (!openM) {
-              // No fence — skip just the FILE: line, keep this line
-              continue;
-            }
-            const fenceStr = openM[1];
-            i++;
-            let depth = 1;
-            while (i < lines.length) {
-              const cl = lines[i];
-              const closeM = CLOSE_RE.exec(cl);
-              if (closeM && closeM[1] === fenceStr) {
-                depth--;
-                if (depth === 0) { i++; break; }
-              } else if ((OPEN_RE.exec(cl) || [])[1] === fenceStr) {
-                depth++;
-              }
-              i++;
-            }
-            continue;
-          }
-
-          out.push(line);
-          i++;
-        }
-
-        // Collapse 3+ consecutive blank lines into 2
-        return out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
-      }
-
-      /**
+/**
        * @param {HTMLElement} container
        * @param {string} content
        * @param {{ suppressRun?: boolean }} [opts]
        */
       function renderAgentContent(container, content, opts = {}) {
         const RUN_PREFIX = 'RUN: ';
-        const stripped = stripFileBlocks(content);
-        const lines = stripped.split('\n');
+        const lines = content.split('\n');
         /** @type {string[]} */
         let mdBuffer = [];
 
@@ -1502,13 +1439,10 @@
       function handleStreamChunk(payload) {
         const wrapper = document.getElementById('msg-' + payload.id);
         if (!wrapper) return;
-        // Accumulate full response for final render; show stripped version live
         wrapper.dataset.streamBuffer = (wrapper.dataset.streamBuffer ?? '') + payload.chunk;
         const textNode = wrapper.querySelector('.stream-text');
         if (textNode) {
-          // Strip FILE: blocks so reasoning is visible but raw code isn't
-          const stripped = stripFileBlocks(wrapper.dataset.streamBuffer);
-          textNode.textContent = stripped || '';
+          textNode.textContent = wrapper.dataset.streamBuffer;
         }
         scrollToBottom();
       }
@@ -1700,9 +1634,9 @@
           item.title = 'Click to preview diff';
 
           const badge = document.createElement('span');
-          const badgeClass = change.isDelete ? 'deleted' : change.isNew ? 'new' : 'modified';
+          const badgeClass = change.isNew ? 'new' : 'modified';
           badge.className = 'file-change-badge ' + badgeClass;
-          badge.textContent = change.isDelete ? 'DEL' : change.isNew ? 'NEW' : 'MOD';
+          badge.textContent = change.isNew ? 'NEW' : 'MOD';
 
           const pathEl = document.createElement('span');
           pathEl.className = 'file-change-path';

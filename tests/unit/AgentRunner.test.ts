@@ -1252,15 +1252,15 @@ describe('AgentRunner', () => {
       expect(capturedReflectionMessages[0]).toContain('FILE: src/app.ts');
     });
 
-    it('non-DEVELOPER round strips file blocks from reflection prompt', async () => {
+    it('non-DEVELOPER round passes main agent response as-is to reflection prompt', async () => {
       let callCount = 0;
       const capturedReflectionMessages: string[] = [];
-      const mainWithFile = 'Here is the design\n\nFILE: docs/spec.md\n```\n# Spec\n```';
+      const mainResponse = 'Here is the design for the new architecture.';
 
       const copilotProvider = {
         sendRequest: jest.fn().mockImplementation((opts: { userMessage: string }) => {
           callCount++;
-          if (callCount === 1) return Promise.resolve(mainWithFile);
+          if (callCount === 1) return Promise.resolve(mainResponse);
           if (callCount === 2) return Promise.resolve('Sub feedback');
           capturedReflectionMessages.push(opts.userMessage);
           return Promise.resolve('Reflected');
@@ -1281,9 +1281,8 @@ describe('AgentRunner', () => {
         jest.fn(),
       );
 
-      // Non-FILE_WRITING round: FILE: block stripped, but file path listed
-      expect(capturedReflectionMessages[0]).not.toContain('FILE: docs/spec.md\n```');
-      expect(capturedReflectionMessages[0]).toContain('docs/spec.md');
+      // Non-FILE_WRITING round: main agent response passed through unchanged
+      expect(capturedReflectionMessages[0]).toContain(mainResponse);
     });
 
     it('reflection emits reflection_chunk progress events', async () => {
@@ -1699,6 +1698,238 @@ describe('AgentRunner', () => {
 
       // No [FILES YOU WROTE] note since no FILE: blocks in main response
       expect(capturedReflectionMsg).not.toContain('[FILES YOU WROTE');
+    });
+
+    // ── write_file tool: happy path, invalid path, overwrite, progress, reflection, fallback ──
+
+    it('write_file tool call stages file in result.fileChanges', async () => {
+      // Covers lines 99-112: write_file happy path, push to allFileChanges
+      let capturedResult: ToolResult | undefined;
+      const copilotProvider = {
+        sendRequest: jest.fn().mockImplementation(async (opts: { onToolCall?: (tc: ToolCall) => Promise<ToolResult> }) => {
+          if (opts.onToolCall) {
+            capturedResult = await opts.onToolCall({ id: 'w1', name: 'write_file', filePath: 'src/new.ts', content: 'export const x = 1;' });
+          }
+          return 'Response';
+        }),
+        isAvailable: jest.fn().mockResolvedValue(true),
+        invalidateModelCache: jest.fn(),
+      };
+      const runner = new AgentRunner({
+        copilotProvider: copilotProvider as never,
+        apiKeyProvider: makeApiKeyProvider() as never,
+        providerMode: ProviderMode.COPILOT,
+        workspaceReader: makeWorkspaceReader() as never,
+      });
+
+      const result = await runner.runRound(makeRoundRequest(), makeCancellationToken(), jest.fn());
+
+      expect(capturedResult?.isError).toBe(false);
+      expect(capturedResult?.content).toContain('src/new.ts');
+      expect(result.fileChanges).toHaveLength(1);
+      expect(result.fileChanges[0]).toMatchObject({ filePath: 'src/new.ts', content: 'export const x = 1;' });
+    });
+
+    it('write_file tool call with invalid path (traversal) returns isError: true', async () => {
+      // Covers lines 101-103: normalizePath returns null for '..' paths
+      let capturedResult: ToolResult | undefined;
+      const copilotProvider = {
+        sendRequest: jest.fn().mockImplementation(async (opts: { onToolCall?: (tc: ToolCall) => Promise<ToolResult> }) => {
+          if (opts.onToolCall) {
+            capturedResult = await opts.onToolCall({ id: 'w1', name: 'write_file', filePath: '../outside/evil.ts', content: 'malicious' });
+          }
+          return 'Response';
+        }),
+        isAvailable: jest.fn().mockResolvedValue(true),
+        invalidateModelCache: jest.fn(),
+      };
+      const runner = new AgentRunner({
+        copilotProvider: copilotProvider as never,
+        apiKeyProvider: makeApiKeyProvider() as never,
+        providerMode: ProviderMode.COPILOT,
+        workspaceReader: makeWorkspaceReader() as never,
+      });
+
+      const result = await runner.runRound(makeRoundRequest(), makeCancellationToken(), jest.fn());
+
+      expect(capturedResult?.isError).toBe(true);
+      expect(capturedResult?.content).toContain('Invalid file path');
+      expect(result.fileChanges).toHaveLength(0);
+    });
+
+    it('write_file tool call overwrites previous entry for the same path', async () => {
+      // Covers lines 105,107-109: existing = findIndex ≥ 0 → overwrite
+      const copilotProvider = {
+        sendRequest: jest.fn().mockImplementation(async (opts: { onToolCall?: (tc: ToolCall) => Promise<ToolResult> }) => {
+          if (opts.onToolCall) {
+            await opts.onToolCall({ id: 'w1', name: 'write_file', filePath: 'src/file.ts', content: 'version 1' });
+            await opts.onToolCall({ id: 'w2', name: 'write_file', filePath: 'src/file.ts', content: 'version 2' });
+          }
+          return 'Response';
+        }),
+        isAvailable: jest.fn().mockResolvedValue(true),
+        invalidateModelCache: jest.fn(),
+      };
+      const runner = new AgentRunner({
+        copilotProvider: copilotProvider as never,
+        apiKeyProvider: makeApiKeyProvider() as never,
+        providerMode: ProviderMode.COPILOT,
+        workspaceReader: makeWorkspaceReader() as never,
+      });
+
+      const result = await runner.runRound(makeRoundRequest(), makeCancellationToken(), jest.fn());
+
+      // Should have exactly one entry, with the latest content
+      expect(result.fileChanges).toHaveLength(1);
+      expect(result.fileChanges[0].content).toBe('version 2');
+    });
+
+    it('write_file tool call emits tool_write_file progress event', async () => {
+      // Covers line 104: onProgress tool_write_file
+      const progressEvents: Array<{ type: string; filePath?: string }> = [];
+      const copilotProvider = {
+        sendRequest: jest.fn().mockImplementation(async (opts: { onToolCall?: (tc: ToolCall) => Promise<ToolResult> }) => {
+          if (opts.onToolCall) {
+            await opts.onToolCall({ id: 'w1', name: 'write_file', filePath: 'src/out.ts', content: 'content' });
+          }
+          return 'Response';
+        }),
+        isAvailable: jest.fn().mockResolvedValue(true),
+        invalidateModelCache: jest.fn(),
+      };
+      const runner = new AgentRunner({
+        copilotProvider: copilotProvider as never,
+        apiKeyProvider: makeApiKeyProvider() as never,
+        providerMode: ProviderMode.COPILOT,
+        workspaceReader: makeWorkspaceReader() as never,
+      });
+
+      await runner.runRound(
+        makeRoundRequest(),
+        makeCancellationToken(),
+        (e) => { if ('filePath' in e) progressEvents.push({ type: e.type, filePath: (e as { filePath: string }).filePath }); },
+      );
+
+      const writeEvents = progressEvents.filter((e) => e.type === 'tool_write_file');
+      expect(writeEvents).toHaveLength(1);
+      expect(writeEvents[0].filePath).toBe('src/out.ts');
+    });
+
+    it('DEVELOPER round reflection includes [FILES WRITTEN VIA write_file TOOL] section when files written', async () => {
+      // Covers line 286-287: writtenFilesSection when mainAgentFileChanges.length > 0
+      let callCount = 0;
+      let capturedReflectionMsg = '';
+      const copilotProvider = {
+        sendRequest: jest.fn().mockImplementation(async (opts: { userMessage: string; onToolCall?: (tc: ToolCall) => Promise<ToolResult> }) => {
+          callCount++;
+          if (callCount === 1 && opts.onToolCall) {
+            await opts.onToolCall({ id: 'w1', name: 'write_file', filePath: 'src/app.ts', content: 'const x = 1;' });
+          }
+          if (callCount === 3) capturedReflectionMsg = opts.userMessage;
+          return Promise.resolve(callCount === 2 ? 'Sub feedback' : 'Response');
+        }),
+        isAvailable: jest.fn().mockResolvedValue(true),
+        invalidateModelCache: jest.fn(),
+      };
+      const runner = new AgentRunner({
+        copilotProvider: copilotProvider as never,
+        apiKeyProvider: makeApiKeyProvider() as never,
+        providerMode: ProviderMode.COPILOT,
+        workspaceReader: makeWorkspaceReader() as never,
+      });
+
+      await runner.runRound(
+        makeRoundRequest({ roundType: RoundType.DEVELOPER, subAgents: [AgentName.GPT] }),
+        makeCancellationToken(),
+        jest.fn(),
+      );
+
+      expect(capturedReflectionMsg).toContain('[FILES WRITTEN VIA write_file TOOL]');
+      expect(capturedReflectionMsg).toContain('src/app.ts');
+      expect(capturedReflectionMsg).toContain('const x = 1;');
+    });
+
+    it('non-DEVELOPER round reflection includes write_file paths in [FILES YOU WROTE] note', async () => {
+      // Covers lines 292-293: mainAgentFileChanges paths merged into writtenFilePaths
+      let callCount = 0;
+      let capturedReflectionMsg = '';
+      const copilotProvider = {
+        sendRequest: jest.fn().mockImplementation(async (opts: { userMessage: string; onToolCall?: (tc: ToolCall) => Promise<ToolResult> }) => {
+          callCount++;
+          if (callCount === 1 && opts.onToolCall) {
+            await opts.onToolCall({ id: 'w1', name: 'write_file', filePath: 'docs/spec.md', content: '# Spec' });
+          }
+          if (callCount === 3) capturedReflectionMsg = opts.userMessage;
+          return Promise.resolve(callCount === 2 ? 'Sub feedback' : 'Response');
+        }),
+        isAvailable: jest.fn().mockResolvedValue(true),
+        invalidateModelCache: jest.fn(),
+      };
+      const runner = new AgentRunner({
+        copilotProvider: copilotProvider as never,
+        apiKeyProvider: makeApiKeyProvider() as never,
+        providerMode: ProviderMode.COPILOT,
+        workspaceReader: makeWorkspaceReader() as never,
+      });
+
+      await runner.runRound(
+        makeRoundRequest({ roundType: RoundType.ARCHITECT, subAgents: [AgentName.GPT] }),
+        makeCancellationToken(),
+        jest.fn(),
+      );
+
+      expect(capturedReflectionMsg).toContain('[FILES YOU WROTE');
+      expect(capturedReflectionMsg).toContain('docs/spec.md');
+      // Full content should NOT appear in prose-only reflection
+      expect(capturedReflectionMsg).not.toContain('# Spec');
+    });
+
+    it('fileChanges contains only write_file tool results (no FILE: block parsing)', async () => {
+      // Phase 2: FILE: blocks in response text are ignored — only write_file tool calls matter
+      const responseWithFileBlock = 'Here is the fix.\n\nFILE: src/fix.ts\n```\nexport const y = 2;\n```';
+      const copilotProvider = {
+        sendRequest: jest.fn().mockResolvedValue(responseWithFileBlock),
+        isAvailable: jest.fn().mockResolvedValue(true),
+        invalidateModelCache: jest.fn(),
+      };
+      const runner = new AgentRunner({
+        copilotProvider: copilotProvider as never,
+        apiKeyProvider: makeApiKeyProvider() as never,
+        providerMode: ProviderMode.COPILOT,
+        workspaceReader: makeWorkspaceReader() as never,
+      });
+
+      const result = await runner.runRound(makeRoundRequest(), makeCancellationToken(), jest.fn());
+
+      // No write_file tool call was made, so fileChanges is empty
+      expect(result.fileChanges).toHaveLength(0);
+    });
+
+    it('write_file tool result is the sole source of fileChanges', async () => {
+      // Phase 2: only write_file tool calls produce fileChanges
+      const fileBlock = 'FILE: src/app.ts\n```\nfallback content\n```';
+      const copilotProvider = {
+        sendRequest: jest.fn().mockImplementation(async (opts: { onToolCall?: (tc: ToolCall) => Promise<ToolResult> }) => {
+          if (opts.onToolCall) {
+            await opts.onToolCall({ id: 'w1', name: 'write_file', filePath: 'src/app.ts', content: 'tool content' });
+          }
+          return fileBlock; // response text also mentions FILE: block, but it is ignored
+        }),
+        isAvailable: jest.fn().mockResolvedValue(true),
+        invalidateModelCache: jest.fn(),
+      };
+      const runner = new AgentRunner({
+        copilotProvider: copilotProvider as never,
+        apiKeyProvider: makeApiKeyProvider() as never,
+        providerMode: ProviderMode.COPILOT,
+        workspaceReader: makeWorkspaceReader() as never,
+      });
+
+      const result = await runner.runRound(makeRoundRequest(), makeCancellationToken(), jest.fn());
+
+      // Only the write_file tool result appears — FILE: block in text is not parsed
+      expect(result.fileChanges).toHaveLength(1);
+      expect(result.fileChanges[0].content).toBe('tool content');
     });
 
     it('re-throws CancellationError from ApiKeyProvider thrown by name (line 349)', async () => {

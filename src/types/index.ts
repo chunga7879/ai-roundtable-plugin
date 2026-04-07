@@ -43,7 +43,6 @@ export interface FileChange {
   filePath: string;
   content: string;
   isNew: boolean;
-  isDelete?: boolean;
 }
 
 export interface AgentResponse {
@@ -98,7 +97,8 @@ export interface SubAgentVerification {
 
 export type ToolCall =
   | { id: string; name: 'read_file'; filePath: string }
-  | { id: string; name: 'run_command'; command: string };
+  | { id: string; name: 'run_command'; command: string }
+  | { id: string; name: 'write_file'; filePath: string; content: string };
 
 export interface CommandOutput {
   command: string;

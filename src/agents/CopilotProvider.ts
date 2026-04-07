@@ -23,10 +23,11 @@ export class CopilotProviderError extends ProviderError {
  * native LanguageModelToolCallPart, e.g.:
  *   <function_calls><invoke name="read_file"><parameter name="path">src/foo.ts</parameter></invoke></function_calls>
  *   <function_calls><invoke name="run_command"><parameter name="command">npm run build</parameter></invoke></function_calls>
+ *   <function_calls><invoke name="write_file"><parameter name="path">src/foo.ts</parameter><parameter name="content">...</parameter></invoke></function_calls>
  */
-function extractXmlToolCalls(text: string): Array<{ name: 'read_file'; path: string } | { name: 'run_command'; command: string }> {
-  const calls: Array<{ name: 'read_file'; path: string } | { name: 'run_command'; command: string }> = [];
-  const invokeRe = /<invoke\s+name="(read_file|run_command)">([\s\S]*?)<\/invoke>/g;
+function extractXmlToolCalls(text: string): Array<{ name: 'read_file'; path: string } | { name: 'run_command'; command: string } | { name: 'write_file'; path: string; content: string }> {
+  const calls: Array<{ name: 'read_file'; path: string } | { name: 'run_command'; command: string } | { name: 'write_file'; path: string; content: string }> = [];
+  const invokeRe = /<invoke\s+name="(read_file|run_command|write_file)">([\s\S]*?)<\/invoke>/g;
   let m: RegExpExecArray | null;
   while ((m = invokeRe.exec(text)) !== null) {
     const toolName = m[1];
@@ -37,6 +38,10 @@ function extractXmlToolCalls(text: string): Array<{ name: 'read_file'; path: str
     } else if (toolName === 'run_command') {
       const paramMatch = /<parameter\s+name="command">([^<]+)<\/parameter>/.exec(body);
       if (paramMatch) calls.push({ name: 'run_command', command: paramMatch[1].trim() });
+    } else if (toolName === 'write_file') {
+      const pathMatch = /<parameter\s+name="path">([^<]+)<\/parameter>/.exec(body);
+      const contentMatch = /<parameter\s+name="content">([\s\S]*?)<\/parameter>/.exec(body);
+      if (pathMatch && contentMatch) calls.push({ name: 'write_file', path: pathMatch[1].trim(), content: contentMatch[1] });
     }
   }
   return calls;
@@ -165,7 +170,7 @@ export class CopilotProvider {
     const model = await this.selectModel();
     const messages = this.buildMessages(options);
 
-    // Tool definitions for read_file and run_command
+    // Tool definitions for read_file, run_command, and write_file
     const tools: vscode.LanguageModelChatTool[] = options.onToolCall
       ? [
           {
@@ -188,6 +193,18 @@ export class CopilotProvider {
                 command: { type: 'string', description: 'Shell command to execute in the workspace root.' },
               },
               required: ['command'],
+            },
+          },
+          {
+            name: 'write_file',
+            description: 'Write a file to the workspace. Use this to create new files or overwrite existing ones. Always write the complete file content — never partial content.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                path: { type: 'string', description: 'Relative path from workspace root (e.g. src/utils/helper.ts).' },
+                content: { type: 'string', description: 'Complete file content to write.' },
+              },
+              required: ['path', 'content'],
             },
           },
         ]
@@ -255,6 +272,9 @@ export class CopilotProvider {
             if (call.name === 'run_command') {
               const result = await options.onToolCall({ id: call.command, name: 'run_command', command: call.command });
               toolResultTexts.push(`Command: ${call.command}\n${result.content}`);
+            } else if (call.name === 'write_file') {
+              const result = await options.onToolCall({ id: call.path, name: 'write_file', filePath: call.path, content: call.content });
+              toolResultTexts.push(`write_file: ${call.path}\n${result.content}`);
             } else {
               const result = await options.onToolCall({ id: call.path, name: 'read_file', filePath: call.path });
               toolResultTexts.push(`File: ${call.path}\n${result.content}`);
@@ -293,7 +313,9 @@ export class CopilotProvider {
         const input = tc.input as Record<string, unknown>;
         const result = tc.name === 'run_command'
           ? await options.onToolCall({ id: tc.callId, name: 'run_command', command: typeof input['command'] === 'string' ? input['command'] : '' })
-          : await options.onToolCall({ id: tc.callId, name: 'read_file', filePath: typeof input['path'] === 'string' ? input['path'] : '' });
+          : tc.name === 'write_file'
+            ? await options.onToolCall({ id: tc.callId, name: 'write_file', filePath: typeof input['path'] === 'string' ? input['path'] : '', content: typeof input['content'] === 'string' ? input['content'] : '' })
+            : await options.onToolCall({ id: tc.callId, name: 'read_file', filePath: typeof input['path'] === 'string' ? input['path'] : '' });
         resultParts.push(
           new vscode.LanguageModelToolResultPart(tc.callId, [
             new vscode.LanguageModelTextPart(result.content),

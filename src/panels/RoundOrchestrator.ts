@@ -190,6 +190,12 @@ export class RoundOrchestrator {
         }
         break;
 
+      case 'tool_write_file':
+        if (this.streamingMsgId) {
+          this.emit({ type: 'toolCallProgress', payload: { msgId: this.streamingMsgId, filePath: `✎ ${event.filePath}` } });
+        }
+        break;
+
       case 'sub_agents_start': {
         this.emit({ type: 'pipelineProgress', payload: { stage: 'verifying' } });
         this.verifierPlaceholderIds.clear();
