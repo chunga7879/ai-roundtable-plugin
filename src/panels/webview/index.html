@@ -509,10 +509,6 @@
       background-color: var(--vscode-gitDecoration-addedResourceForeground, #73c991);
       color: var(--vscode-editor-background);
     }
-    .file-change-badge.deleted {
-      background-color: var(--vscode-gitDecoration-deletedResourceForeground, #f14c4c);
-      color: var(--vscode-editor-background);
-    }
     .file-change-path {
       font-size: var(--font-size-sm);
       font-family: var(--vscode-editor-font-family, monospace);
@@ -1638,9 +1634,9 @@
           item.title = 'Click to preview diff';
 
           const badge = document.createElement('span');
-          const badgeClass = change.isDelete ? 'deleted' : change.isNew ? 'new' : 'modified';
+          const badgeClass = change.isNew ? 'new' : 'modified';
           badge.className = 'file-change-badge ' + badgeClass;
-          badge.textContent = change.isDelete ? 'DEL' : change.isNew ? 'NEW' : 'MOD';
+          badge.textContent = change.isNew ? 'NEW' : 'MOD';
 
           const pathEl = document.createElement('span');
           pathEl.className = 'file-change-path';

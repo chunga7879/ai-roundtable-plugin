@@ -43,7 +43,6 @@ export interface FileChange {
   filePath: string;
   content: string;
   isNew: boolean;
-  isDelete?: boolean;
 }
 
 export interface AgentResponse {

@@ -172,7 +172,7 @@ Maintainability:
   3. If writing a new dependency file from scratch: write the file first, then immediately run audit before proceeding
   4. If a version conflict is detected: flag it as ⚠️ VERSION_CONFLICT: [package] in your response — do not resolve silently
 
-**Pre-output Flags** — state these in your response text before any FILE: blocks if applicable:
+**Pre-output Flags** — state these in your response text before writing any files if applicable:
   - ⚠️ UNVERIFIED: [method_name] — if you cannot confirm a method or API exists in your context
   - ⚠️ SECURITY_SENSITIVE: [filename] — if code touches auth, crypto, or session logic (elevated review recommended)
   - ⚠️ VERSION_CONFLICT: [package] — if a version conflict was detected during dependency installation
@@ -455,8 +455,8 @@ export function buildSystemPrompt(roundType: RoundType): string {
     '- Do NOT use for commands that should run after your response — use RUN: syntax for those.',
     '- Do NOT use for file reads — use read_file instead.',
     '',
-    'FILE DELETIONS: If a file must be removed, output it on its own line:',
-    'DELETE: path/to/file.ts',
+    'FILE DELETIONS: To delete a file, use run_command with the appropriate shell command (e.g. rm on Unix, del on Windows):',
+    '  Example: rm path/to/file.ts',
     '',
     'SHELL COMMANDS (post-response suggestions): Output on its own line:',
     'RUN: <command>',
@@ -534,6 +534,6 @@ export function buildReflectionPrompt(
     '',
     'Now produce your FINAL refined response.',
     'Your final response should be complete and self-contained — not a list of changes.',
-    'IMPORTANT: Your role-specific output format rules (FILE: blocks, etc.) still apply to this final response.',
+    'IMPORTANT: Your role-specific output format rules (write_file tool calls, etc.) still apply to this final response.',
   ].join('\n');
 }

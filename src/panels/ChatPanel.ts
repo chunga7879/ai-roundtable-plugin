@@ -409,9 +409,6 @@ export class ChatPanel implements vscode.Disposable {
           result.newFiles.length > 0
             ? `Created: ${result.newFiles.join(', ')}`
             : '',
-          result.deletedFiles.length > 0
-            ? `Deleted: ${result.deletedFiles.join(', ')}`
-            : '',
         ]
           .filter(Boolean)
           .join('\n') || 'No changes applied.';

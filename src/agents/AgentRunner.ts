@@ -281,7 +281,7 @@ export class AgentRunner {
       let reflectionMainResponse: string;
       if (FILE_WRITING_ROUNDS.has(roundType)) {
         const writtenFilesSection = mainAgentFileChanges.length > 0
-          ? `\n\n[FILES WRITTEN VIA write_file TOOL]\n${mainAgentFileChanges.map((f) => `FILE: ${f.filePath}\n\`\`\`\n${f.content}\n\`\`\``).join('\n\n')}`
+          ? `\n\n[FILES WRITTEN VIA write_file TOOL]\n${mainAgentFileChanges.map((f) => `[FILE: ${f.filePath}]\n\`\`\`\n${f.content}\n\`\`\``).join('\n\n')}`
           : '';
         reflectionMainResponse = mainAgentResponse + writtenFilesSection;
       } else {
