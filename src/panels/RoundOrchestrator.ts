@@ -298,11 +298,13 @@ export class RoundOrchestrator {
   private buildAgentRunner(config: ExtensionConfig): AgentRunner {
     const copilotProvider = new CopilotProvider();
     copilotProvider.setPreferredFamily(config.copilotModelFamily);
+    copilotProvider.setModelTier(config.modelTier);
     const apiKeyProvider = new ApiKeyProvider({
       anthropicApiKey: config.anthropicApiKey,
       openaiApiKey: config.openaiApiKey,
       googleApiKey: config.googleApiKey,
       deepseekApiKey: config.deepseekApiKey,
+      modelTier: config.modelTier,
     });
 
     return new AgentRunner({

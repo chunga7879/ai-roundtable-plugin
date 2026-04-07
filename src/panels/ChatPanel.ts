@@ -23,6 +23,7 @@ import { RoundOrchestrator, execCommand } from './RoundOrchestrator';
 
 const VIEW_TYPE = 'aiRoundtable.chatPanel';
 const PANEL_TITLE = 'AI Roundtable';
+const DRAFT_FILE_CHANGES_KEY = 'aiRoundtable.draftFileChanges';
 
 /** Maximum length for error messages exposed to the webview (prevents info leakage). */
 const MAX_ERROR_MESSAGE_LENGTH = 300;
@@ -64,7 +65,7 @@ export class ChatPanel implements vscode.Disposable {
     panel: vscode.WebviewPanel,
     extensionUri: vscode.Uri,
     private readonly configManager: ConfigManager,
-    context?: vscode.ExtensionContext,
+    private readonly context: vscode.ExtensionContext | undefined,
   ) {
     this.panel = panel;
     this.extensionUri = extensionUri;
@@ -191,6 +192,7 @@ export class ChatPanel implements vscode.Disposable {
       }
 
       case 'rejectChanges':
+        this.clearDraftFileChanges();
         this.postMessage({ type: 'clearFileChanges' });
         break;
 
@@ -219,6 +221,7 @@ export class ChatPanel implements vscode.Disposable {
 
       case 'requestConfig':
         await this.handleRequestConfig();
+        this.restoreDraftFileChangesIfAny();
         break;
 
       case 'configureProvider':
@@ -232,6 +235,7 @@ export class ChatPanel implements vscode.Disposable {
         this.lastSendMessage = undefined;
         this.fileCache.clear();
         this.commandOutputCache.clear();
+        this.clearDraftFileChanges();
         this.postMessage({ type: 'clearMessages' });
         this.postMessage({ type: 'clearFileChanges' });
         void this.startNewSession();
@@ -272,6 +276,15 @@ export class ChatPanel implements vscode.Disposable {
       case 'cancelRequest':
         this.orchestrator.cancel();
         break;
+
+      case 'setModelTier': {
+        const { tier } = (msg.payload as { tier: string });
+        if (tier === 'light' || tier === 'heavy') {
+          await this.configManager.setModelTier(tier);
+          await this.handleRequestConfig();
+        }
+        break;
+      }
 
       case 'executeCommand': {
         const execPayload = msg.payload as { command?: unknown };
@@ -384,6 +397,9 @@ export class ChatPanel implements vscode.Disposable {
         if (result.fileChanges.length > 0) {
           const enriched = await this.enrichFileChanges(result.fileChanges);
           this.postMessage({ type: 'showFileChanges', payload: { fileChanges: enriched } });
+          this.saveDraftFileChanges(enriched, roundType);
+        } else {
+          this.clearDraftFileChanges();
         }
         break;
       }
@@ -391,6 +407,7 @@ export class ChatPanel implements vscode.Disposable {
   }
 
   private async handleApplyChanges(fileChanges: FileChange[]): Promise<void> {
+    this.clearDraftFileChanges();
     // Invalidate file cache — applied files are now stale
     this.fileCache.clear();
     this.commandOutputCache.clear();
@@ -523,7 +540,7 @@ export class ChatPanel implements vscode.Disposable {
 
       this.postMessage({
         type: 'configLoaded',
-        payload: { providerMode: config.providerMode, hasApiKeys, availableAgents },
+        payload: { providerMode: config.providerMode, hasApiKeys, availableAgents, modelTier: config.modelTier },
       });
     } catch {
       this.postMessage({
@@ -532,6 +549,7 @@ export class ChatPanel implements vscode.Disposable {
           providerMode: ProviderMode.COPILOT,
           hasApiKeys: false,
           availableAgents: [AgentName.CLAUDE, AgentName.GPT, AgentName.GEMINI, AgentName.DEEPSEEK],
+          modelTier: 'heavy',
         },
       });
     }
@@ -586,6 +604,28 @@ export class ChatPanel implements vscode.Disposable {
     }
 
     this.postMessage({ type: 'contextUsage', payload: { pct: pctCapped, label } });
+  }
+
+  private saveDraftFileChanges(fileChanges: FileChange[], roundType: RoundType): void {
+    if (!this.context) return;
+    this.context.globalState.update(DRAFT_FILE_CHANGES_KEY, {
+      fileChanges,
+      roundType,
+      savedAt: Date.now(),
+    });
+  }
+
+  private clearDraftFileChanges(): void {
+    if (!this.context) return;
+    this.context.globalState.update(DRAFT_FILE_CHANGES_KEY, undefined);
+  }
+
+  private restoreDraftFileChangesIfAny(): void {
+    if (!this.context) return;
+    const draft = this.context.globalState.get<{ fileChanges: FileChange[]; roundType: RoundType; savedAt: number }>(DRAFT_FILE_CHANGES_KEY);
+    if (draft && draft.fileChanges.length > 0) {
+      this.postMessage({ type: 'restoreDraftFileChanges', payload: draft });
+    }
   }
 
   private postMessage(message: ExtensionToWebviewMessage): void {

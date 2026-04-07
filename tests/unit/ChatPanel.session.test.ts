@@ -14,6 +14,7 @@ jest.mock('fs');
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import { ChatPanel } from '../../src/panels/ChatPanel';
+import type { FileChange } from '../../src/types';
 import { ProviderMode, RoundType } from '../../src/types';
 
 const flushPromises = () => new Promise<void>((resolve) => setImmediate(resolve));
@@ -35,18 +36,22 @@ function makeConfigManager() {
   };
 }
 
-function createPanel(configManager = makeConfigManager()) {
+function createPanel(configManager = makeConfigManager(), globalStateGet?: jest.Mock) {
   (ChatPanel as unknown as { instance: undefined }).instance = undefined;
   (fs.readFileSync as jest.Mock).mockReturnValue('<html>{{NONCE}}</html>');
   (vscode.workspace as { workspaceFolders: unknown }).workspaceFolders = [
     { uri: { fsPath: '/workspace' }, name: 'test', index: 0 },
   ];
 
+  const globalStateUpdate = jest.fn().mockResolvedValue(undefined);
+  const globalStateGetFn = globalStateGet ?? jest.fn().mockReturnValue(undefined);
+
   const panel = ChatPanel.createOrReveal(
     {
       extensionUri: { fsPath: '/ext', scheme: 'file' } as vscode.Uri,
       globalStorageUri: { fsPath: '/global-storage', scheme: 'file' } as vscode.Uri,
-    } as vscode.ExtensionContext,
+      globalState: { get: globalStateGetFn, update: globalStateUpdate },
+    } as unknown as vscode.ExtensionContext,
     configManager as never,
   );
 
@@ -61,7 +66,7 @@ function createPanel(configManager = makeConfigManager()) {
       payload?: unknown;
     }>;
 
-  return { panel, onMessage, postedMessages };
+  return { panel, onMessage, postedMessages, globalStateUpdate };
 }
 
 // ── Setup ─────────────────────────────────────────────────────────────────────
@@ -205,5 +210,82 @@ describe('storage failure resilience', () => {
     expect(() => createPanel()).not.toThrow();
     await flushPromises();
     // No unhandled rejection — test simply passes
+  });
+});
+
+// ── draft file changes ────────────────────────────────────────────────────────
+
+describe('draft file changes', () => {
+  const DRAFT_KEY = 'aiRoundtable.draftFileChanges';
+
+  it('restores draft and posts restoreDraftFileChanges on requestConfig when draft exists', async () => {
+    const draft = {
+      fileChanges: [{ filePath: 'src/app.ts', content: 'const x = 1;', isNew: false }],
+      roundType: RoundType.DEVELOPER,
+      savedAt: Date.now() - 5 * 60 * 1000, // 5 mins ago
+    };
+    const globalStateGet = jest.fn().mockImplementation((key: string) =>
+      key === DRAFT_KEY ? draft : undefined,
+    );
+
+    const { onMessage, postedMessages } = createPanel(makeConfigManager(), globalStateGet);
+    await flushPromises();
+
+    await onMessage?.({ type: 'requestConfig' });
+    await flushPromises();
+
+    const msg = postedMessages().find((m) => m.type === 'restoreDraftFileChanges');
+    expect(msg).toBeDefined();
+    const payload = msg?.payload as typeof draft;
+    expect(payload.fileChanges).toHaveLength(1);
+    expect(payload.fileChanges[0].filePath).toBe('src/app.ts');
+    expect(payload.roundType).toBe(RoundType.DEVELOPER);
+  });
+
+  it('does NOT post restoreDraftFileChanges when no draft exists', async () => {
+    const { onMessage, postedMessages } = createPanel();
+    await flushPromises();
+
+    await onMessage?.({ type: 'requestConfig' });
+    await flushPromises();
+
+    const msg = postedMessages().find((m) => m.type === 'restoreDraftFileChanges');
+    expect(msg).toBeUndefined();
+  });
+
+  it('clears draft on rejectChanges', async () => {
+    const { onMessage, globalStateUpdate } = createPanel();
+    await flushPromises();
+
+    await onMessage?.({ type: 'rejectChanges' });
+    await flushPromises();
+
+    expect(globalStateUpdate).toHaveBeenCalledWith(DRAFT_KEY, undefined);
+  });
+
+  it('clears draft on clearChat', async () => {
+    const { onMessage, globalStateUpdate } = createPanel();
+    await flushPromises();
+
+    await onMessage?.({ type: 'clearChat' });
+    await flushPromises();
+
+    expect(globalStateUpdate).toHaveBeenCalledWith(DRAFT_KEY, undefined);
+  });
+
+  it('does not post restoreDraftFileChanges when draft has empty fileChanges', async () => {
+    const draft = { fileChanges: [] as FileChange[], roundType: RoundType.DEVELOPER, savedAt: Date.now() };
+    const globalStateGet = jest.fn().mockImplementation((key: string) =>
+      key === DRAFT_KEY ? draft : undefined,
+    );
+
+    const { onMessage, postedMessages } = createPanel(makeConfigManager(), globalStateGet);
+    await flushPromises();
+
+    await onMessage?.({ type: 'requestConfig' });
+    await flushPromises();
+
+    const msg = postedMessages().find((m) => m.type === 'restoreDraftFileChanges');
+    expect(msg).toBeUndefined();
   });
 });
