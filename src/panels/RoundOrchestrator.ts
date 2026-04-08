@@ -37,6 +37,8 @@ export type OrchestratorResult =
       assistantTurn: ConversationTurn;
       fileChanges: FileChange[];
       tokenUsage?: TokenUsage;
+      /** Streaming bubble ID to finalize; captured before finally clears streamingMsgId */
+      streamingBubbleId: string | undefined;
     }
   | { status: 'cancelled' }
   | { status: 'error'; error: unknown };
@@ -88,6 +90,7 @@ export class RoundOrchestrator {
     this.emit({ type: 'clearFileChanges' });
     this.emit({ type: 'clearContextFiles' });
 
+    let succeeded = false;
     try {
       const config = await this.configManager.getConfig();
       const runner = this.buildAgentRunner(config);
@@ -118,12 +121,14 @@ export class RoundOrchestrator {
       const lastEntry = conversationHistory[conversationHistory.length - 1];
       const isNewUserTurn = !lastEntry || lastEntry.role !== 'user' || lastEntry.content !== userMessage;
 
+      succeeded = true;
       return {
         status: 'success',
         newUserTurn: isNewUserTurn ? { role: 'user', content: userMessage } : undefined,
         assistantTurn: { role: 'assistant', content: result.reflectedResponse },
         fileChanges: result.fileChanges,
         tokenUsage: result.tokenUsage,
+        streamingBubbleId: this.streamingMsgId,
       };
     } catch (err) {
       if (err instanceof vscode.CancellationError) {
@@ -131,7 +136,7 @@ export class RoundOrchestrator {
       }
       return { status: 'error', error: err };
     } finally {
-      if (this.streamingMsgId) {
+      if (!succeeded && this.streamingMsgId) {
         this.emit({ type: 'interruptMessage', payload: { id: this.streamingMsgId } });
       }
       this.streamingMsgId = undefined;
@@ -174,6 +179,12 @@ export class RoundOrchestrator {
       case 'main_agent_chunk':
         if (this.streamingMsgId) {
           this.emit({ type: 'streamChunk', payload: { id: this.streamingMsgId, chunk: event.chunk } });
+        }
+        break;
+
+      case 'main_agent_done':
+        if (this.streamingMsgId) {
+          this.emit({ type: 'stopStreaming', payload: { id: this.streamingMsgId } });
         }
         break;
 

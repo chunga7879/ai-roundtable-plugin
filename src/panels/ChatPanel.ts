@@ -383,7 +383,7 @@ export class ChatPanel implements vscode.Disposable {
           : prose;
 
         // Finalize the streaming bubble or add a fresh message
-        const bubbleId = this.orchestrator.streamingBubbleId;
+        const bubbleId = result.streamingBubbleId;
         if (bubbleId) {
           this.postMessage({ type: 'finalizeMessage', payload: { id: bubbleId, content: agentContent } });
           this.orchestrator.clearStreamingBubble();

@@ -1532,7 +1532,7 @@
           renderAgentContent(bodyEl, payload.content);
           bodyEl.classList.remove('finalizing');
           scrollToBottom(true);
-        }, 150);
+        }, 250);
       }
 
       /**
@@ -1850,6 +1850,15 @@
                 textNode.after(indicator);
               }
               interruptedBubbleIds.add(id);
+            }
+            break;
+          }
+
+          case 'stopStreaming': {
+            const el = document.getElementById('msg-' + message.payload.id);
+            if (el) {
+              const cursor = el.querySelector('.stream-cursor');
+              if (cursor) cursor.remove();
             }
             break;
           }
