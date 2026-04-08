@@ -489,10 +489,34 @@
       padding: var(--spacing-xs) var(--spacing-sm);
       background-color: var(--vscode-input-background);
       border-radius: var(--border-radius);
-      cursor: pointer;
     }
     .file-change-item:hover {
       background-color: var(--vscode-list-hoverBackground);
+    }
+    .file-change-checkbox {
+      flex-shrink: 0;
+      width: 14px;
+      height: 14px;
+      cursor: pointer;
+      accent-color: var(--vscode-button-background);
+    }
+    .file-change-preview-btn {
+      flex-shrink: 0;
+      background: none;
+      border: none;
+      cursor: pointer;
+      color: var(--vscode-descriptionForeground);
+      font-size: 11px;
+      padding: 0 2px;
+      opacity: 0.7;
+      font-family: inherit;
+    }
+    .file-change-preview-btn:hover {
+      opacity: 1;
+      color: var(--vscode-foreground);
+    }
+    .file-change-item.deselected {
+      opacity: 0.45;
     }
     .file-change-badge {
       font-size: 10px;
@@ -855,7 +879,7 @@
     </div>
     <div id="file-changes-list"></div>
     <div id="file-changes-actions">
-      <button id="apply-changes-btn" class="action-btn" type="button">Apply All Changes</button>
+      <button id="apply-changes-btn" class="action-btn" type="button">Apply All</button>
       <button id="reject-changes-btn" class="action-btn" type="button">Discard</button>
     </div>
   </div>
@@ -1097,9 +1121,14 @@
       });
 
       applyChangesBtn.addEventListener('click', function () {
+        const selected = pendingFileChanges.filter((_, i) => {
+          const cb = /** @type {HTMLInputElement|null} */ (fileChangesList.querySelector(`[data-index="${i}"]`));
+          return cb ? cb.checked : true;
+        });
+        if (selected.length === 0) return;
         vscode.postMessage({
           type: 'applyChanges',
-          payload: { fileChanges: pendingFileChanges },
+          payload: { fileChanges: selected },
         });
         hideFileChanges();
       });
@@ -1666,15 +1695,41 @@
        */
       const fileChangesTitle = /** @type {HTMLElement} */ (document.getElementById('file-changes-title'));
 
+      function updateApplyBtnLabel() {
+        const total = pendingFileChanges.length;
+        let selected = 0;
+        for (let i = 0; i < total; i++) {
+          const cb = /** @type {HTMLInputElement|null} */ (fileChangesList.querySelector(`[data-index="${i}"]`));
+          if (!cb || cb.checked) selected++;
+        }
+        applyChangesBtn.textContent = selected === total
+          ? `Apply All (${total})`
+          : `Apply Selected (${selected}/${total})`;
+        applyChangesBtn.disabled = selected === 0;
+      }
+
       function showFileChanges(fileChanges, title) {
         pendingFileChanges = fileChanges;
         fileChangesList.innerHTML = '';
         fileChangesTitle.textContent = title || 'Proposed File Changes';
 
-        for (const change of fileChanges) {
+        for (let i = 0; i < fileChanges.length; i++) {
+          const change = fileChanges[i];
           const item = document.createElement('div');
           item.className = 'file-change-item';
-          item.title = 'Click to preview diff';
+
+          // Checkbox for per-file selection
+          const cb = document.createElement('input');
+          cb.type = 'checkbox';
+          cb.className = 'file-change-checkbox';
+          cb.checked = true;
+          cb.dataset.index = String(i);
+          cb.addEventListener('change', function () {
+            item.classList.toggle('deselected', !cb.checked);
+            updateApplyBtnLabel();
+          });
+          // Stop click from bubbling to item (which would trigger preview)
+          cb.addEventListener('click', function (e) { e.stopPropagation(); });
 
           const badge = document.createElement('span');
           const badgeClass = change.isNew ? 'new' : 'modified';
@@ -1683,22 +1738,33 @@
 
           const pathEl = document.createElement('span');
           pathEl.className = 'file-change-path';
+          pathEl.style.flex = '1';
           pathEl.textContent = change.filePath;
 
+          // Preview button
+          const previewBtn = document.createElement('button');
+          previewBtn.className = 'file-change-preview-btn';
+          previewBtn.title = 'Preview diff';
+          previewBtn.textContent = 'diff';
+          previewBtn.addEventListener('click', function (e) {
+            e.stopPropagation();
+            vscode.postMessage({ type: 'previewChange', payload: { fileChange: change } });
+          });
+
+          item.appendChild(cb);
           item.appendChild(badge);
           item.appendChild(pathEl);
+          item.appendChild(previewBtn);
 
-          // Clicking a file previews it in a diff
+          // Clicking the row (not checkbox/button) also previews
           item.addEventListener('click', function () {
-            vscode.postMessage({
-              type: 'previewChange',
-              payload: { fileChange: change },
-            });
+            vscode.postMessage({ type: 'previewChange', payload: { fileChange: change } });
           });
 
           fileChangesList.appendChild(item);
         }
 
+        updateApplyBtnLabel();
         fileChangesPanel.classList.add('visible');
       }
 

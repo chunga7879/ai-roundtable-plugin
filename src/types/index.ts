@@ -1,3 +1,4 @@
+import * as path from 'path';
 import { ValidationError } from '../errors';
 
 export enum RoundType {
@@ -287,6 +288,11 @@ export function validateApplyChangesPayload(raw: unknown): ApplyChangesPayload {
     if ((c['filePath'] as string).includes('..')) {
       throw new ValidationError(
         `fileChange.filePath must not contain directory traversal: ${String(c['filePath'])}`,
+      );
+    }
+    if (path.isAbsolute((c['filePath'] as string).trim())) {
+      throw new ValidationError(
+        `fileChange.filePath must be a relative path: ${String(c['filePath'])}`,
       );
     }
     if (typeof c['content'] !== 'string') {

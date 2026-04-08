@@ -485,6 +485,15 @@ export class ChatPanel implements vscode.Disposable {
   private async handleRunCommand(command: string, mainAgent: AgentName, subAgents: AgentName[]): Promise<void> {
     // Guard: prevent concurrent executions (orchestrator has an active request)
     if (this.orchestrator.streamingBubbleId !== undefined) {
+      this.postMessage({
+        type: 'addMessage',
+        payload: {
+          id: crypto.randomUUID(),
+          role: 'error',
+          content: `Cannot run command while a request is in progress. Please wait and re-apply changes once the current request finishes.`,
+          timestamp: Date.now(),
+        },
+      });
       return;
     }
 
