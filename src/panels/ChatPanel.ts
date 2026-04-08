@@ -627,6 +627,7 @@ export class ChatPanel implements vscode.Disposable {
   private clearDraftFileChanges(): void {
     if (!this.context) return;
     this.context.globalState.update(DRAFT_FILE_CHANGES_KEY, undefined);
+    this.workspaceWriter.clearDiffContent();
   }
 
   private restoreDraftFileChangesIfAny(): void {

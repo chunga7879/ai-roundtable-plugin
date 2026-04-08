@@ -890,7 +890,7 @@ export class ApiKeyProvider {
       );
     }
 
-    const tools = options.onToolCall ? [{ functionDeclarations: [READ_FILE_TOOL_GEMINI, RUN_COMMAND_TOOL_GEMINI] }] : undefined;
+    const tools = options.onToolCall ? [{ functionDeclarations: [READ_FILE_TOOL_GEMINI, RUN_COMMAND_TOOL_GEMINI, WRITE_FILE_TOOL_GEMINI] }] : undefined;
     const history = options.conversationHistory ?? [];
     const contents: Array<Record<string, unknown>> = [
       ...history.map((turn) => ({

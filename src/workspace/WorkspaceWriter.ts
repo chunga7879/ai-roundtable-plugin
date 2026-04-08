@@ -163,6 +163,10 @@ export class WorkspaceWriter {
     }
   }
 
+  clearDiffContent(): void {
+    diffContentStore.clear();
+  }
+
   private createVirtualDocument(label: string, content: string): vscode.Uri {
     const key = '/' + label.replace(/[/\\]/g, '_');
     diffContentStore.set(key, content);
