@@ -15,7 +15,8 @@ import type {
 import { ProviderMode, RoundType } from '../types';
 import {
   buildReflectionPrompt,
-  buildSubAgentVerificationPrompt,
+  buildSubAgentSystemPrompt,
+  buildSubAgentUserMessage,
   buildSystemPrompt,
 } from '../prompts/roundPrompts';
 import type { CopilotProvider } from './CopilotProvider';
@@ -176,10 +177,8 @@ export class AgentRunner {
     let subAgentVerifications: SubAgentVerification[] = [];
 
     if (uniqueSubAgents.length > 0) {
-      const verificationSystemPrompt = buildSubAgentVerificationPrompt(
-        roundType,
-        mainAgentResponse,
-      );
+      // System prompt: verifier role + expertise only (no data)
+      const verificationSystemPrompt = buildSubAgentSystemPrompt(roundType);
 
       onProgress({
         type: 'sub_agents_start',
@@ -208,13 +207,17 @@ export class AgentRunner {
         : '';
 
       const baseMessage = priorUserTurns
-        ? `Prior user requests for context:\n${priorUserTurns}\n\nCurrent request:\n${userMessage}`
-        : `Please verify the primary agent's response for the following request:\n\n${userMessage}`;
+        ? `Prior conversation context:\n${priorUserTurns}\n\nThe primary agent was given the current request:\n${userMessage}\n\nVerify whether its response (shown below) correctly and completely addresses this request.`
+        : `The primary agent was given the following request:\n\n${userMessage}\n\nVerify whether its response (shown below) correctly and completely addresses this request.`;
 
       const contextSections = [resolvedFilesSection, commandOutputsSection].filter(Boolean).join('\n\n');
-      const subAgentUserMessage = contextSections
-        ? `${contextSections}\n\n${baseMessage}`
-        : baseMessage;
+
+      // User message: all data the verifier needs — files, commands, primary response, user request
+      const subAgentUserMessage = buildSubAgentUserMessage(
+        mainAgentResponse,
+        contextSections,
+        baseMessage,
+      );
 
       const verificationPromises = uniqueSubAgents.map(async (agentName) => {
         try {

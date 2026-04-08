@@ -1,6 +1,8 @@
 # AI Roundtable
 
-Multi-agent AI assistant for VS Code — run requirements, architecture, development, review, QA, DevOps, and debugging rounds with Claude, GPT, Gemini, DeepSeek, or GitHub Copilot.
+A VS Code extension that brings a structured multi-agent AI development workflow directly into your editor. Instead of a single AI answering every question, AI Roundtable runs a **pipeline of specialized AI agents** — a main agent that produces the work, and optional sub-agents that independently verify it — modeled after how real software teams operate.
+
+**Why it exists**: Large language models make mistakes. A single model reviewing its own output catches far fewer issues than two independent models reviewing each other. AI Roundtable applies this principle to every phase of software development — requirements, architecture, code, review, testing, deployment, and documentation — so that the AI's output is more reliable before it touches your codebase.
 
 ---
 
@@ -59,7 +61,7 @@ Choose **GitHub Copilot** (default) or **API Keys**. If you choose API Keys, you
 2. Select a **Main Agent** (e.g. Claude)
 3. Optionally select **Sub Agents** to verify the main agent's response
 4. Type your request and press `Enter`
-5. Review the response — if FILE: blocks are present, a **Proposed Changes** panel appears
+5. Review the response — file changes proposed by the AI appear in a **Proposed Changes** panel
 6. Click a file to preview the diff, then **Apply All Changes** or **Discard**
 7. If dependency files changed (e.g. `package.json`), an approve/deny dialog offers to run the install command automatically
 
@@ -73,7 +75,7 @@ When the AI needs to run a command to complete its task, it outputs a `RUN: <com
 
 ### File deletions
 
-When the AI moves or removes a file, it outputs `DELETE: path/to/file` alongside any `FILE:` blocks. Deleted files appear with a red **DEL** badge in the Proposed Changes panel.
+When the AI moves or removes a file, it outputs `DELETE: path/to/file` alongside any file writes. Deleted files appear with a red **DEL** badge in the Proposed Changes panel.
 
 ### Round types
 
@@ -85,12 +87,11 @@ When the AI moves or removes a file, it outputs `DELETE: path/to/file` alongside
 | **Reviewer** | Adversarial code review with OWASP security checks — two-step: findings first, fixes on confirm |
 | **QA** | Generating unit, integration, and security tests |
 | **DevOps** | Dockerfile, CI/CD pipelines, environment configuration |
-| **Runner** | Running a terminal command — AI analysis triggered only on failure |
 | **Documentation** | Generating README, API docs, CHANGELOG |
 
-### Running a shell command (Runner round)
+### Running a shell command
 
-Select the Runner round, type a command in the **Run Command** input, and press **Run**. The command runs in your workspace root with a 60-second timeout. If it exits with a non-zero code, the output is automatically sent to Runner AI for diagnosis and fix suggestions. Use **Run Again** to re-execute after applying fixes.
+Select the **Runner** round, type a command in the **Run Command** input, and press **Run**. The command runs in your workspace root with a configurable timeout (default 60 seconds). If it exits with a non-zero code, the output is automatically sent to Runner AI for diagnosis and fix suggestions. Use **Run Again** to re-execute after applying fixes.
 
 ---
 
@@ -102,21 +103,24 @@ src/
 ├── errors.ts             ← Typed error hierarchy
 ├── types/index.ts        ← Enums, interfaces, webview message validators
 ├── prompts/
-│   └── roundPrompts.ts   ← System prompts for all 8 round types
+│   └── roundPrompts.ts   ← System prompts for all round types
 ├── agents/
 │   ├── AgentRunner.ts    ← 3-step pipeline (main → sub-verify → reflect)
 │   ├── CopilotProvider.ts← vscode.lm API (GitHub Copilot)
 │   └── ApiKeyProvider.ts ← Direct HTTPS: Anthropic / OpenAI / Google / DeepSeek
 ├── workspace/
 │   ├── WorkspaceReader.ts← Collects open files as AI context
-│   └── WorkspaceWriter.ts← Parses FILE: blocks, applies WorkspaceEdit
+│   └── WorkspaceWriter.ts← Parses file changes, applies WorkspaceEdit
+├── sessions/
+│   └── SessionManager.ts ← Persists conversation history across sessions
 └── panels/
     ├── ChatPanel.ts      ← Webview lifecycle, message routing
+    ├── RoundOrchestrator.ts ← Coordinates pipeline per round type
     └── webview/
         └── index.html    ← Chat UI (vanilla JS, sandboxed)
 tests/
 ├── __mocks__/vscode.ts   ← VS Code API mock for Jest
-├── unit/                 ← Unit tests (190 passing)
+├── unit/                 ← Unit tests
 └── integration/          ← Integration tests for ChatPanel message routing
 ```
 
@@ -145,8 +149,7 @@ This can happen if the Copilot API is temporarily unresponsive. The extension wi
 
 - **Copilot mode uses a single model for all agents** — sub-agents and main agent are the same underlying Copilot model, differentiated only by their system prompt role.
 - **Conversation history resets when you switch round type** — switching from Developer to Reviewer starts a new conversation.
-- **Max 20 workspace files / 200 KB context** — large projects will have files truncated or omitted. Open the most relevant files before sending a request.
-- **Runner round timeout: 60 seconds** — long-running commands (e.g. full test suites) may be cut off.
+- **Max 50 workspace files** — large projects will have files truncated or omitted. Open the most relevant files before sending a request.
+- **Runner round timeout: configurable (default 60 seconds)** — long-running commands (e.g. full test suites) may be cut off.
 - **Max 50 file changes per response** — responses proposing more than 50 files will have the excess silently dropped.
 - **Runner AI analysis only runs on failure** — if a command exits with code 0, no AI analysis is triggered.
-

@@ -166,6 +166,7 @@ export const workspace = {
   applyEdit: jest.fn().mockResolvedValue(true),
   onDidChangeWorkspaceFolders: jest.fn(),
   createFileSystemWatcher: jest.fn().mockReturnValue(mockWatcher),
+  registerTextDocumentContentProvider: jest.fn().mockReturnValue({ dispose: jest.fn() }),
 };
 
 // ── window namespace ─────────────────────────────────────────────────────────

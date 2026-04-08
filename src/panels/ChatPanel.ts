@@ -192,7 +192,7 @@ export class ChatPanel implements vscode.Disposable {
       }
 
       case 'rejectChanges':
-        this.clearDraftFileChanges();
+        this.clearDraftFileChanges(true);
         this.postMessage({ type: 'clearFileChanges' });
         break;
 
@@ -235,7 +235,7 @@ export class ChatPanel implements vscode.Disposable {
         this.lastSendMessage = undefined;
         this.fileCache.clear();
         this.commandOutputCache.clear();
-        this.clearDraftFileChanges();
+        this.clearDraftFileChanges(true);
         this.postMessage({ type: 'clearMessages' });
         this.postMessage({ type: 'clearFileChanges' });
         void this.startNewSession();
@@ -383,7 +383,7 @@ export class ChatPanel implements vscode.Disposable {
           : prose;
 
         // Finalize the streaming bubble or add a fresh message
-        const bubbleId = this.orchestrator.streamingBubbleId;
+        const bubbleId = result.streamingBubbleId;
         if (bubbleId) {
           this.postMessage({ type: 'finalizeMessage', payload: { id: bubbleId, content: agentContent } });
           this.orchestrator.clearStreamingBubble();
@@ -407,7 +407,7 @@ export class ChatPanel implements vscode.Disposable {
   }
 
   private async handleApplyChanges(fileChanges: FileChange[]): Promise<void> {
-    this.clearDraftFileChanges();
+    this.clearDraftFileChanges(true);
     // Invalidate file cache — applied files are now stale
     this.fileCache.clear();
     this.commandOutputCache.clear();
@@ -485,6 +485,15 @@ export class ChatPanel implements vscode.Disposable {
   private async handleRunCommand(command: string, mainAgent: AgentName, subAgents: AgentName[]): Promise<void> {
     // Guard: prevent concurrent executions (orchestrator has an active request)
     if (this.orchestrator.streamingBubbleId !== undefined) {
+      this.postMessage({
+        type: 'addMessage',
+        payload: {
+          id: crypto.randomUUID(),
+          role: 'error',
+          content: `Cannot run command while a request is in progress. Please wait and re-apply changes once the current request finishes.`,
+          timestamp: Date.now(),
+        },
+      });
       return;
     }
 
@@ -615,9 +624,12 @@ export class ChatPanel implements vscode.Disposable {
     });
   }
 
-  private clearDraftFileChanges(): void {
+  private clearDraftFileChanges(clearDiffContent = false): void {
     if (!this.context) return;
     this.context.globalState.update(DRAFT_FILE_CHANGES_KEY, undefined);
+    if (clearDiffContent) {
+      this.workspaceWriter.clearDiffContent();
+    }
   }
 
   private restoreDraftFileChangesIfAny(): void {

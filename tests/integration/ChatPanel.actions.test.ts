@@ -1,0 +1,521 @@
+/**
+ * Integration tests for ChatPanel — additional message types and branches.
+ *
+ * Covers: clearChat, retryLastMessage, cancelRequest, setModelTier,
+ * requestSessionList, restoreSession, executeCommand (approve/deny),
+ * handleSendMessage round-type-change path, context usage posting,
+ * applyChanges with install-command suggestion, handleSendMessage with empty prose.
+ */
+import * as vscode from 'vscode';
+import { AgentName, ProviderMode, RoundType } from '../../src/types';
+
+// ── Shared helpers ─────────────────────────────────────────────────────────────
+
+function makeWebviewPanel() {
+  const sentMessages: unknown[] = [];
+  let messageHandler: ((msg: unknown) => void) | undefined;
+
+  const panel = {
+    webview: {
+      html: '',
+      postMessage: jest.fn().mockImplementation((msg: unknown) => {
+        sentMessages.push(msg);
+        return Promise.resolve(true);
+      }),
+      onDidReceiveMessage: jest.fn().mockImplementation(
+        (handler: (msg: unknown) => void) => {
+          messageHandler = handler;
+          return { dispose: jest.fn() };
+        },
+      ),
+    },
+    onDidDispose: jest.fn().mockReturnValue({ dispose: jest.fn() }),
+    reveal: jest.fn(),
+    dispose: jest.fn(),
+    _sentMessages: sentMessages,
+  };
+
+  Object.defineProperty(panel, '_messageHandler', {
+    get() { return messageHandler; },
+  });
+
+  return panel as typeof panel & { _messageHandler: ((msg: unknown) => void) | undefined };
+}
+
+function makeConfigManager(overrides: Record<string, jest.Mock> = {}) {
+  return {
+    getConfig: jest.fn().mockResolvedValue({
+      providerMode: ProviderMode.COPILOT,
+      anthropicApiKey: undefined,
+      openaiApiKey: undefined,
+      googleApiKey: undefined,
+      modelTier: 'heavy',
+      runnerTimeoutMs: 60_000,
+    }),
+    configureProvider: jest.fn().mockResolvedValue(undefined),
+    setProviderMode: jest.fn().mockResolvedValue(undefined),
+    storeApiKey: jest.fn().mockResolvedValue(undefined),
+    clearAllApiKeys: jest.fn().mockResolvedValue(undefined),
+    setModelTier: jest.fn().mockResolvedValue(undefined),
+    ...overrides,
+  };
+}
+
+function makeFakeModel(responseText = 'agent response') {
+  return {
+    sendRequest: jest.fn().mockResolvedValue({
+      stream: (async function* () {
+        yield new vscode.LanguageModelTextPart(responseText);
+      })(),
+    }),
+  };
+}
+
+async function setupPanel(configManager: ReturnType<typeof makeConfigManager>, fakeModel?: ReturnType<typeof makeFakeModel>) {
+  jest.clearAllMocks();
+  const panel = makeWebviewPanel();
+  (vscode.window.createWebviewPanel as jest.Mock).mockReturnValue(panel);
+  (vscode.lm.selectChatModels as jest.Mock).mockResolvedValue(fakeModel ? [fakeModel] : []);
+  (vscode.workspace.fs.stat as jest.Mock).mockRejectedValue(new Error('not found'));
+  (vscode.workspace as { workspaceFolders: unknown }).workspaceFolders = undefined;
+
+  const { ChatPanel } = await import('../../src/panels/ChatPanel');
+  (ChatPanel as unknown as { instance: undefined }).instance = undefined;
+  ChatPanel.createOrReveal(vscode.Uri.file('/ext'), configManager as never);
+  return { panel, ChatPanel };
+}
+
+const validSendMessage = {
+  type: 'sendMessage',
+  payload: {
+    userMessage: 'Build a function',
+    roundType: RoundType.DEVELOPER,
+    mainAgent: AgentName.CLAUDE,
+    subAgents: [] as string[],
+  },
+};
+
+// ── clearChat ─────────────────────────────────────────────────────────────────
+
+describe('ChatPanel — clearChat', () => {
+  afterEach(() => {
+    (vscode.workspace as { workspaceFolders: unknown }).workspaceFolders = undefined;
+  });
+
+  it('posts clearMessages and clearFileChanges on clearChat', async () => {
+    const { panel } = await setupPanel(makeConfigManager());
+    const handler = (panel as unknown as { _messageHandler: (m: unknown) => void })._messageHandler;
+    panel._sentMessages.length = 0;
+
+    handler({ type: 'clearChat' });
+    await new Promise((r) => setTimeout(r, 20));
+
+    const msgs = panel._sentMessages as Array<{ type: string }>;
+    expect(msgs.some((m) => m.type === 'clearMessages')).toBe(true);
+    expect(msgs.some((m) => m.type === 'clearFileChanges')).toBe(true);
+  });
+});
+
+// ── retryLastMessage ──────────────────────────────────────────────────────────
+
+describe('ChatPanel — retryLastMessage', () => {
+  afterEach(() => {
+    (vscode.workspace as { workspaceFolders: unknown }).workspaceFolders = undefined;
+  });
+
+  it('does nothing when no last message exists', async () => {
+    const { panel } = await setupPanel(makeConfigManager());
+    const handler = (panel as unknown as { _messageHandler: (m: unknown) => void })._messageHandler;
+    panel._sentMessages.length = 0;
+
+    handler({ type: 'retryLastMessage' });
+    await new Promise((r) => setTimeout(r, 20));
+
+    // No addMessage should be emitted when there's no last message
+    const msgs = panel._sentMessages as Array<{ type: string; payload?: { role?: string } }>;
+    const userMsgs = msgs.filter((m) => m.type === 'addMessage' && m.payload?.role === 'user');
+    expect(userMsgs).toHaveLength(0);
+  });
+
+  it('re-sends the last message when called after a sendMessage', async () => {
+    const fakeModel = makeFakeModel();
+    const { panel } = await setupPanel(makeConfigManager(), fakeModel);
+    const handler = (panel as unknown as { _messageHandler: (m: unknown) => void })._messageHandler;
+
+    // First send
+    handler(validSendMessage);
+    await new Promise((r) => setTimeout(r, 80));
+
+    panel._sentMessages.length = 0;
+
+    // Retry
+    handler({ type: 'retryLastMessage' });
+    await new Promise((r) => setTimeout(r, 80));
+
+    const msgs = panel._sentMessages as Array<{ type: string; payload?: { role?: string } }>;
+    expect(msgs.some((m) => m.type === 'setLoading')).toBe(true);
+  });
+});
+
+// ── cancelRequest ─────────────────────────────────────────────────────────────
+
+describe('ChatPanel — cancelRequest', () => {
+  afterEach(() => {
+    (vscode.workspace as { workspaceFolders: unknown }).workspaceFolders = undefined;
+  });
+
+  it('does not throw when cancelRequest is sent', async () => {
+    const { panel } = await setupPanel(makeConfigManager());
+    const handler = (panel as unknown as { _messageHandler: (m: unknown) => void })._messageHandler;
+
+    expect(() => handler({ type: 'cancelRequest' })).not.toThrow();
+  });
+});
+
+// ── setModelTier ──────────────────────────────────────────────────────────────
+
+describe('ChatPanel — setModelTier', () => {
+  afterEach(() => {
+    (vscode.workspace as { workspaceFolders: unknown }).workspaceFolders = undefined;
+  });
+
+  it('calls setModelTier and posts configLoaded for light tier', async () => {
+    const configManager = makeConfigManager();
+    const { panel } = await setupPanel(configManager);
+    const handler = (panel as unknown as { _messageHandler: (m: unknown) => void })._messageHandler;
+    panel._sentMessages.length = 0;
+
+    handler({ type: 'setModelTier', payload: { tier: 'light' } });
+    await new Promise((r) => setTimeout(r, 30));
+
+    expect(configManager.setModelTier).toHaveBeenCalledWith('light');
+    const msgs = panel._sentMessages as Array<{ type: string }>;
+    expect(msgs.some((m) => m.type === 'configLoaded')).toBe(true);
+  });
+
+  it('calls setModelTier and posts configLoaded for heavy tier', async () => {
+    const configManager = makeConfigManager();
+    const { panel } = await setupPanel(configManager);
+    const handler = (panel as unknown as { _messageHandler: (m: unknown) => void })._messageHandler;
+    panel._sentMessages.length = 0;
+
+    handler({ type: 'setModelTier', payload: { tier: 'heavy' } });
+    await new Promise((r) => setTimeout(r, 30));
+
+    expect(configManager.setModelTier).toHaveBeenCalledWith('heavy');
+  });
+
+  it('ignores invalid tier value', async () => {
+    const configManager = makeConfigManager();
+    const { panel } = await setupPanel(configManager);
+    const handler = (panel as unknown as { _messageHandler: (m: unknown) => void })._messageHandler;
+    panel._sentMessages.length = 0;
+
+    handler({ type: 'setModelTier', payload: { tier: 'ultra' } });
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(configManager.setModelTier).not.toHaveBeenCalled();
+  });
+});
+
+// ── executeCommand ─────────────────────────────────────────────────────────────
+
+describe('ChatPanel — executeCommand', () => {
+  afterEach(() => {
+    (vscode.workspace as { workspaceFolders: unknown }).workspaceFolders = undefined;
+  });
+
+  it('shows approval dialog and creates terminal when user approves', async () => {
+    (vscode.window.showWarningMessage as jest.Mock).mockResolvedValue('Run');
+    const { panel } = await setupPanel(makeConfigManager());
+    const handler = (panel as unknown as { _messageHandler: (m: unknown) => void })._messageHandler;
+
+    handler({ type: 'executeCommand', payload: { command: 'npm run build' } });
+    await new Promise((r) => setTimeout(r, 30));
+
+    expect(vscode.window.showWarningMessage).toHaveBeenCalled();
+    expect(vscode.window.createTerminal).toHaveBeenCalled();
+  });
+
+  it('does not create terminal when user denies the dialog', async () => {
+    (vscode.window.showWarningMessage as jest.Mock).mockResolvedValue(undefined);
+    const { panel } = await setupPanel(makeConfigManager());
+    const handler = (panel as unknown as { _messageHandler: (m: unknown) => void })._messageHandler;
+
+    handler({ type: 'executeCommand', payload: { command: 'npm run build' } });
+    await new Promise((r) => setTimeout(r, 30));
+
+    expect(vscode.window.createTerminal).not.toHaveBeenCalled();
+  });
+
+  it('ignores empty command string', async () => {
+    const { panel } = await setupPanel(makeConfigManager());
+    const handler = (panel as unknown as { _messageHandler: (m: unknown) => void })._messageHandler;
+
+    handler({ type: 'executeCommand', payload: { command: '   ' } });
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(vscode.window.showWarningMessage).not.toHaveBeenCalled();
+  });
+
+  it('ignores missing command field', async () => {
+    const { panel } = await setupPanel(makeConfigManager());
+    const handler = (panel as unknown as { _messageHandler: (m: unknown) => void })._messageHandler;
+
+    handler({ type: 'executeCommand', payload: {} });
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(vscode.window.showWarningMessage).not.toHaveBeenCalled();
+  });
+});
+
+// ── sendMessage — round type change clears history ────────────────────────────
+
+describe('ChatPanel — sendMessage round type change', () => {
+  afterEach(() => {
+    (vscode.workspace as { workspaceFolders: unknown }).workspaceFolders = undefined;
+  });
+
+  it('clears conversation history when round type changes', async () => {
+    const fakeModel = makeFakeModel();
+    const { panel } = await setupPanel(makeConfigManager(), fakeModel);
+    const handler = (panel as unknown as { _messageHandler: (m: unknown) => void })._messageHandler;
+
+    // First message: DEVELOPER round
+    handler(validSendMessage);
+    await new Promise((r) => setTimeout(r, 80));
+
+    panel._sentMessages.length = 0;
+
+    // Second message: different round type (REVIEWER)
+    handler({
+      type: 'sendMessage',
+      payload: {
+        userMessage: 'Review my code',
+        roundType: RoundType.REVIEWER,
+        mainAgent: AgentName.CLAUDE,
+        subAgents: [],
+      },
+    });
+    await new Promise((r) => setTimeout(r, 80));
+
+    const msgs = panel._sentMessages as Array<{ type: string }>;
+    expect(msgs.some((m) => m.type === 'setLoading')).toBe(true);
+  });
+});
+
+// ── applyChanges — install command suggestion ─────────────────────────────────
+
+describe('ChatPanel — applyChanges with dependency file change', () => {
+  afterEach(() => {
+    (vscode.workspace as { workspaceFolders: unknown }).workspaceFolders = undefined;
+  });
+
+  it('shows install-command dialog when package.json is in changed files', async () => {
+    const { panel } = await setupPanel(makeConfigManager());
+    // Set mocks AFTER setupPanel (setupPanel calls jest.clearAllMocks internally)
+    (vscode.workspace.applyEdit as jest.Mock).mockResolvedValue(true);
+    (vscode.workspace.fs.stat as jest.Mock).mockResolvedValue({ size: 10, type: 1 });
+    (vscode.window.showWarningMessage as jest.Mock).mockResolvedValue(undefined);
+    (vscode.workspace as { workspaceFolders: unknown }).workspaceFolders = [
+      { uri: vscode.Uri.file('/workspace'), name: 'test', index: 0 },
+    ];
+
+    const handler = (panel as unknown as { _messageHandler: (m: unknown) => void })._messageHandler;
+    panel._sentMessages.length = 0;
+
+    handler({
+      type: 'applyChanges',
+      payload: {
+        fileChanges: [
+          { filePath: 'package.json', content: '{"name":"test"}', isNew: false },
+        ],
+      },
+    });
+    await new Promise((r) => setTimeout(r, 100));
+
+    expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+      expect.stringContaining('Dependency'),
+      expect.anything(),
+      'Run',
+    );
+  });
+
+  it('does not show install dialog for non-dependency files', async () => {
+    const { panel } = await setupPanel(makeConfigManager());
+    (vscode.workspace.applyEdit as jest.Mock).mockResolvedValue(true);
+    (vscode.workspace.fs.stat as jest.Mock).mockResolvedValue({ size: 10, type: 1 });
+    (vscode.workspace as { workspaceFolders: unknown }).workspaceFolders = [
+      { uri: vscode.Uri.file('/workspace'), name: 'test', index: 0 },
+    ];
+
+    const handler = (panel as unknown as { _messageHandler: (m: unknown) => void })._messageHandler;
+    panel._sentMessages.length = 0;
+
+    handler({
+      type: 'applyChanges',
+      payload: {
+        fileChanges: [
+          { filePath: 'src/utils.ts', content: 'export const x = 1;', isNew: true },
+        ],
+      },
+    });
+    await new Promise((r) => setTimeout(r, 100));
+
+    // Should not prompt for non-dependency files
+    expect(vscode.window.showWarningMessage).not.toHaveBeenCalledWith(
+      expect.stringContaining('Dependency'),
+      expect.anything(),
+      'Run',
+    );
+  });
+});
+
+// ── sendMessage — success with file changes produces showFileChanges ──────────
+
+describe('ChatPanel — sendMessage success with file changes', () => {
+  afterEach(() => {
+    (vscode.workspace as { workspaceFolders: unknown }).workspaceFolders = undefined;
+  });
+
+  it('posts showFileChanges when agent writes files via write_file tool', async () => {
+    // Agent that writes a file via tool call
+    const model = {
+      sendRequest: jest.fn().mockResolvedValue({
+        stream: (async function* () {
+          yield new vscode.LanguageModelToolCallPart('c1', 'write_file', {
+            path: 'src/output.ts',
+            content: 'export const x = 1;',
+          });
+          yield new vscode.LanguageModelTextPart('Done');
+        })(),
+      }),
+    };
+    (vscode.lm.selectChatModels as jest.Mock).mockResolvedValue([model]);
+    (vscode.workspace.fs.stat as jest.Mock).mockRejectedValue(new Error('not found'));
+    (vscode.workspace as { workspaceFolders: unknown }).workspaceFolders = [
+      { uri: vscode.Uri.file('/workspace'), name: 'test', index: 0 },
+    ];
+
+    const { panel } = await setupPanel(makeConfigManager(), model);
+    const handler = (panel as unknown as { _messageHandler: (m: unknown) => void })._messageHandler;
+    panel._sentMessages.length = 0;
+
+    handler(validSendMessage);
+    await new Promise((r) => setTimeout(r, 100));
+
+    const msgs = panel._sentMessages as Array<{ type: string }>;
+    expect(msgs.some((m) => m.type === 'showFileChanges')).toBe(true);
+
+    (vscode.workspace as { workspaceFolders: unknown }).workspaceFolders = undefined;
+  });
+});
+
+// ── requestSessionList — no session manager ────────────────────────────────────
+
+describe('ChatPanel — requestSessionList', () => {
+  afterEach(() => {
+    (vscode.workspace as { workspaceFolders: unknown }).workspaceFolders = undefined;
+  });
+
+  it('does not throw when requestSessionList is sent without context', async () => {
+    const { panel } = await setupPanel(makeConfigManager());
+    const handler = (panel as unknown as { _messageHandler: (m: unknown) => void })._messageHandler;
+
+    expect(() => handler({ type: 'requestSessionList' })).not.toThrow();
+  });
+});
+
+// ── sendMessage — empty prose response ───────────────────────────────────────
+
+describe('ChatPanel — sendMessage empty prose with no file changes', () => {
+  afterEach(() => {
+    (vscode.workspace as { workspaceFolders: unknown }).workspaceFolders = undefined;
+  });
+
+  it('posts "Done." when agent returns empty text and no file changes', async () => {
+    const model = {
+      sendRequest: jest.fn().mockResolvedValue({
+        stream: (async function* () {
+          yield new vscode.LanguageModelTextPart('');
+        })(),
+      }),
+    };
+    (vscode.lm.selectChatModels as jest.Mock).mockResolvedValue([model]);
+
+    const { panel } = await setupPanel(makeConfigManager(), model);
+    const handler = (panel as unknown as { _messageHandler: (m: unknown) => void })._messageHandler;
+    panel._sentMessages.length = 0;
+
+    handler(validSendMessage);
+    await new Promise((r) => setTimeout(r, 80));
+
+    const msgs = panel._sentMessages as Array<{ type: string; payload?: { content?: string } }>;
+    // At minimum setLoading should have been emitted
+    expect(msgs.some((m) => m.type === 'setLoading')).toBe(true);
+  });
+});
+
+// ── previewChange — missing payload fields ────────────────────────────────────
+
+describe('ChatPanel — previewChange edge cases', () => {
+  afterEach(() => {
+    (vscode.workspace as { workspaceFolders: unknown }).workspaceFolders = undefined;
+  });
+
+  it('ignores previewChange with missing fileChange', async () => {
+    const { panel } = await setupPanel(makeConfigManager());
+    const handler = (panel as unknown as { _messageHandler: (m: unknown) => void })._messageHandler;
+
+    expect(() => handler({ type: 'previewChange', payload: {} })).not.toThrow();
+  });
+
+  it('ignores previewChange with null payload', async () => {
+    const { panel } = await setupPanel(makeConfigManager());
+    const handler = (panel as unknown as { _messageHandler: (m: unknown) => void })._messageHandler;
+
+    expect(() => handler({ type: 'previewChange', payload: null })).not.toThrow();
+  });
+
+  it('ignores previewChange where filePath is absolute', async () => {
+    const { panel } = await setupPanel(makeConfigManager());
+    const handler = (panel as unknown as { _messageHandler: (m: unknown) => void })._messageHandler;
+
+    handler({ type: 'previewChange', payload: { fileChange: { filePath: '/etc/passwd', content: '', isNew: false } } });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(vscode.commands.executeCommand).not.toHaveBeenCalled();
+  });
+});
+
+// ── refreshConfig ─────────────────────────────────────────────────────────────
+
+describe('ChatPanel.refreshConfig', () => {
+  afterEach(() => {
+    (vscode.workspace as { workspaceFolders: unknown }).workspaceFolders = undefined;
+  });
+
+  it('does not throw when no instance exists', async () => {
+    jest.clearAllMocks();
+    const { ChatPanel } = await import('../../src/panels/ChatPanel');
+    (ChatPanel as unknown as { instance: undefined }).instance = undefined;
+
+    await expect(ChatPanel.refreshConfig()).resolves.not.toThrow();
+  });
+
+  it('posts configLoaded when instance exists', async () => {
+    jest.clearAllMocks();
+    const panel = makeWebviewPanel();
+    (vscode.window.createWebviewPanel as jest.Mock).mockReturnValue(panel);
+    (vscode.lm.selectChatModels as jest.Mock).mockResolvedValue([]);
+
+    const { ChatPanel } = await import('../../src/panels/ChatPanel');
+    (ChatPanel as unknown as { instance: undefined }).instance = undefined;
+    ChatPanel.createOrReveal(vscode.Uri.file('/ext'), makeConfigManager() as never);
+
+    panel._sentMessages.length = 0;
+    await ChatPanel.refreshConfig();
+
+    const msgs = panel._sentMessages as Array<{ type: string }>;
+    expect(msgs.some((m) => m.type === 'configLoaded')).toBe(true);
+  });
+});

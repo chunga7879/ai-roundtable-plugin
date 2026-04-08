@@ -2,14 +2,13 @@
 
 ## Overview
 
-AI Roundtable is a VS Code extension that runs a multi-agent AI pipeline in your workspace. Pick a round type, choose a main agent and optional sub-agents (verifiers), describe what you want, and the extension:
+AI Roundtable is a VS Code extension that runs a structured multi-agent AI pipeline in your workspace. Every request goes through up to three steps:
 
-1. Collects workspace files as context
-2. Runs the main agent
-3. Runs sub-agents in parallel to verify the result (if selected)
-4. Has the main agent reflect on the feedback
-5. Presents proposed file changes with diff preview
-6. Applies accepted changes directly to your workspace
+1. **Main agent** — produces the initial response using workspace files as context
+2. **Sub-agents** — independently verify the main agent's output (skipped if none selected)
+3. **Reflection** — main agent incorporates feedback and produces the final response
+
+The number of sub-agents selected determines which steps run and how the pipeline behaves.
 
 ---
 
@@ -20,6 +19,7 @@ VS Code Extension Host
 ├── extension.ts           ← Activation, command registration, ConfigManager
 ├── panels/
 │   ├── ChatPanel.ts       ← Webview panel lifecycle, message routing
+│   ├── RoundOrchestrator.ts ← Coordinates pipeline per round turn
 │   └── webview/index.html ← Chat UI (vanilla JS, sandboxed webview)
 ├── agents/
 │   ├── AgentRunner.ts     ← 3-step pipeline (main → sub verify → reflect)
@@ -27,9 +27,11 @@ VS Code Extension Host
 │   └── ApiKeyProvider.ts  ← Direct HTTPS to Anthropic / OpenAI / Google / DeepSeek
 ├── workspace/
 │   ├── WorkspaceReader.ts ← Collects open/visible/workspace files as context
-│   └── WorkspaceWriter.ts ← Parses FILE: blocks, applies WorkspaceEdit
+│   └── WorkspaceWriter.ts ← Parses file writes, applies WorkspaceEdit
+├── sessions/
+│   └── SessionManager.ts  ← Persists and restores conversation history
 ├── prompts/
-│   └── roundPrompts.ts    ← System prompts for all 8 round types
+│   └── roundPrompts.ts    ← System prompts for all round types
 ├── types/index.ts         ← Shared types + webview input validators
 └── errors.ts              ← Typed error hierarchy
 ```
@@ -58,185 +60,391 @@ Agents without a configured key are automatically disabled in the UI.
 
 ---
 
-## 3-Step Agent Pipeline
+## The 3-Step Pipeline
 
-Every round follows the same pipeline:
+### Step 1 — Main Agent
 
-```
-Step 1 — Main agent
-  Receives: system prompt + workspace context + conversation history + user message
-  Produces: initial response
+**Input:**
+- System prompt: role expertise + execution instructions (tool-call directives, output format rules, Definition of Done)
+- Workspace context: list of files in the workspace (agent reads specific files via `read_file` tool)
+- Conversation history: all prior turns in the current round
+- User message
 
-Step 2 — Sub-agents verify in parallel (skipped if none selected)
-  Each sub-agent receives: main agent's response + user message
-  Produces: independent feedback (shown in UI as verifier messages)
-  Failure: gracefully degraded → shown as [Verification unavailable]
+**What happens:**
+- Agent calls `read_file` for files it needs (up to the tool call limit)
+- Agent produces prose response and/or calls `write_file` for each file it creates or modifies
+- Agent may call `run_command` to lint, audit, or test code (Developer/DevOps rounds)
 
-Step 3 — Main agent reflects (skipped if no valid feedback)
-  Receives: initial response + all sub-agent feedbacks
-  Rules:
-    - ALL sub-agents flagged the same issue → mandatory correction
-    - Only some flagged it → main agent decides; must write REJECTED [agent]: [reason] if rejecting
-  Produces: final refined response
-
-→ FILE: blocks parsed → proposed as file changes
-```
+**Output:**
+- Text response (streamed to UI)
+- Zero or more file writes via `write_file` tool
 
 ---
 
-## Round Types
+### Step 2 — Sub-Agent Verification (skipped if no sub-agents selected)
+
+**Input per sub-agent:**
+- System prompt: role expertise only — no tool-call instructions (sub-agents cannot call tools)
+- Files read by the main agent during Step 1
+- Command outputs produced by the main agent during Step 1
+- Prior user turns from conversation history (for context)
+- Main agent's full response from Step 1
+- User message
+
+Sub-agents run **in parallel**. Each produces independent feedback without seeing the other sub-agents' responses.
+
+**Output per sub-agent:**
+- Feedback text (shown in UI as a verifier message)
+- If a sub-agent fails: `[Verification unavailable: <reason>]` — the round continues without that agent's feedback
+
+---
+
+### Step 3 — Reflection (skipped if no valid sub-agent feedback)
+
+**Input:**
+- Same system prompt as Step 1 (role expertise + execution instructions)
+- Main agent's Step 1 response
+- For Developer and QA rounds: full content of all files written in Step 1 (so the agent can apply precise code fixes)
+- For all other rounds: list of file paths written in Step 1 (agent re-emits them via `write_file`)
+- All valid sub-agent feedbacks
+
+**Reflection rules:**
+- ALL sub-agents flagged the same issue → main agent **must** correct it
+- Only some sub-agents flagged an issue → main agent decides; must write `REJECTED [agent]: [reason]` if rejecting feedback
+
+**Output:**
+- Final refined text response (streamed to UI)
+- Zero or more file writes via `write_file` tool
+
+---
+
+## Round-by-Round Workflow
 
 ### Requirements
+
 **Role**: Principal Product Engineer
 
-**Main agent only:**
-- Checks `docs/requirements.md` in workspace — extends it if found, creates fresh if not
-- Applies INVEST criteria and Gherkin acceptance criteria
-- Surfaces ambiguities (idempotency, ownership, deletion, pagination)
-- Outputs `FILE: docs/requirements.md`
+#### Main Agent Only
 
-**With sub-agents:**
-- Sub-agents verify completeness of requirements and surface additional ambiguities
-- Main agent reflects and produces a more thorough spec
+**Input:**
+- System prompt: INVEST criteria, Gherkin acceptance criteria, ambiguity checklists
+- `read_file` call to `docs/requirements.md` (if it exists in the workspace)
+- User message describing the feature or change
+
+**Process:**
+1. Reads existing `docs/requirements.md` if present (treats it as baseline; extends rather than rewrites)
+2. Applies INVEST criteria and Gherkin-style acceptance criteria
+3. Surfaces ambiguities: idempotency, ownership, deletion, pagination
+4. Writes the complete merged specification via `write_file`
+
+**Output:**
+- Prose explanation of what changed and why
+- `write_file: docs/requirements.md` — complete specification
+
+#### Main Agent + 1 Sub-Agent
+
+Same Step 1 as above, then:
+
+**Sub-agent input:**
+- Sub-agent verifier prompt (requirements expertise, no tool instructions)
+- Content of `docs/requirements.md` as read by the main agent
+- Main agent's response
+- User message
+
+**Sub-agent output:** Feedback on completeness, missing acceptance criteria, unclear scope
+
+**Reflection input:**
+- Main agent's initial response + feedback
+- Reflection rules apply
+
+**Final output:**
+- More thorough specification addressing surfaced ambiguities
+- `write_file: docs/requirements.md` — updated complete specification
+
+#### Main Agent + Multiple Sub-Agents
+
+Same as above, with all sub-agents running in parallel. If all sub-agents flag the same missing requirement, main agent must add it. If only some flag it, main agent decides whether to include it.
 
 ---
 
 ### Architect
+
 **Role**: Distinguished Software Architect
 
-**Main agent only:**
-- Reads `docs/requirements.md`, `docs/architecture.md`, `docs/file-structure.md` if present
-- Applies Clean Architecture + 12-Factor principles
-- Outputs `FILE: docs/architecture.md` + `FILE: docs/file-structure.md`
+#### Main Agent Only
 
-**With sub-agents:**
-- Sub-agents challenge tech stack choices, scalability, and security architecture
-- Main agent reflects — if unanimous disagreement on a design choice, it must revise
+**Input:**
+- System prompt: Clean Architecture, 12-Factor, security architecture, API contract standards
+- `read_file` calls to `docs/requirements.md`, `docs/architecture.md`, `docs/file-structure.md` (if present)
+- User message describing the design change or request
+
+**Process:**
+1. Reads requirements as the authoritative feature set
+2. Reads existing architecture doc as current design baseline (extends, never rewrites unchanged sections)
+3. Produces architecture document (tech stack decisions, layered diagram, data model, API contract, security architecture)
+4. Updates file structure if new files are introduced, removed, or renamed
+
+**Output:**
+- Prose describing what changed and why (not a summary of unchanged sections)
+- `write_file: docs/architecture.md` — always written (complete merged document)
+- `write_file: docs/file-structure.md` — written only if file structure changed
+
+#### Main Agent + 1 Sub-Agent
+
+Same Step 1, then:
+
+**Sub-agent input:**
+- Architecture expertise prompt
+- Content of all docs read by main agent
+- Main agent's proposed architecture
+- User message
+
+**Sub-agent output:** Challenge on tech stack choices, scalability, security design
+
+**Reflection:** Main agent revises if sub-agent raises unanimous concern
+
+#### Main Agent + Multiple Sub-Agents
+
+Sub-agents may challenge different aspects (e.g. one flags security, another flags scalability). Unanimous issues are mandatory corrections; partial disagreements are at main agent's discretion.
 
 ---
 
 ### Developer
+
 **Role**: Principal Software Engineer
 
-**Main agent only:**
-- Reads existing source files before writing — extends rather than rewrites
-- Writes complete, immediately runnable code for every file in `docs/file-structure.md`
-- All output uses `FILE: path\n\`\`\`lang\ncode\`\`\`` format — no prose code blocks
-- Flags `⚠️ UNVERIFIED`, `⚠️ SECURITY_SENSITIVE`, `⚠️ VERSION_CONFLICT` when applicable
-- If dependency files change → after Apply, prompts to run install command
+#### Main Agent Only
 
-**With sub-agents:**
-- Sub-agents review code quality, error handling, and security
-- If all sub-agents flag the same issue (e.g. missing error handling), main agent must fix it
+**Input:**
+- System prompt: Clean Code, error handling, security (OWASP), performance, maintainability standards
+- `read_file` calls to existing source files (workspace files are the source of truth — docs are hints only)
+- User message describing the feature, fix, or refactor
+
+**Process:**
+1. Reads existing files before writing — extends or fixes rather than rewrites
+2. Writes complete, immediately runnable code via `write_file` for each file
+3. Calls `run_command` to lint and audit new dependencies
+4. Emits pre-output flags: `⚠️ UNVERIFIED`, `⚠️ SECURITY_SENSITIVE`, `⚠️ VERSION_CONFLICT` when applicable
+
+**Output:**
+- Prose: what was changed and any flags
+- `write_file: <path>` — one call per file created or modified (complete content, no placeholders)
+- `run_command: <lint/audit command>` — verifies code quality inline
+
+#### Main Agent + 1 Sub-Agent
+
+Same Step 1, then:
+
+**Sub-agent input:**
+- Developer expertise prompt (no tool instructions)
+- All files read during Step 1
+- All files written during Step 1 (with content)
+- Command outputs from Step 1
+- Main agent's prose response
+- User message
+
+**Sub-agent output:** Code quality review — error handling gaps, security issues, test coverage
+
+**Reflection input:**
+- Main agent response + sub-agent feedback
+- Full content of all files written in Step 1 (so the agent can produce targeted fixes)
+
+**Reflection output:**
+- Corrected code via `write_file` for each file that needs changes
+
+#### Main Agent + Multiple Sub-Agents
+
+Sub-agents may each flag different issues. If all flag the same missing error handler or security gap, main agent must fix it. Reflection includes full file content to enable precise surgical fixes.
 
 ---
 
 ### Reviewer
+
 **Role**: Staff Engineer
 
-**Main agent only:**
-- Checks `docs/requirements.md` and `docs/architecture.md` for correctness baseline
-- HITL gate: new entries in `package.json`, `requirements.txt`, `pyproject.toml`, `Cargo.toml`, `go.mod`, or new migration files → outputs `⛔ HITL_REQUIRED` with specific user actions
-- Auto-generated lockfiles (`package-lock.json`, `yarn.lock`, etc.) are ignored
-- Two-step output: findings first → user confirms → FILE: fixes
+#### Main Agent Only
 
-**With sub-agents:**
-- Sub-agents provide independent review passes
-- Main agent reflects on feedback but still follows two-step rule (no FILE: blocks until user confirms)
+**Input:**
+- System prompt: OWASP Top 10, correctness bugs, race conditions, HITL gate rules
+- `read_file` calls to all source files in scope
+- `docs/requirements.md`, `docs/architecture.md` as reference (if present)
+- User message defining the review scope
+
+**Process:**
+1. Checks for HITL gate triggers (new deps, migration files, `.env` modifications) — if triggered, outputs `⛔ HITL_REQUIRED` and stops
+2. Reviews code against OWASP Top 10 and checklist (CRITICAL → IMPORTANT → SUGGESTION)
+3. Two-step output: findings first — does NOT emit file fixes until user confirms
+
+**Output (Step A — findings):**
+- Structured review: `🔴 CRITICAL`, `🟡 IMPORTANT`, `🔵 SUGGESTION` findings
+- Each finding: file + line number + description + corrected code
+- Ends with: `APPROVED` or `CHANGES_REQUIRED` + confirmation prompt
+
+**Output (Step B — after user confirms):**
+- `write_file: <path>` for each file requiring correction
+
+#### Main Agent + 1 Sub-Agent
+
+Sub-agent provides an independent review pass. Main agent reflects on feedback but still follows the two-step rule — no file fixes are emitted until the user confirms after Step A.
+
+#### Main Agent + Multiple Sub-Agents
+
+All reviewers provide independent passes. Main agent aggregates findings. Unanimous CRITICAL findings must be addressed. The two-step rule is enforced regardless of the number of sub-agents.
 
 ---
 
 ### QA
+
 **Role**: Principal QA Engineer
 
-**Main agent only:**
-- Reads existing test files — extends coverage rather than rewriting
-- Hard floor: ≥80% branch coverage on changed files
-- Covers unit, integration, edge cases, failure/resilience, and security tests (when touching auth/payment/crypto paths)
-- All output uses `FILE:` format
+#### Main Agent Only
 
-**With sub-agents:**
-- Sub-agents identify coverage gaps and incorrect assertions
-- If unanimous agreement on a missing test scenario, main agent must add it
+**Input:**
+- System prompt: 80% branch coverage floor, unit/integration/edge/resilience/security test requirements
+- `read_file` calls to existing source files and existing test files
+- User message specifying what to test
+
+**Process:**
+1. Reads existing test files — extends coverage rather than rewriting
+2. Identifies untested branches, edge cases, failure paths, and security scenarios
+3. Writes complete test files via `write_file`
+4. May call `run_command` to verify tests pass
+
+**Output:**
+- Prose: what coverage was added and why
+- `write_file: <test path>` — extended or new test files
+
+#### Main Agent + 1 Sub-Agent
+
+**Sub-agent input:**
+- QA expertise prompt
+- All files read during Step 1 (source + existing tests)
+- Test files written during Step 1 (with content)
+- Main agent's response
+- User message
+
+**Sub-agent output:** Identifies coverage gaps, incorrect assertions, missing scenarios
+
+**Reflection:** Main agent adds missing test cases, fixes incorrect assertions. Full file content is passed to enable precise changes.
+
+#### Main Agent + Multiple Sub-Agents
+
+Each sub-agent may surface different missing scenarios. If all agree on a missing test scenario, main agent must add it. Reflection passes full file content for precision.
 
 ---
 
 ### DevOps
+
 **Role**: Senior Platform Engineer
 
-**Main agent only:**
-- Reads existing `Dockerfile`, `.github/workflows/`, `.env.example` — audits and corrects rather than regenerating
-- Generates: multi-stage Dockerfile (non-root, pinned base image), `.env.example`, `.github/workflows/ci.yml`
-- All output uses `FILE:` format
+#### Main Agent Only
 
-**With sub-agents:**
-- Sub-agents audit for security misconfiguration and 12-Factor compliance
-- Main agent reflects on findings
+**Input:**
+- System prompt: multi-stage Docker, 12-Factor, security misconfiguration checks
+- `read_file` calls to `Dockerfile`, `.github/workflows/`, `.env.example` (if present)
+- User message describing the infrastructure change
 
----
+**Process:**
+1. Audits and corrects existing configs rather than regenerating from scratch
+2. Generates multi-stage Dockerfile (non-root user, pinned base image), `.env.example`, CI workflow
+3. Writes all files via `write_file`
 
-### Runner
-**Role**: SRE / Runtime Debugger
+**Output:**
+- `write_file: Dockerfile`
+- `write_file: .env.example`
+- `write_file: .github/workflows/ci.yml`
+- (Only files actually changed)
 
-**Flow:**
-```
-User types command → Run button
-  → cp.exec(command, { cwd: workspaceRoot, timeout: 60s })
-  → stdout + stderr combined (max 50 KB)
-  → executionComplete posted to UI
-  → auto-feeds output into 3-step pipeline as RUNNER round message
-  → AI analyzes: errors (root cause + fix), warnings, successes, test failures
-  → FILE: corrections if needed
-```
+#### Main Agent + 1 Sub-Agent
 
-**With sub-agents:**
-- Sub-agents verify the AI's diagnosis and proposed fixes
-- Useful for ambiguous failures where multiple root causes are possible
+**Sub-agent input:**
+- DevOps expertise prompt
+- All config files read during Step 1
+- Files written during Step 1
+- Main agent's response
 
-**`runAgain`**: re-executes the last command without re-typing. Useful for iterating after applying fixes.
+**Sub-agent output:** Security misconfiguration findings, 12-Factor compliance gaps
 
-**AI-suggested commands**: If the AI outputs `RUN: <command>` during any round, it renders as a clickable button in the UI. Clicking shows an approve/deny dialog before execution.
+**Reflection:** Main agent revises affected configs via `write_file`
+
+#### Main Agent + Multiple Sub-Agents
+
+Each sub-agent may specialize (e.g. one focuses on Docker security, another on CI compliance). Unanimous findings are mandatory corrections.
 
 ---
 
 ### Documentation
+
 **Role**: Staff Technical Writer
 
-**Main agent only:**
-- Reads source files as the single source of truth — documents what code actually does
-- Updates existing `README.md`, `CHANGELOG.md`, `docs/` — does not rewrite accurate sections
-- Outputs `README.md`, API docs, `CHANGELOG.md` (Keep a Changelog format) as `FILE:` blocks
+#### Main Agent Only
 
-**With sub-agents:**
-- Sub-agents verify accuracy against the actual code and flag stale or missing sections
-- Main agent reflects and produces more thorough documentation
+**Input:**
+- System prompt: accuracy-first, source code as ground truth, Keep a Changelog format
+- `read_file` calls to all source files (documents what code actually does)
+- `read_file` calls to existing `README.md`, `CHANGELOG.md`, `docs/` files
+- User message specifying what to document
+
+**Process:**
+1. Reads source files as the single source of truth
+2. Updates existing docs — does not rewrite accurate sections
+3. Writes complete documentation via `write_file`
+
+**Output:**
+- `write_file: README.md`
+- `write_file: CHANGELOG.md` (Keep a Changelog format)
+- `write_file: docs/<api or other>.md` as applicable
+
+#### Main Agent + 1 Sub-Agent
+
+**Sub-agent input:**
+- Documentation expertise prompt
+- All source files read during Step 1
+- Documentation files written during Step 1 (with content)
+- Main agent's response
+
+**Sub-agent output:** Accuracy check against actual code, stale or missing sections
+
+**Reflection:** Main agent corrects inaccuracies and fills gaps
+
+#### Main Agent + Multiple Sub-Agents
+
+Sub-agents independently verify accuracy across different parts of the docs. All flagged inaccuracies must be corrected. Reflection re-emits all documentation files with corrections applied.
 
 ---
 
 ## File Changes Flow
 
 ```
-Agent outputs FILE: blocks
-  → parseFileChanges() — path-sanitized, deduplicated, max 50 files
-  → ChatPanel enriches isNew flag (stat() each file)
+Agent calls write_file tool during Step 1 and/or Step 3
+  → Normalized path (.. and absolute paths rejected)
+  → Deduplicated (last write wins per path)
+  → Max 50 files total
+
+ChatPanel enriches isNew flag (stat() each file path)
   → Webview shows "Proposed File Changes" panel
       [MOD] src/auth.ts   [NEW] src/middleware/jwt.ts
-  → Click file → vscode.diff preview (current vs proposed)
-  → "Apply All Changes"
-      → validateApplyChangesPayload() (re-validated in extension host)
-      → WorkspaceWriter.applyChanges() → vscode.workspace.applyEdit
-      → If dependency files changed → approve/deny dialog for install command
-  → "Discard" → panel hides, no changes written
+
+User clicks a file → VS Code diff preview (current vs proposed)
+
+"Apply All Changes"
+  → validateApplyChangesPayload() (re-validated in extension host)
+  → WorkspaceWriter.applyChanges() → vscode.workspace.applyEdit
+  → If dependency files changed → approve/deny dialog for install command
+  → File cache cleared (next turn re-reads from disk)
+
+"Discard" → panel hides, no changes written
 ```
 
 ---
 
 ## Conversation History
 
-- Each round type has its own conversation history
+- Each round type maintains its own conversation history
 - History resets when the user switches round type
 - History is passed to the main agent on every turn (multi-turn within a round)
-- Sub-agent verification calls do not receive conversation history — only the main agent's latest response
+- Sub-agent verification calls receive prior user turns for context, but not the full assistant history — only the main agent's latest response
+- Sessions are persisted to disk via `SessionManager` and can be restored across VS Code restarts
 
 ---
 
@@ -271,17 +479,17 @@ Architect round (Claude main, Gemini sub)
 
 Developer round (Claude main, GPT sub)
   "Implement every file in docs/file-structure.md"
-  → FILE: blocks for src/auth/*.ts → apply changes
+  → write_file calls for src/auth/*.ts → apply changes
   → package.json changed → approve/deny: npm install
 
 Reviewer round (GPT main, Claude sub)
   "Review the auth implementation"
   → new deps detected → ⛔ HITL_REQUIRED: run npm audit first
-  → findings → user confirms → FILE: fixes
+  → findings → user confirms → write_file calls with fixes
 
 QA round (Claude main)
   "Write tests for the auth module"
-  → FILE: tests/auth/*.test.ts → apply changes
+  → write_file calls for tests/auth/*.test.ts → apply changes
 
 Runner round
   runCommand: "npm test"
@@ -295,11 +503,12 @@ Runner round
 **Goal**: Fix a specific bug in an open file.
 
 ```
-Open the buggy file in VS Code (becomes Priority 1 context)
+Open the buggy file in VS Code (becomes active file context)
 
 Developer round (Claude main)
   "getUser() returns undefined for deleted users, should throw NotFoundError"
-  → FILE: src/users/service.ts with fix → apply changes
+  → read_file: src/users/service.ts
+  → write_file: src/users/service.ts with fix → apply changes
 
 Runner round
   runCommand: "npm test -- --testPathPattern=users"
@@ -313,14 +522,14 @@ Runner round
 **Goal**: Review changed files for bugs and security issues.
 
 ```
-Open changed files in VS Code (visible tabs → Priority 2 context)
+Open changed files in VS Code (visible tabs → context)
 
 Reviewer round (Claude main, GPT sub)
   "Review these changes for correctness and security"
   → OWASP Top 10 checked automatically
   → Sub-agent provides independent verification
   → CRITICAL / IMPORTANT / SUGGESTION findings
-  → User confirms → FILE: corrections
+  → User confirms → write_file calls with corrections
 ```
 
 ---
@@ -334,8 +543,9 @@ Open source file + its test file in VS Code
 
 QA round (Claude main)
   "Add missing branch coverage for parseFileChanges"
-  → AI reads current tests from workspace context
-  → FILE: tests/unit/WorkspaceWriter.test.ts → apply
+  → read_file: src/workspace/WorkspaceWriter.ts
+  → read_file: tests/unit/WorkspaceWriter.test.ts
+  → write_file: tests/unit/WorkspaceWriter.test.ts → apply
 
 Runner round
   runCommand: "npx jest --coverage tests/unit/WorkspaceWriter.test.ts"
@@ -352,7 +562,7 @@ Runner round
 Documentation round (Claude main)
   "Generate the README for this project"
   → workspace context includes source files
-  → FILE: README.md → review diff → apply
+  → write_file: README.md → review diff → apply
 ```
 
 ---
@@ -371,7 +581,7 @@ Turn 2: "What if we want per-user AND per-IP limits simultaneously?"
   → Claude refines: dual counters, explains key structure
 
 Turn 3: "Show me the Redis data model"
-  → FILE: docs/architecture.md with key/value schema
+  → write_file: docs/architecture.md with key/value schema
 
 (Switching to Developer round resets history)
 ```
@@ -390,9 +600,13 @@ Turn 3: "Show me the Redis data model"
 | `previewChange` | `{ fileChange }` | Open diff view for one file |
 | `requestConfig` | — | Get current provider config |
 | `configureProvider` | — | Open provider setup flow |
-| `runCommand` | `{ command, mainAgent, subAgents }` | Execute shell command + run Runner AI |
-| `runAgain` | — | Re-execute last command |
 | `executeCommand` | `{ command }` | Request approve/deny then execute a command |
+| `clearChat` | — | Clear current conversation |
+| `retryLastMessage` | — | Retry the last failed message |
+| `cancelRequest` | — | Cancel the in-flight request |
+| `requestSessionList` | — | Load saved sessions |
+| `restoreSession` | `{ sessionId }` | Restore a prior session |
+| `setModelTier` | `{ tier }` | Switch between light and heavy model tier |
 
 ### Extension Host → Webview
 
@@ -400,10 +614,16 @@ Turn 3: "Show me the Redis data model"
 |---|---|---|
 | `addMessage` | `{ id, role, agentName?, content, isSubAgentFeedback? }` | Append a message |
 | `updateMessage` | `{ id, content }` | Update existing message |
+| `streamChunk` | `{ id, chunk }` | Append streaming chunk to a message |
+| `finalizeMessage` | `{ id, content }` | Mark a streaming message as complete |
 | `setLoading` | `{ loading }` | Enable/disable input |
 | `showFileChanges` | `{ fileChanges[] }` | Show proposed changes panel |
 | `clearFileChanges` | — | Hide changes panel |
-| `configLoaded` | `{ providerMode, hasApiKeys, availableAgents }` | Send config to webview |
+| `configLoaded` | `{ providerMode, hasApiKeys, availableAgents, modelTier }` | Send config to webview |
 | `error` | `{ message }` | Show error message |
-| `executionStarted` | `{ command }` | Shell command is running |
-| `executionComplete` | `{ command, output, exitCode }` | Shell command finished |
+| `suggestInstall` | `{ command }` | Suggest running an install command |
+| `pipelineProgress` | `{ stage }` | Show thinking/verifying/reflecting indicator |
+| `toolCallProgress` | `{ msgId, filePath }` | Show file being read or written |
+| `contextUsage` | `{ pct, label }` | Show context window usage gauge |
+| `sessionListLoaded` | `{ sessions[] }` | Return list of saved sessions |
+| `sessionRestored` | `{ turns, roundType }` | Restore conversation turns from a session |
