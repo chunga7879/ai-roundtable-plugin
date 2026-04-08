@@ -192,7 +192,7 @@ export class ChatPanel implements vscode.Disposable {
       }
 
       case 'rejectChanges':
-        this.clearDraftFileChanges();
+        this.clearDraftFileChanges(true);
         this.postMessage({ type: 'clearFileChanges' });
         break;
 
@@ -235,7 +235,7 @@ export class ChatPanel implements vscode.Disposable {
         this.lastSendMessage = undefined;
         this.fileCache.clear();
         this.commandOutputCache.clear();
-        this.clearDraftFileChanges();
+        this.clearDraftFileChanges(true);
         this.postMessage({ type: 'clearMessages' });
         this.postMessage({ type: 'clearFileChanges' });
         void this.startNewSession();
@@ -407,7 +407,7 @@ export class ChatPanel implements vscode.Disposable {
   }
 
   private async handleApplyChanges(fileChanges: FileChange[]): Promise<void> {
-    this.clearDraftFileChanges();
+    this.clearDraftFileChanges(true);
     // Invalidate file cache — applied files are now stale
     this.fileCache.clear();
     this.commandOutputCache.clear();
@@ -624,10 +624,12 @@ export class ChatPanel implements vscode.Disposable {
     });
   }
 
-  private clearDraftFileChanges(): void {
+  private clearDraftFileChanges(clearDiffContent = false): void {
     if (!this.context) return;
     this.context.globalState.update(DRAFT_FILE_CHANGES_KEY, undefined);
-    this.workspaceWriter.clearDiffContent();
+    if (clearDiffContent) {
+      this.workspaceWriter.clearDiffContent();
+    }
   }
 
   private restoreDraftFileChangesIfAny(): void {
