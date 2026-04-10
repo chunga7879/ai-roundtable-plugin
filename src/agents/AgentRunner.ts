@@ -93,6 +93,7 @@ export class AgentRunner {
           onProgress({ type: 'tool_run_command', agentName: mainAgent, command: toolCall.command });
           const output = await onRunCommand(toolCall.command);
           cachedCommandOutputs.set(toolCall.command, output);
+          onProgress({ type: 'tool_run_command_done', agentName: mainAgent, command: toolCall.command, stdout: output.stdout || '(no output)', exitCode: output.exitCode });
           const resultText = `Exit code: ${output.exitCode}\n\nOutput:\n${output.stdout || '(no output)'}`;
           return { id: toolCall.id, content: resultText, isError: output.exitCode !== 0 };
         }
@@ -111,6 +112,22 @@ export class AgentRunner {
             allFileChanges.push(change);
           }
           return { id: toolCall.id, content: `Staged write to ${normalized}`, isError: false };
+        }
+
+        if (toolCall.name === 'delete_file') {
+          const normalized = normalizePath(toolCall.filePath);
+          if (!normalized) {
+            return { id: toolCall.id, content: `Invalid file path: ${toolCall.filePath}`, isError: true };
+          }
+          onProgress({ type: 'tool_delete_file', agentName: mainAgent, filePath: normalized });
+          const existing = allFileChanges.findIndex((f) => f.filePath === normalized);
+          const change: FileChange = { filePath: normalized, content: '', isNew: false, isDeleted: true };
+          if (existing >= 0) {
+            allFileChanges[existing] = change;
+          } else {
+            allFileChanges.push(change);
+          }
+          return { id: toolCall.id, content: `Staged delete of ${normalized}`, isError: false };
         }
 
         // read_file
@@ -326,7 +343,29 @@ export class AgentRunner {
     // Step 4: Collect file changes from write_file tool calls.
     const fileChanges: FileChange[] = [...allFileChanges];
 
-    const displayResponse = reflectedResponse;
+    // Step 5: Extract optional VERIFY: token from the final response.
+    // The AI outputs "VERIFY: <command>" on its own line to suggest a post-Apply
+    // verification command (e.g. "VERIFY: npm test"). This is stripped from the
+    // displayed response and surfaced to ChatPanel to present as an approve/deny
+    // dialog after the user clicks Apply All Changes.
+    const VERIFY_PREFIX = 'VERIFY:';
+    let verifyCommand: string | undefined;
+    const responseLines = reflectedResponse.split('\n');
+    const filteredLines: string[] = [];
+    for (const line of responseLines) {
+      const trimmed = line.trim();
+      if (trimmed.startsWith(VERIFY_PREFIX)) {
+        const cmd = trimmed.slice(VERIFY_PREFIX.length).trim();
+        if (cmd.length > 0) {
+          verifyCommand = cmd;
+        }
+      } else {
+        filteredLines.push(line);
+      }
+    }
+    const displayResponse = verifyCommand
+      ? filteredLines.join('\n').trimEnd()
+      : reflectedResponse;
 
     const hasUsage = totalUsage.inputTokens > 0 || totalUsage.outputTokens > 0;
 
@@ -336,6 +375,7 @@ export class AgentRunner {
       reflectedResponse: displayResponse,
       fileChanges,
       tokenUsage: hasUsage ? totalUsage : undefined,
+      verifyCommand,
     };
   }
 
@@ -439,7 +479,9 @@ export type ProgressEvent =
   | { type: 'main_agent_done'; agentName: AgentName }
   | { type: 'tool_read'; agentName: AgentName; filePath: string }
   | { type: 'tool_run_command'; agentName: AgentName; command: string }
+  | { type: 'tool_run_command_done'; agentName: AgentName; command: string; stdout: string; exitCode: number }
   | { type: 'tool_write_file'; agentName: AgentName; filePath: string }
+  | { type: 'tool_delete_file'; agentName: AgentName; filePath: string }
   | { type: 'sub_agents_start'; agentNames: AgentName[] }
   | { type: 'sub_agent_feedback'; agentName: AgentName; feedback: string }
   | { type: 'sub_agents_done'; agentNames: AgentName[] }

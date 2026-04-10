@@ -203,14 +203,20 @@ Maintainability:
 - If a file already exists, read it first — extend or fix it rather than rewriting from scratch. State which files you are modifying vs creating new.
 - docs/file-structure.md, docs/architecture.md, docs/requirements.md are hints and background context only. They may be stale. Always verify against the actual files before acting on them.
 
-⚠️ OUTPUT FORMAT — MANDATORY: Use the write_file tool for every file you create or modify. Do NOT output FILE: blocks in your response text. Every file must be complete and immediately runnable — never partial content or placeholders.
+⚠️ OUTPUT FORMAT — MANDATORY: Use the write_file tool for every file you create or modify. Use the delete_file tool to remove files that are no longer needed. Do NOT output FILE: blocks in your response text. Every file must be complete and immediately runnable — never partial content or placeholders.
 
-Definition of Done — your output is NOT complete unless:
+**Command Execution Tasks** — if your task was primarily to run a command (e.g. docker compose up, npm start, npm test):
+  - If the command succeeds: report the result and STOP. Do not run additional health checks, audits, or linters.
+  - If the command fails: diagnose the error, fix it, re-run once. If it succeeds on retry: STOP. Do not run further validation.
+  - Do not run follow-up verification commands unless the user explicitly asks.
+
+Definition of Done — applies only when writing or modifying code files:
   ✅ Every file in scope is written via write_file tool (see Scope above)
   ✅ No placeholder comments: # TODO, pass, // implement later, throw new Error('not implemented')
   ✅ Imports in each file resolve to other files in the structure (no broken references)
   ✅ No secrets, credentials, or API keys in code
-  ✅ Static analysis and linter run on changed files via run_command — all errors fixed, warnings documented. If run_command is denied or unavailable, flag ⚠️ LINT_UNVERIFIED and list any known issues in your response.`,
+  ✅ Static analysis and linter run on changed files via run_command — all errors fixed, warnings documented. If run_command is denied or unavailable, flag ⚠️ LINT_UNVERIFIED and list any known issues in your response.
+  ✅ If the project has a test or build script, output a VERIFY: line at the end so the user can confirm correctness after applying changes.`,
   },
 
   [RoundType.REVIEWER]: {
@@ -360,12 +366,12 @@ Before writing test files, state in your response text if applicable:
 
 Test names must describe the scenario: \`test_login_with_expired_token_returns_401\`, not \`test_token_3\`.
 
-After writing all test files, detect the test runner from the project config and suggest running it:
-- package.json with a "test" script → output "RUN: npm test"
-- pyproject.toml / pytest configured → output "RUN: pytest"
-- go.mod → output "RUN: go test ./..."
-- Cargo.toml → output "RUN: cargo test"
-- Otherwise, state which test runner to use and why.`,
+After writing all test files, detect the test runner from the project config and output a VERIFY: line:
+- package.json with a "test" script → output "VERIFY: npm test"
+- pyproject.toml / pytest configured → output "VERIFY: pytest"
+- go.mod → output "VERIFY: go test ./..."
+- Cargo.toml → output "VERIFY: cargo test"
+- Otherwise, state which test runner to use and why, but do not output a VERIFY: line.`,
   },
 
   [RoundType.DEVOPS]: {
@@ -421,10 +427,11 @@ Before writing files, state in your response text if applicable:
 
 ⚠️ OUTPUT FORMAT — MANDATORY: Use the write_file tool for every file you generate. Do NOT output FILE: blocks in your response text. Do NOT describe files in prose. Every file must be complete.
 
-After writing files, suggest the appropriate next command using RUN: syntax if applicable:
-  - If Dockerfile was written or updated: output "RUN: docker build -t app ." so the user can build the image immediately.
-  - If docker-compose.yml was written or updated: output "RUN: docker compose up --build".
-  - If a CI pipeline file was written or updated: no RUN needed (CI runs remotely).`,
+After writing files, note in your response prose which command to run next if applicable:
+  - If Dockerfile was written or updated: mention "run docker build -t app . to verify the image builds".
+  - If docker-compose.yml was written or updated: mention "run docker compose up --build to verify services start".
+  - If a CI pipeline file was written or updated: no local command needed (CI runs remotely).
+Do not output VERIFY: or RUN: tokens for DevOps commands — these often require local infrastructure that may not be present.`,
   },
 
   [RoundType.DOCUMENTATION]: {
@@ -508,16 +515,18 @@ export function buildSystemPrompt(roundType: RoundType): string {
     '',
     'run_command — Execute a shell command in the workspace root.',
     '- The user will be prompted to approve each command before it runs.',
-    '- Use when command output is needed to complete your task (build check, audit, test run).',
-    '- Do NOT use for commands that should run after your response — use RUN: syntax for those.',
+    '- Use for commands that run against the CURRENT workspace state: lint, security audit, dependency check.',
+    '- Do NOT use for test or build verification — files written via write_file are staged and not yet on disk.',
+    '  Post-apply verification belongs in VERIFY: (see below).',
     '- Do NOT use for file reads — use read_file instead.',
     '',
-    'FILE DELETIONS: To delete a file, use run_command with the appropriate shell command (e.g. rm on Unix, del on Windows):',
-    '  Example: rm path/to/file.ts',
+    'FILE DELETIONS: To delete a file, use the delete_file tool.',
     '',
-    'SHELL COMMANDS (post-response suggestions): Output on its own line:',
-    'RUN: <command>',
-    'Example: RUN: npm install',
+    'VERIFY: <command>',
+    'Use this to suggest a verification command the user should run AFTER applying your file changes.',
+    'Output it on its own line at the end of your response. Only one VERIFY: line per response.',
+    'Example: VERIFY: npm test',
+    'Example: VERIFY: npm run build',
     '',
     'Your role this round:',
     expertise,

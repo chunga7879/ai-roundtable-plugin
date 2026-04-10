@@ -197,6 +197,60 @@
       color: var(--vscode-foreground);
     }
 
+    /* ── Terminal Box (wraps command tool-call + output) ── */
+    .terminal-box {
+      margin: 6px 0;
+      border: 1px solid var(--vscode-panel-border, #333);
+      border-radius: var(--border-radius);
+      overflow: hidden;
+      background: var(--vscode-terminal-background, var(--vscode-editor-background));
+    }
+    .terminal-box-header {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 8px;
+      background: var(--vscode-titleBar-activeBackground, rgba(255,255,255,0.05));
+      border-bottom: 1px solid var(--vscode-panel-border, #333);
+      font-size: 10px;
+      color: var(--vscode-descriptionForeground);
+      font-family: var(--vscode-editor-font-family, monospace);
+      user-select: none;
+    }
+    .terminal-box-header-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--vscode-descriptionForeground);
+      opacity: 0.3;
+      flex-shrink: 0;
+    }
+    .terminal-box-title {
+      flex: 1;
+      opacity: 0.6;
+      letter-spacing: 0.03em;
+    }
+    .terminal-box-status { margin-left: auto; }
+    .terminal-box-status .exit-ok  { color: var(--vscode-testing-iconPassed, #4caf50); }
+    .terminal-box-status .exit-err { color: var(--vscode-errorForeground, #f44); }
+
+    .terminal-box .tool-call-block {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      font-family: var(--vscode-editor-font-family, monospace);
+      color: var(--vscode-terminal-foreground, var(--vscode-foreground));
+      background: transparent;
+      border: none;
+      padding: 4px 8px;
+      margin: 0;
+      border-radius: 0;
+    }
+    .terminal-box .tool-call-block .exit-ok,
+    .terminal-box .tool-call-block .exit-err { display: none; }
+
+    /* non-command tool-call-block (Read · filename) */
     .tool-call-block {
       display: flex;
       align-items: center;
@@ -210,6 +264,56 @@
       margin: 2px 0;
       border-radius: 2px;
     }
+    .tool-call-block .exit-ok  { color: var(--vscode-testing-iconPassed, #4caf50); margin-left: auto; }
+    .tool-call-block .exit-err { color: var(--vscode-errorForeground, #f44); margin-left: auto; }
+
+    .terminal-box .command-output-block {
+      font-size: 11px;
+      font-family: var(--vscode-editor-font-family, monospace);
+      color: var(--vscode-terminal-foreground, var(--vscode-foreground));
+      background: transparent;
+      border: none;
+      border-top: 1px solid var(--vscode-panel-border, #333);
+      padding: 4px 8px;
+      margin: 0;
+      border-radius: 0;
+      white-space: pre-wrap;
+      word-break: break-all;
+      max-height: 200px;
+      overflow-y: auto;
+    }
+    .terminal-box .command-output-block.error {
+      color: var(--vscode-errorForeground, #f44);
+    }
+    .command-output-block {
+      font-size: 11px;
+      font-family: var(--vscode-editor-font-family, monospace);
+      color: var(--vscode-descriptionForeground);
+      background: var(--vscode-editor-background);
+      border-left: 2px solid var(--vscode-focusBorder, #007acc);
+      border-top: 1px solid var(--vscode-panel-border);
+      padding: 4px 6px;
+      margin: 0 0 2px 0;
+      border-radius: 0 0 2px 2px;
+      white-space: pre-wrap;
+      word-break: break-all;
+      max-height: 200px;
+      overflow-y: auto;
+      opacity: 0.85;
+    }
+    .command-output-block.error {
+      border-left-color: var(--vscode-errorForeground, #f44);
+    }
+    .command-output-more summary {
+      cursor: pointer;
+      opacity: 0.6;
+      font-style: italic;
+      user-select: none;
+      padding-top: 2px;
+    }
+    .command-output-more summary:hover {
+      opacity: 1;
+    }
 
     .stream-cursor {
       display: inline-block;
@@ -217,6 +321,26 @@
       animation: blink 1s step-end infinite;
       opacity: 0.8;
     }
+    .round-separator {
+      text-align: center;
+      font-size: 11px;
+      color: var(--vscode-descriptionForeground);
+      opacity: 0.6;
+      margin: 12px 0 4px;
+      position: relative;
+    }
+    .round-separator::before,
+    .round-separator::after {
+      content: '';
+      position: absolute;
+      top: 50%;
+      width: 30%;
+      height: 1px;
+      background: var(--vscode-panel-border);
+    }
+    .round-separator::before { left: 0; }
+    .round-separator::after { right: 0; }
+
     .interrupted-indicator {
       color: var(--vscode-descriptionForeground);
       font-size: var(--font-size-sm);
@@ -236,8 +360,9 @@
     }
 
     /* Finalize fade-in */
-    .message-body.finalizing {
+    .message-body.swapping {
       opacity: 0;
+      transition: none;
     }
     .message-body {
       transition: opacity 0.25s ease;
@@ -533,6 +658,10 @@
       background-color: var(--vscode-gitDecoration-addedResourceForeground, #73c991);
       color: var(--vscode-editor-background);
     }
+    .file-change-badge.deleted {
+      background-color: var(--vscode-gitDecoration-deletedResourceForeground, #f44747);
+      color: var(--vscode-editor-background);
+    }
     .file-change-path {
       font-size: var(--font-size-sm);
       font-family: var(--vscode-editor-font-family, monospace);
@@ -695,27 +824,6 @@
     }
 
     /* ── RUN command chip ── */
-    .run-command-chip {
-      display: inline-flex;
-      align-items: center;
-      gap: var(--spacing-xs);
-      margin-top: var(--spacing-xs);
-      padding: 3px var(--spacing-sm);
-      background: var(--vscode-button-secondaryBackground);
-      color: var(--vscode-button-secondaryForeground);
-      border: 1px solid var(--vscode-button-border, transparent);
-      border-radius: var(--border-radius);
-      cursor: pointer;
-      font-family: var(--vscode-editor-font-family, monospace);
-      font-size: var(--font-size-sm);
-    }
-    .run-command-chip:hover {
-      background: var(--vscode-button-secondaryHoverBackground);
-    }
-    .run-command-chip-icon {
-      font-style: normal;
-    }
-
 
     /* ── Scrollbar styling ── */
     ::-webkit-scrollbar {
@@ -1016,6 +1124,7 @@
       function handleSessionRestored(payload) {
         historyPanel.style.display = 'none';
         messagesEl.style.display = '';
+        setLoading(false);
         // Clear existing messages
         messagesEl.innerHTML = '';
         // Update round selector
@@ -1217,7 +1326,7 @@
 
           const body = document.createElement('div');
           body.className = 'sub-agent-details-body message-body sub-agent';
-          renderAgentContent(body, msg.content, { suppressRun: true });
+          renderAgentContent(body, msg.content);
           details.appendChild(body);
 
           wrapper.appendChild(details);
@@ -1431,58 +1540,9 @@
 /**
        * @param {HTMLElement} container
        * @param {string} content
-       * @param {{ suppressRun?: boolean }} [opts]
        */
-      function renderAgentContent(container, content, opts = {}) {
-        const RUN_PREFIX = 'RUN: ';
-        const lines = content.split('\n');
-        /** @type {string[]} */
-        let mdBuffer = [];
-
-        function flushMarkdown() {
-          if (mdBuffer.length > 0) {
-            const mdEl = document.createElement('div');
-            renderMarkdown(mdEl, mdBuffer.join('\n'));
-            container.appendChild(mdEl);
-            mdBuffer = [];
-          }
-        }
-
-        for (let i = 0; i < lines.length; i++) {
-          const line = lines[i];
-          if (!opts.suppressRun && line.startsWith(RUN_PREFIX)) {
-            flushMarkdown();
-            const command = line.slice(RUN_PREFIX.length).trim();
-            if (command.length > 0) {
-              const chip = document.createElement('button');
-              chip.className = 'run-command-chip';
-              chip.title = 'Click to run with approve/deny';
-
-              const icon = document.createElement('span');
-              icon.className = 'run-command-chip-icon';
-              icon.textContent = '\u25B6';
-              chip.appendChild(icon);
-
-              const cmdLabel = document.createElement('span');
-              cmdLabel.textContent = command;
-              chip.appendChild(cmdLabel);
-
-              chip.addEventListener('click', function () {
-                vscode.postMessage({
-                  type: 'executeCommand',
-                  payload: { command: command },
-                });
-              });
-
-              container.appendChild(document.createElement('br'));
-              container.appendChild(chip);
-              container.appendChild(document.createElement('br'));
-            }
-          } else {
-            mdBuffer.push(line);
-          }
-        }
-        flushMarkdown();
+      function renderAgentContent(container, content) {
+        renderMarkdown(container, content);
       }
 
       /**
@@ -1526,13 +1586,12 @@
         const bodyEl = wrapper.querySelector('.message-body');
         if (!bodyEl) return;
         // Fade out → swap content → fade in
-        bodyEl.classList.add('finalizing');
-        setTimeout(() => {
-          bodyEl.innerHTML = '';
-          renderAgentContent(bodyEl, payload.content);
-          bodyEl.classList.remove('finalizing');
-          scrollToBottom(true);
-        }, 250);
+        bodyEl.classList.add('swapping');
+        bodyEl.innerHTML = '';
+        renderAgentContent(bodyEl, payload.content);
+        bodyEl.offsetHeight; // force reflow so transition triggers on remove
+        bodyEl.classList.remove('swapping');
+        scrollToBottom(true);
       }
 
       /**
@@ -1565,7 +1624,7 @@
 
         const body = document.createElement('div');
         body.className = 'sub-agent-details-body message-body sub-agent';
-        renderAgentContent(body, payload.content, { suppressRun: true });
+        renderAgentContent(body, payload.content);
         details.appendChild(body);
 
         wrapper.appendChild(details);
@@ -1583,10 +1642,135 @@
         if (textNode) textNode.textContent = '';
         wrapper.dataset.streamBuffer = '';
         // Insert tool call block before stream-text: [block1][block2]...[stream-text][cursor]
+        const isCommand = payload.filePath.startsWith('$ ');
         const block = document.createElement('div');
-        block.className = 'tool-call-block';
-        block.textContent = 'Read \u00B7 ' + payload.filePath;
-        bodyEl.insertBefore(block, textNode || cursor);
+        block.className = 'tool-call-block' + (isCommand ? '' : ' standalone');
+        block.textContent = (isCommand ? '' : 'Read \u00B7 ') + payload.filePath;
+
+        if (isCommand) {
+          // Wrap in terminal box
+          const termBox = document.createElement('div');
+          termBox.className = 'terminal-box';
+          termBox.dataset.command = payload.filePath.slice(2).trim(); // strip '$ '
+
+          const header = document.createElement('div');
+          header.className = 'terminal-box-header';
+
+          const dot = document.createElement('span');
+          dot.className = 'terminal-box-header-dot';
+
+          const title = document.createElement('span');
+          title.className = 'terminal-box-title';
+          title.textContent = 'Terminal';
+
+          const statusEl = document.createElement('span');
+          statusEl.className = 'terminal-box-status';
+
+          header.appendChild(dot);
+          header.appendChild(title);
+          header.appendChild(statusEl);
+          termBox.appendChild(header);
+          termBox.appendChild(block);
+          bodyEl.insertBefore(termBox, textNode || cursor);
+        } else {
+          bodyEl.insertBefore(block, textNode || cursor);
+        }
+        scrollToBottom();
+      }
+
+      /**
+       * @param {{msgId: string, command: string, stdout: string, exitCode: number}} payload
+       */
+      function handleCommandOutput(payload) {
+        const wrapper = document.getElementById('msg-' + payload.msgId);
+        if (!wrapper) return;
+        const bodyEl = wrapper.querySelector('.message-body');
+        if (!bodyEl) return;
+
+        // Find the terminal-box that owns this command
+        const allTermBoxes = bodyEl.querySelectorAll('.terminal-box');
+        let termBox = null;
+        for (let i = allTermBoxes.length - 1; i >= 0; i--) {
+          if (allTermBoxes[i].dataset.command === payload.command) {
+            termBox = allTermBoxes[i];
+            break;
+          }
+        }
+
+        const isError = payload.exitCode !== 0;
+
+        if (termBox) {
+          // Update terminal-box header status badge
+          const statusEl = termBox.querySelector('.terminal-box-status');
+          if (statusEl) {
+            const badge = document.createElement('span');
+            badge.className = isError ? 'exit-err' : 'exit-ok';
+            badge.textContent = isError ? '\u2717 ' + payload.exitCode : '\u2713';
+            statusEl.appendChild(badge);
+          }
+
+          const MAX_LINES = 20;
+          const lines = payload.stdout.split('\n');
+          const block = document.createElement('div');
+          block.className = 'command-output-block' + (isError ? ' error' : '');
+          if (lines.length > MAX_LINES) {
+            const preview = document.createElement('span');
+            preview.textContent = lines.slice(0, MAX_LINES).join('\n');
+            const details = document.createElement('details');
+            details.className = 'command-output-more';
+            const summary = document.createElement('summary');
+            summary.textContent = '\u2026 ' + (lines.length - MAX_LINES) + ' more lines';
+            const rest = document.createElement('span');
+            rest.textContent = '\n' + lines.slice(MAX_LINES).join('\n');
+            details.appendChild(summary);
+            details.appendChild(rest);
+            block.appendChild(preview);
+            block.appendChild(details);
+          } else {
+            block.textContent = payload.stdout;
+          }
+          termBox.appendChild(block);
+        } else {
+          // Fallback: find old-style tool-call-block and attach below it
+          const allBlocks = bodyEl.querySelectorAll('.tool-call-block');
+          let cmdBlock = null;
+          for (let i = allBlocks.length - 1; i >= 0; i--) {
+            if (allBlocks[i].textContent && allBlocks[i].textContent.includes('$ ' + payload.command)) {
+              cmdBlock = allBlocks[i];
+              break;
+            }
+          }
+          if (cmdBlock) {
+            const badge = document.createElement('span');
+            badge.className = isError ? 'exit-err' : 'exit-ok';
+            badge.textContent = isError ? '\u2717 ' + payload.exitCode : '\u2713';
+            cmdBlock.appendChild(badge);
+          }
+
+          const MAX_LINES = 20;
+          const lines = payload.stdout.split('\n');
+          const block = document.createElement('div');
+          block.className = 'command-output-block' + (isError ? ' error' : '');
+          if (lines.length > MAX_LINES) {
+            const preview = document.createElement('span');
+            preview.textContent = lines.slice(0, MAX_LINES).join('\n');
+            const details = document.createElement('details');
+            details.className = 'command-output-more';
+            const summary = document.createElement('summary');
+            summary.textContent = '\u2026 ' + (lines.length - MAX_LINES) + ' more lines';
+            const rest = document.createElement('span');
+            rest.textContent = '\n' + lines.slice(MAX_LINES).join('\n');
+            details.appendChild(summary);
+            details.appendChild(rest);
+            block.appendChild(preview);
+            block.appendChild(details);
+          } else {
+            block.textContent = payload.stdout;
+          }
+          const textNode = bodyEl.querySelector('.stream-text');
+          const cursor = bodyEl.querySelector('.stream-cursor');
+          bodyEl.insertBefore(block, textNode || cursor);
+        }
         scrollToBottom();
       }
 
@@ -1732,34 +1916,37 @@
           cb.addEventListener('click', function (e) { e.stopPropagation(); });
 
           const badge = document.createElement('span');
-          const badgeClass = change.isNew ? 'new' : 'modified';
+          const badgeClass = change.isDeleted ? 'deleted' : change.isNew ? 'new' : 'modified';
           badge.className = 'file-change-badge ' + badgeClass;
-          badge.textContent = change.isNew ? 'NEW' : 'MOD';
+          badge.textContent = change.isDeleted ? 'DEL' : change.isNew ? 'NEW' : 'MOD';
 
           const pathEl = document.createElement('span');
           pathEl.className = 'file-change-path';
           pathEl.style.flex = '1';
           pathEl.textContent = change.filePath;
-
-          // Preview button
-          const previewBtn = document.createElement('button');
-          previewBtn.className = 'file-change-preview-btn';
-          previewBtn.title = 'Preview diff';
-          previewBtn.textContent = 'diff';
-          previewBtn.addEventListener('click', function (e) {
-            e.stopPropagation();
-            vscode.postMessage({ type: 'previewChange', payload: { fileChange: change } });
-          });
+          if (change.isDeleted) pathEl.style.textDecoration = 'line-through';
 
           item.appendChild(cb);
           item.appendChild(badge);
           item.appendChild(pathEl);
-          item.appendChild(previewBtn);
 
-          // Clicking the row (not checkbox/button) also previews
-          item.addEventListener('click', function () {
-            vscode.postMessage({ type: 'previewChange', payload: { fileChange: change } });
-          });
+          if (!change.isDeleted) {
+            // Preview button — not applicable for deletions
+            const previewBtn = document.createElement('button');
+            previewBtn.className = 'file-change-preview-btn';
+            previewBtn.title = 'Preview diff';
+            previewBtn.textContent = 'diff';
+            previewBtn.addEventListener('click', function (e) {
+              e.stopPropagation();
+              vscode.postMessage({ type: 'previewChange', payload: { fileChange: change } });
+            });
+            item.appendChild(previewBtn);
+
+            // Clicking the row (not checkbox/button) also previews
+            item.addEventListener('click', function () {
+              vscode.postMessage({ type: 'previewChange', payload: { fileChange: change } });
+            });
+          }
 
           fileChangesList.appendChild(item);
         }
@@ -1871,6 +2058,10 @@
             handleToolCallProgress(message.payload);
             break;
 
+          case 'commandOutput':
+            handleCommandOutput(message.payload);
+            break;
+
           case 'setLoading':
             setLoading(message.payload.loading);
             break;
@@ -1908,6 +2099,16 @@
           case 'sessionRestored':
             handleSessionRestored(message.payload);
             break;
+
+          case 'roundChanged': {
+            const label = message.payload.roundType.charAt(0).toUpperCase() + message.payload.roundType.slice(1);
+            const sep = document.createElement('div');
+            sep.className = 'round-separator';
+            sep.textContent = 'Round \u2014 ' + label;
+            messagesEl.appendChild(sep);
+            scrollToBottom(true);
+            break;
+          }
 
           case 'clearMessages':
             messagesEl.innerHTML = '';

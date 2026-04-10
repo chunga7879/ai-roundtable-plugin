@@ -57,6 +57,8 @@ export class ChatPanel implements vscode.Disposable {
   private fileCache: Map<string, string> = new Map();
   /** Command outputs from the current turn — cleared on round change or Apply Changes. */
   private commandOutputCache: Map<string, import('../types').CommandOutput> = new Map();
+  /** Verification command suggested by the AI — offered to the user after Apply All Changes. */
+  private pendingVerifyCommand: string | undefined;
   private sessionManager: SessionManager | undefined;
   private currentSessionId: string | undefined;
   private readonly orchestrator: RoundOrchestrator;
@@ -193,6 +195,7 @@ export class ChatPanel implements vscode.Disposable {
 
       case 'rejectChanges':
         this.clearDraftFileChanges(true);
+        this.pendingVerifyCommand = undefined;
         this.postMessage({ type: 'clearFileChanges' });
         break;
 
@@ -207,7 +210,8 @@ export class ChatPanel implements vscode.Disposable {
             fc['filePath'].trim().length > 0 &&
             !fc['filePath'].includes('..') &&
             !path.isAbsolute(fc['filePath']) &&
-            typeof fc['content'] === 'string'
+            typeof fc['content'] === 'string' &&
+            fc['isDeleted'] !== true
           ) {
             await this.handlePreviewChange({
               filePath: (fc['filePath'] as string).trim(),
@@ -236,6 +240,7 @@ export class ChatPanel implements vscode.Disposable {
         this.fileCache.clear();
         this.commandOutputCache.clear();
         this.clearDraftFileChanges(true);
+        this.pendingVerifyCommand = undefined;
         this.postMessage({ type: 'clearMessages' });
         this.postMessage({ type: 'clearFileChanges' });
         void this.startNewSession();
@@ -286,22 +291,6 @@ export class ChatPanel implements vscode.Disposable {
         break;
       }
 
-      case 'executeCommand': {
-        const execPayload = msg.payload as { command?: unknown };
-        if (typeof execPayload?.command === 'string' && execPayload.command.trim().length > 0) {
-          const command = execPayload.command.trim();
-          const choice = await vscode.window.showWarningMessage(
-            `Run this command in your workspace?\n\n${command}`,
-            { modal: true },
-            'Run',
-          );
-          if (choice === 'Run') {
-            this.runInTerminal(command);
-          }
-        }
-        break;
-      }
-
       default:
         // Unknown message types are silently ignored
         break;
@@ -319,9 +308,10 @@ export class ChatPanel implements vscode.Disposable {
     this.lastSendMessage = { userMessage, roundType, mainAgent, subAgents };
 
     // Reset history and file cache when round type changes
-    if (roundType !== this.currentRoundType) {
+    if (roundType !== this.currentRoundType && this.currentRoundType !== undefined) {
       this.conversationHistory = [];
       this.fileCache.clear();
+      this.postMessage({ type: 'roundChanged', payload: { roundType } });
       this.currentRoundType = roundType;
       void this.startNewSession();
     }
@@ -398,8 +388,10 @@ export class ChatPanel implements vscode.Disposable {
           const enriched = await this.enrichFileChanges(result.fileChanges);
           this.postMessage({ type: 'showFileChanges', payload: { fileChanges: enriched } });
           this.saveDraftFileChanges(enriched, roundType);
+          this.pendingVerifyCommand = result.verifyCommand;
         } else {
           this.clearDraftFileChanges();
+          this.pendingVerifyCommand = undefined;
         }
         break;
       }
@@ -426,6 +418,9 @@ export class ChatPanel implements vscode.Disposable {
           result.newFiles.length > 0
             ? `Created: ${result.newFiles.join(', ')}`
             : '',
+          result.deletedFiles.length > 0
+            ? `Deleted: ${result.deletedFiles.join(', ')}`
+            : '',
         ]
           .filter(Boolean)
           .join('\n') || 'No changes applied.';
@@ -439,7 +434,12 @@ export class ChatPanel implements vscode.Disposable {
           timestamp: Date.now(),
         },
       });
-      // Detect dependency file changes and offer to run install command (exclude deletions)
+      const lastMsg = this.lastSendMessage;
+      const mainAgent = lastMsg?.mainAgent ?? AgentName.CLAUDE;
+      const subAgents = lastMsg?.subAgents ?? [];
+
+      // Detect dependency file changes and offer to run install command (exclude deletions).
+      // If install fails, skip the verify step — running tests against a broken install is meaningless.
       const allChanged = [...result.appliedFiles, ...result.newFiles];
       const installCommand = detectInstallCommand(allChanged);
       if (installCommand) {
@@ -449,10 +449,26 @@ export class ChatPanel implements vscode.Disposable {
           'Run',
         );
         if (choice === 'Run') {
-          const lastMsg = this.lastSendMessage;
-          const mainAgent = lastMsg?.mainAgent ?? AgentName.CLAUDE;
-          const subAgents = lastMsg?.subAgents ?? [];
           await this.handleRunCommand(installCommand, mainAgent, subAgents);
+          // handleRunCommand calls handleSendMessage on failure, which clears pendingVerifyCommand
+          // via the fileChanges.length === 0 path. Skip verify in that case.
+          if (!this.pendingVerifyCommand) {
+            return;
+          }
+        }
+      }
+
+      // Offer to run AI-suggested verification command (e.g. "npm test") after applying changes
+      const verifyCommand = this.pendingVerifyCommand;
+      this.pendingVerifyCommand = undefined;
+      if (verifyCommand) {
+        const choice = await vscode.window.showWarningMessage(
+          `Run verification command?\n\n${verifyCommand}`,
+          { modal: true },
+          'Run',
+        );
+        if (choice === 'Run') {
+          await this.handleRunCommand(verifyCommand, mainAgent, subAgents);
         }
       }
     } catch (err) {
@@ -466,20 +482,6 @@ export class ChatPanel implements vscode.Disposable {
     } catch (err) {
       void vscode.window.showErrorMessage(this.toSafeUserMessage(err));
     }
-  }
-
-  /**
-   * Runs a command in a dedicated VS Code terminal.
-   * Used for RUN: button clicks — no output capture needed; user controls the terminal.
-   */
-  private runInTerminal(command: string): void {
-    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-    const terminal = vscode.window.createTerminal({
-      name: 'AI Roundtable',
-      cwd: workspaceRoot,
-    });
-    terminal.show();
-    terminal.sendText(command);
   }
 
   private async handleRunCommand(command: string, mainAgent: AgentName, subAgents: AgentName[]): Promise<void> {

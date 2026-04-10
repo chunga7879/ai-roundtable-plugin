@@ -39,6 +39,8 @@ export type OrchestratorResult =
       tokenUsage?: TokenUsage;
       /** Streaming bubble ID to finalize; captured before finally clears streamingMsgId */
       streamingBubbleId: string | undefined;
+      /** Command the AI suggested to run after Apply to verify its changes (e.g. "npm test"). */
+      verifyCommand?: string;
     }
   | { status: 'cancelled' }
   | { status: 'error'; error: unknown };
@@ -111,7 +113,7 @@ export class RoundOrchestrator {
         request,
         cancellationToken,
         (event: ProgressEvent) => this.handleProgressEvent(event),
-        (command: string) => this.runCommandWithApproval(command),
+        (command: string) => this.runCommandWithApproval(command, cancellationToken),
       );
 
       if (cancellationToken.isCancellationRequested) {
@@ -129,6 +131,7 @@ export class RoundOrchestrator {
         fileChanges: result.fileChanges,
         tokenUsage: result.tokenUsage,
         streamingBubbleId: this.streamingMsgId,
+        verifyCommand: result.verifyCommand,
       };
     } catch (err) {
       if (err instanceof vscode.CancellationError) {
@@ -201,9 +204,21 @@ export class RoundOrchestrator {
         }
         break;
 
+      case 'tool_run_command_done':
+        if (this.streamingMsgId) {
+          this.emit({ type: 'commandOutput', payload: { msgId: this.streamingMsgId, command: event.command, stdout: event.stdout, exitCode: event.exitCode } });
+        }
+        break;
+
       case 'tool_write_file':
         if (this.streamingMsgId) {
           this.emit({ type: 'toolCallProgress', payload: { msgId: this.streamingMsgId, filePath: `✎ ${event.filePath}` } });
+        }
+        break;
+
+      case 'tool_delete_file':
+        if (this.streamingMsgId) {
+          this.emit({ type: 'toolCallProgress', payload: { msgId: this.streamingMsgId, filePath: `✗ ${event.filePath}` } });
         }
         break;
 
@@ -290,9 +305,13 @@ export class RoundOrchestrator {
     }
   }
 
-  private async runCommandWithApproval(command: string): Promise<CommandOutput> {
+  private async runCommandWithApproval(command: string, cancellationToken?: vscode.CancellationToken): Promise<CommandOutput> {
+    const MAX_PREVIEW = 300;
+    const preview = command.length > MAX_PREVIEW
+      ? command.slice(0, MAX_PREVIEW) + `\n… (${command.length - MAX_PREVIEW} more chars)`
+      : command;
     const choice = await vscode.window.showWarningMessage(
-      `Agent wants to run a command:\n\n${command}`,
+      `Agent wants to run a command:\n\n${preview}`,
       { modal: true },
       'Run',
     );
@@ -303,7 +322,7 @@ export class RoundOrchestrator {
 
     const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     const config = await this.configManager.getConfig();
-    return execCommand(command, workspaceRoot, config.runnerTimeoutMs);
+    return execCommand(command, workspaceRoot, config.runnerTimeoutMs, cancellationToken);
   }
 
   private buildAgentRunner(config: ExtensionConfig): AgentRunner {
@@ -331,12 +350,18 @@ export function execCommand(
   command: string,
   cwd: string | undefined,
   timeoutMs: number,
+  cancellationToken?: vscode.CancellationToken,
 ): Promise<CommandOutput> {
   return new Promise((resolve) => {
     try {
-      cp.exec(command, { cwd, timeout: timeoutMs, maxBuffer: EXEC_MAX_OUTPUT }, (err, stdout, stderr) => {
+      const child = cp.exec(command, { cwd, timeout: timeoutMs, maxBuffer: EXEC_MAX_OUTPUT }, (err, stdout, stderr) => {
+        cancelDisposable?.dispose();
         const combined = [stdout, stderr].filter(Boolean).join('\n').slice(0, EXEC_MAX_OUTPUT);
         resolve({ command, stdout: combined || '(no output)', exitCode: err?.code ?? (err ? 1 : 0) });
+      });
+      const cancelDisposable = cancellationToken?.onCancellationRequested(() => {
+        child.kill();
+        resolve({ command, stdout: '[Cancelled]', exitCode: 1 });
       });
     } catch (syncErr) {
       resolve({ command, stdout: String(syncErr), exitCode: 1 });

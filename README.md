@@ -65,17 +65,13 @@ Choose **GitHub Copilot** (default) or **API Keys**. If you choose API Keys, you
 6. Click a file to preview the diff, then **Apply All Changes** or **Discard**
 7. If dependency files changed (e.g. `package.json`), an approve/deny dialog offers to run the install command automatically
 
-### Action buttons
-
-When an AI response ends with a question (e.g. "Would you like me to apply fixes?"), it renders as clickable buttons instead of plain text. Clicking a button re-runs the round with that label as your message — sub-agent verification is skipped for these confirmation turns.
-
 ### Shell commands
 
-When the AI needs to run a command to complete its task, it outputs a `RUN: <command>` line which renders as a clickable **▶ command** button. Clicking shows an approve/deny dialog before anything executes. If the command fails, the output is automatically fed to Runner AI for analysis.
+When the AI needs to run a command to complete its task, it outputs a `RUN: <command>` line which renders as a clickable **▶ command** button. Clicking shows an approve/deny dialog before anything executes.
 
 ### File deletions
 
-When the AI moves or removes a file, it outputs `DELETE: path/to/file` alongside any file writes. Deleted files appear with a red **DEL** badge in the Proposed Changes panel.
+When the AI deletes a file via the `delete_file` tool, the file appears with a red **DEL** badge in the Proposed Changes panel.
 
 ### Round types
 
@@ -91,7 +87,7 @@ When the AI moves or removes a file, it outputs `DELETE: path/to/file` alongside
 
 ### Running a shell command
 
-Select the **Runner** round, type a command in the **Run Command** input, and press **Run**. The command runs in your workspace root with a configurable timeout (default 60 seconds). If it exits with a non-zero code, the output is automatically sent to Runner AI for diagnosis and fix suggestions. Use **Run Again** to re-execute after applying fixes.
+During any round, the AI may output a `RUN: <command>` line which renders as a clickable **▶ command** button. Clicking shows an approve/deny dialog before anything executes. The command runs in your workspace root with a configurable timeout (default 60 seconds).
 
 ---
 
@@ -150,6 +146,5 @@ This can happen if the Copilot API is temporarily unresponsive. The extension wi
 - **Copilot mode uses a single model for all agents** — sub-agents and main agent are the same underlying Copilot model, differentiated only by their system prompt role.
 - **Conversation history resets when you switch round type** — switching from Developer to Reviewer starts a new conversation.
 - **Max 50 workspace files** — large projects will have files truncated or omitted. Open the most relevant files before sending a request.
-- **Runner round timeout: configurable (default 60 seconds)** — long-running commands (e.g. full test suites) may be cut off.
+- **Shell command timeout: configurable (default 60 seconds)** — long-running commands (e.g. full test suites) may be cut off.
 - **Max 50 file changes per response** — responses proposing more than 50 files will have the excess silently dropped.
-- **Runner AI analysis only runs on failure** — if a command exits with code 0, no AI analysis is triggered.

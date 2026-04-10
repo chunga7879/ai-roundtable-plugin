@@ -25,9 +25,9 @@ export class CopilotProviderError extends ProviderError {
  *   <function_calls><invoke name="run_command"><parameter name="command">npm run build</parameter></invoke></function_calls>
  *   <function_calls><invoke name="write_file"><parameter name="path">src/foo.ts</parameter><parameter name="content">...</parameter></invoke></function_calls>
  */
-function extractXmlToolCalls(text: string): Array<{ name: 'read_file'; path: string } | { name: 'run_command'; command: string } | { name: 'write_file'; path: string; content: string }> {
-  const calls: Array<{ name: 'read_file'; path: string } | { name: 'run_command'; command: string } | { name: 'write_file'; path: string; content: string }> = [];
-  const invokeRe = /<invoke\s+name="(read_file|run_command|write_file)">([\s\S]*?)<\/invoke>/g;
+function extractXmlToolCalls(text: string): Array<{ name: 'read_file'; path: string } | { name: 'run_command'; command: string } | { name: 'write_file'; path: string; content: string } | { name: 'delete_file'; path: string }> {
+  const calls: Array<{ name: 'read_file'; path: string } | { name: 'run_command'; command: string } | { name: 'write_file'; path: string; content: string } | { name: 'delete_file'; path: string }> = [];
+  const invokeRe = /<invoke\s+name="(read_file|run_command|write_file|delete_file)">([\s\S]*?)<\/invoke>/g;
   let m: RegExpExecArray | null;
   while ((m = invokeRe.exec(text)) !== null) {
     const toolName = m[1];
@@ -42,6 +42,9 @@ function extractXmlToolCalls(text: string): Array<{ name: 'read_file'; path: str
       const pathMatch = /<parameter\s+name="path">([^<]+)<\/parameter>/.exec(body);
       const contentMatch = /<parameter\s+name="content">([\s\S]*?)<\/parameter>/.exec(body);
       if (pathMatch && contentMatch) calls.push({ name: 'write_file', path: pathMatch[1].trim(), content: contentMatch[1] });
+    } else if (toolName === 'delete_file') {
+      const paramMatch = /<parameter\s+name="path">([^<]+)<\/parameter>/.exec(body);
+      if (paramMatch) calls.push({ name: 'delete_file', path: paramMatch[1].trim() });
     }
   }
   return calls;
@@ -212,6 +215,17 @@ export class CopilotProvider {
               required: ['path', 'content'],
             },
           },
+          {
+            name: 'delete_file',
+            description: 'Stage a file for deletion from the workspace. The deletion will be shown to the user for review before being applied.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                path: { type: 'string', description: 'Relative path from workspace root of the file to delete.' },
+              },
+              required: ['path'],
+            },
+          },
         ]
       : [];
 
@@ -280,6 +294,9 @@ export class CopilotProvider {
             } else if (call.name === 'write_file') {
               const result = await options.onToolCall({ id: call.path, name: 'write_file', filePath: call.path, content: call.content });
               toolResultTexts.push(`write_file: ${call.path}\n${result.content}`);
+            } else if (call.name === 'delete_file') {
+              const result = await options.onToolCall({ id: call.path, name: 'delete_file', filePath: call.path });
+              toolResultTexts.push(`delete_file: ${call.path}\n${result.content}`);
             } else {
               const result = await options.onToolCall({ id: call.path, name: 'read_file', filePath: call.path });
               toolResultTexts.push(`File: ${call.path}\n${result.content}`);
@@ -320,7 +337,9 @@ export class CopilotProvider {
           ? await options.onToolCall({ id: tc.callId, name: 'run_command', command: typeof input['command'] === 'string' ? input['command'] : '' })
           : tc.name === 'write_file'
             ? await options.onToolCall({ id: tc.callId, name: 'write_file', filePath: typeof input['path'] === 'string' ? input['path'] : '', content: typeof input['content'] === 'string' ? input['content'] : '' })
-            : await options.onToolCall({ id: tc.callId, name: 'read_file', filePath: typeof input['path'] === 'string' ? input['path'] : '' });
+            : tc.name === 'delete_file'
+              ? await options.onToolCall({ id: tc.callId, name: 'delete_file', filePath: typeof input['path'] === 'string' ? input['path'] : '' })
+              : await options.onToolCall({ id: tc.callId, name: 'read_file', filePath: typeof input['path'] === 'string' ? input['path'] : '' });
         resultParts.push(
           new vscode.LanguageModelToolResultPart(tc.callId, [
             new vscode.LanguageModelTextPart(result.content),

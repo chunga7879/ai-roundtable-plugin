@@ -206,21 +206,9 @@ Click **Discard** to dismiss the proposed changes without writing anything. The 
 
 ## Running Shell Commands
 
-### Runner round
+During any round, the AI may suggest a command to run. When it does, the command appears as a clickable **▶ button** in the chat. Clicking it shows an approve/deny dialog before anything executes.
 
-1. Select the **Runner** round.
-2. Type your command in the **Run Command** input (e.g. `npm test`, `npx jest --coverage`).
-3. Click **Run**.
-
-The command executes in your workspace root. Output streams to the panel. If the command exits with a non-zero code, the output is automatically sent through the AI pipeline for diagnosis and fix suggestions.
-
-Use **Run Again** to re-run the same command after applying the AI's suggested fixes.
-
-**Timeout:** The default timeout is 60 seconds. Long-running commands may be cut off. Run specific test files or subsets rather than full test suites when iterating.
-
-### AI-suggested commands (any round)
-
-During any round, the AI may suggest a command to run. When it does, the command appears as a clickable **▶ button** in the chat. Clicking it shows an approve/deny dialog before anything executes. This is the only way the AI can run commands outside the Runner round.
+The command runs in your workspace root. **Timeout:** The default timeout is 60 seconds. Long-running commands may be cut off. Run specific test files or subsets rather than full test suites when iterating.
 
 ---
 
@@ -277,9 +265,9 @@ Toggle the tier using the **Light / Heavy** selector in the panel. The current t
    "Write tests for the password reset flow targeting 80% branch coverage"
    → Test files proposed → Apply
 
-6. Runner round
-   "npm test -- --testPathPattern=passwordReset"
-   → All green, or AI diagnoses failures → Run Again
+6. Ask the AI to run tests (Developer round)
+   "RUN: npm test -- --testPathPattern=passwordReset"
+   → Click the ▶ button → Approve → All green, or fix and retry
 ```
 
 ---
@@ -294,9 +282,9 @@ Toggle the tier using the **Light / Heavy** selector in the panel. The current t
     Add a guard clause and throw a ValidationError instead."
    → AI reads the file, writes the fix → Apply
 
-3. Runner round
-   "npm test -- --testPathPattern=orders"
-   → Confirm fix passes
+3. Developer round
+   "RUN: npm test -- --testPathPattern=orders"
+   → Click the ▶ button → Approve → Confirm fix passes
 ```
 
 ---
@@ -326,9 +314,9 @@ Toggle the tier using the **Light / Heavy** selector in the panel. The current t
     focus on error paths and edge cases"
    → AI reads existing tests, extends them → Apply
 
-3. Runner round
-   "npx jest --coverage src/workspace/WorkspaceWriter.ts"
-   → Check coverage report → Run Again after fixes
+3. QA round
+   "RUN: npx jest --coverage src/workspace/WorkspaceWriter.ts"
+   → Click the ▶ button → Approve → Check coverage report → Fix and retry
 ```
 
 ---
@@ -365,8 +353,8 @@ Conversation history persists within a round. You can ask follow-up questions, r
 **Run the Reviewer round before merging.**
 The Reviewer round checks OWASP Top 10 automatically and enforces a two-step process (findings first, fixes after confirmation) to prevent accidental changes. Use it as a final gate before any PR.
 
-**For the Runner round, run targeted commands.**
-`npm test -- --testPathPattern=auth` is faster to iterate on than `npm test`. The AI's diagnosis is also more focused when the output is specific to the code you changed.
+**When running commands via the ▶ button, use targeted commands.**
+`npm test -- --testPathPattern=auth` is faster to iterate on than `npm test`. The AI's output is also more focused when the command is specific to the code you changed.
 
 **Cancel and retry if a response is wrong.**
 The Cancel button appears while a request is running. If the response takes an unexpected direction, cancel early and rephrase your request with more specific constraints.

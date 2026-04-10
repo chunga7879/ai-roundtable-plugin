@@ -490,10 +490,7 @@ Reviewer round (GPT main, Claude sub)
 QA round (Claude main)
   "Write tests for the auth module"
   → write_file calls for tests/auth/*.test.ts → apply changes
-
-Runner round
-  runCommand: "npm test"
-  → AI analyzes failures, proposes fixes → runAgain
+  → RUN: npm test → click ▶ button → approve → fix failures and retry
 ```
 
 ---
@@ -509,10 +506,7 @@ Developer round (Claude main)
   "getUser() returns undefined for deleted users, should throw NotFoundError"
   → read_file: src/users/service.ts
   → write_file: src/users/service.ts with fix → apply changes
-
-Runner round
-  runCommand: "npm test -- --testPathPattern=users"
-  → AI confirms fix passes, or diagnoses remaining failures
+  → RUN: npm test -- --testPathPattern=users → click ▶ button → approve
 ```
 
 ---
@@ -546,10 +540,8 @@ QA round (Claude main)
   → read_file: src/workspace/WorkspaceWriter.ts
   → read_file: tests/unit/WorkspaceWriter.test.ts
   → write_file: tests/unit/WorkspaceWriter.test.ts → apply
-
-Runner round
-  runCommand: "npx jest --coverage tests/unit/WorkspaceWriter.test.ts"
-  → AI reads coverage report, identifies remaining gaps → runAgain
+  → RUN: npx jest --coverage tests/unit/WorkspaceWriter.test.ts
+     → click ▶ button → approve → identify remaining gaps → fix and retry
 ```
 
 ---

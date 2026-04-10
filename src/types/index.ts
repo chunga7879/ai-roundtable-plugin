@@ -44,6 +44,7 @@ export interface FileChange {
   filePath: string;
   content: string;
   isNew: boolean;
+  isDeleted?: boolean;
 }
 
 export interface AgentResponse {
@@ -102,7 +103,8 @@ export interface SubAgentVerification {
 export type ToolCall =
   | { id: string; name: 'read_file'; filePath: string }
   | { id: string; name: 'run_command'; command: string }
-  | { id: string; name: 'write_file'; filePath: string; content: string };
+  | { id: string; name: 'write_file'; filePath: string; content: string }
+  | { id: string; name: 'delete_file'; filePath: string };
 
 export interface CommandOutput {
   command: string;
@@ -127,6 +129,8 @@ export interface RoundResult {
   reflectedResponse: string;
   fileChanges: FileChange[];
   tokenUsage?: TokenUsage;
+  /** Command the AI suggested to run after Apply to verify its changes (e.g. "npm test"). */
+  verifyCommand?: string;
 }
 
 // ── Session persistence ───────────────────────────────────────────────────────
@@ -158,7 +162,6 @@ export type WebviewToExtensionMessage =
   | { type: 'rejectChanges' }
   | { type: 'requestConfig' }
   | { type: 'configureProvider' }
-  | { type: 'executeCommand'; payload: { command: string } }
   | { type: 'clearChat' }
   | { type: 'retryLastMessage' }
   | { type: 'cancelRequest' }
@@ -202,8 +205,10 @@ export type ExtensionToWebviewMessage =
   | { type: 'clearMessages' }
   | { type: 'clearContextFiles' }
   | { type: 'toolCallProgress'; payload: { msgId: string; filePath: string } }
+  | { type: 'commandOutput'; payload: { msgId: string; command: string; stdout: string; exitCode: number } }
   | { type: 'contextUsage'; payload: { pct: number; label: string } }
   | { type: 'sessionListLoaded'; payload: { sessions: SessionIndexEntry[] } }
+  | { type: 'roundChanged'; payload: { roundType: RoundType } }
   | { type: 'sessionRestored'; payload: { turns: ConversationTurn[]; roundType: RoundType } }
   | { type: 'restoreDraftFileChanges'; payload: { fileChanges: FileChange[]; roundType: RoundType; savedAt: number } };
 
