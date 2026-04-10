@@ -42,7 +42,10 @@ describe('validateSendMessagePayload', () => {
 
   it('accepts all valid AgentName values as mainAgent', () => {
     for (const a of Object.values(AgentName)) {
-      expect(() => validateSendMessagePayload({ ...validPayload, mainAgent: a })).not.toThrow();
+      const fallbackSubAgent = a === AgentName.GPT ? AgentName.CLAUDE : AgentName.GPT;
+      expect(() =>
+        validateSendMessagePayload({ ...validPayload, mainAgent: a, subAgents: [fallbackSubAgent] })
+      ).not.toThrow();
     }
   });
 
@@ -98,6 +101,18 @@ describe('validateSendMessagePayload', () => {
   it('throws ValidationError for non-string value in subAgents array', () => {
     expect(() => validateSendMessagePayload({ ...validPayload, subAgents: [42] }))
       .toThrow(ValidationError);
+  });
+
+  it('throws ValidationError when subAgents contains the mainAgent', () => {
+    expect(() =>
+      validateSendMessagePayload({ ...validPayload, mainAgent: AgentName.GPT, subAgents: [AgentName.GPT] })
+    ).toThrow(ValidationError);
+  });
+
+  it('throws ValidationError for duplicate subAgents', () => {
+    expect(() =>
+      validateSendMessagePayload({ ...validPayload, subAgents: [AgentName.GPT, AgentName.GPT] })
+    ).toThrow(ValidationError);
   });
 });
 

@@ -62,6 +62,27 @@ export class SessionManager {
     }
   }
 
+  async updateSessionRoundType(sessionId: string, roundType: RoundType): Promise<void> {
+    try {
+      const session = await this.loadSession(sessionId);
+      if (!session) {
+        return;
+      }
+      if (session.roundType === roundType) {
+        return;
+      }
+      session.roundType = roundType;
+      session.updatedAt = Date.now();
+      await this.writeSession(session);
+      await this.updateIndexEntry(sessionId, {
+        roundType,
+        updatedAt: session.updatedAt,
+      });
+    } catch {
+      // Non-fatal — session updates must never break the chat
+    }
+  }
+
   async listSessions(): Promise<SessionIndexEntry[]> {
     try {
       const index = await this.readIndex();

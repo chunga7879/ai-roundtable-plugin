@@ -1,6 +1,7 @@
 import { RoundType } from '../../src/types';
 import {
   ROUND_LABELS,
+  buildReflectionSystemPrompt,
   buildSystemPrompt,
   buildSubAgentSystemPrompt,
   buildSubAgentUserMessage,
@@ -21,6 +22,12 @@ describe('buildSystemPrompt', () => {
     expect(result).toContain('AI participant in a software development roundtable');
   });
 
+  it('keeps run_command guidance consistent with staged write_file verification', () => {
+    const result = buildSystemPrompt(RoundType.DEVELOPER);
+    expect(result).toContain('Do NOT use for validating files you just wrote via write_file');
+    expect(result).toContain('unless your round-specific instructions explicitly allow it');
+  });
+
   it('includes expertise content for the given round type', () => {
     const result = buildSystemPrompt(RoundType.DEVELOPER);
     expect(result).toContain('Principal Software Engineer');
@@ -35,6 +42,21 @@ describe('buildSystemPrompt', () => {
     const result = buildSystemPrompt(RoundType.ARCHITECT);
     expect(result).toContain('Distinguished Software Architect');
     expect(result).toContain('docs/architecture.md');
+  });
+});
+
+describe('buildReflectionSystemPrompt', () => {
+  it.each(ALL_ROUND_TYPES)('returns a non-empty string for %s', (roundType) => {
+    const result = buildReflectionSystemPrompt(roundType);
+    expect(typeof result).toBe('string');
+    expect(result.trim().length).toBeGreaterThan(100);
+  });
+
+  it('puts reflection tool overrides before role instructions', () => {
+    const result = buildReflectionSystemPrompt(RoundType.DEVELOPER);
+    expect(result).toContain('REFLECTION MODE OVERRIDES (HIGHEST PRIORITY):');
+    expect(result).toContain('run_command and read_file are not available in reflection');
+    expect(result).toContain('these reflection overrides take precedence');
   });
 });
 
@@ -72,6 +94,19 @@ describe('buildSubAgentVerificationPrompt', () => {
   it('explicitly states tool access is unavailable', () => {
     const result = buildSubAgentSystemPrompt(RoundType.REVIEWER);
     expect(result).toContain('do not have tool access');
+  });
+
+  it('mentions both read and written file sections for verifier context', () => {
+    const result = buildSubAgentSystemPrompt(RoundType.REVIEWER);
+    expect(result).toContain('[FILES READ BY PRIMARY AGENT]');
+    expect(result).toContain('[FILES WRITTEN BY PRIMARY AGENT]');
+  });
+
+  it('requires machine-readable JSON verifier output schema', () => {
+    const result = buildSubAgentSystemPrompt(RoundType.REVIEWER);
+    expect(result).toContain('Return ONLY valid JSON');
+    expect(result).toContain('{"issues":[{"title":"<short issue title>"');
+    expect(result).toContain('{"issues":[]}');
   });
 
   it('does NOT embed the primary agent response (that belongs in user message)', () => {
@@ -137,5 +172,26 @@ describe('buildReflectionPrompt', () => {
   it('produces a self-contained final response instruction', () => {
     const result = buildReflectionPrompt(mainResponse, feedbacks);
     expect(result).toContain('FINAL refined response');
+  });
+
+  it('does not include legacy text-based unanimous consensus rule', () => {
+    const result = buildReflectionPrompt(mainResponse, feedbacks, ['Missing error handling']);
+    expect(result).not.toContain('If ALL');
+    expect(result).toContain('[MANDATORY CONSENSUS ISSUES — CODE-EXTRACTED]');
+    expect(result).toContain('You MUST fix every item below');
+  });
+
+  it('uses code-extracted mandatory section as the only mandatory source', () => {
+    const result = buildReflectionPrompt(mainResponse, feedbacks, ['Add input validation']);
+    expect(result).toContain('MANDATORY items come only from [MANDATORY CONSENSUS ISSUES — CODE-EXTRACTED].');
+  });
+
+  it('places reflection tool/file-scope constraints near the top of the prompt', () => {
+    const result = buildReflectionPrompt(mainResponse, feedbacks, ['Add input validation']);
+    expect(result).toContain('REFLECTION CONSTRAINTS (MANDATORY):');
+    expect(result).toContain('run_command and read_file are not available during reflection');
+    expect(result).toContain('You may modify files only if their paths are present');
+    expect(result).toContain('Do not create, modify, or delete any file outside that provided file list.');
+    expect(result).toContain('OUT_OF_SCOPE_CHANGES_JSON:');
   });
 });

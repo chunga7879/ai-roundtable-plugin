@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import type {
+  CommandOutput,
   ConversationTurn,
   ExtensionToWebviewMessage,
   FileChange,
@@ -17,6 +18,8 @@ import {
 import { RoundType } from '../types';
 import { WorkspaceReader } from '../workspace/WorkspaceReader';
 import { WorkspaceWriter } from '../workspace/WorkspaceWriter';
+import { resolveWorkspaceRootForCommand } from '../workspace/WorkspaceRootResolver';
+import { getWorkspaceFolderPrefix, resolveWorkspacePath as resolveWorkspacePathWithPrefix } from '../workspace/WorkspacePath';
 import type { ConfigManager } from '../extension';
 import { ValidationError } from '../errors';
 import { RoundOrchestrator, execCommand } from './RoundOrchestrator';
@@ -56,7 +59,7 @@ export class ChatPanel implements vscode.Disposable {
   /** Files read by the agent — reused on next turn within a round, cleared on round change or Apply Changes. */
   private fileCache: Map<string, string> = new Map();
   /** Command outputs from the current turn — cleared on round change or Apply Changes. */
-  private commandOutputCache: Map<string, import('../types').CommandOutput> = new Map();
+  private commandOutputCache: Map<string, CommandOutput> = new Map();
   /** Verification command suggested by the AI — offered to the user after Apply All Changes. */
   private pendingVerifyCommand: string | undefined;
   private sessionManager: SessionManager | undefined;
@@ -214,8 +217,8 @@ export class ChatPanel implements vscode.Disposable {
             fc['isDeleted'] !== true
           ) {
             await this.handlePreviewChange({
-              filePath: (fc['filePath'] as string).trim(),
-              content: fc['content'] as string,
+              filePath: (fc['filePath']).trim(),
+              content: fc['content'],
               isNew: typeof fc['isNew'] === 'boolean' ? fc['isNew'] : false,
             });
           }
@@ -234,6 +237,7 @@ export class ChatPanel implements vscode.Disposable {
         break;
 
       case 'clearChat':
+        this.orchestrator.cancel();
         this.conversationHistory = [];
         this.currentRoundType = undefined;
         this.lastSendMessage = undefined;
@@ -264,6 +268,7 @@ export class ChatPanel implements vscode.Disposable {
             this.lastSendMessage = undefined;
             this.fileCache.clear();
             this.commandOutputCache.clear();
+            this.pendingVerifyCommand = undefined;
             this.currentSessionId = session.id;
             this.postMessage({ type: 'sessionRestored', payload: { turns: session.turns, roundType: session.roundType } });
           }
@@ -307,14 +312,30 @@ export class ChatPanel implements vscode.Disposable {
     // Save for retry
     this.lastSendMessage = { userMessage, roundType, mainAgent, subAgents };
 
-    // Reset history and file cache when round type changes
-    if (roundType !== this.currentRoundType && this.currentRoundType !== undefined) {
+    const previousRoundType = this.currentRoundType;
+
+    // First user request of this chat lifecycle: persist the selected round type.
+    // If it differs from the default session round, rotate to a new session so
+    // session metadata matches the actual round from turn 1.
+    if (previousRoundType === undefined) {
+      this.currentRoundType = roundType;
+      if (roundType !== RoundType.DEVELOPER && this.sessionManager && this.currentSessionId) {
+        void this.sessionManager.updateSessionRoundType(this.currentSessionId, roundType);
+      }
+    } else if (roundType !== previousRoundType) {
+      // Reset history and file cache when round type changes
       this.conversationHistory = [];
       this.fileCache.clear();
+      this.pendingVerifyCommand = undefined;
       this.postMessage({ type: 'roundChanged', payload: { roundType } });
       this.currentRoundType = roundType;
       void this.startNewSession();
     }
+
+    // Self-heal cache before each turn:
+    // - refresh entries that changed on disk
+    // - drop entries that are now missing/excluded
+    await this.refreshFileCacheBeforeTurn();
 
     // Command outputs are turn-scoped — clear every turn
     this.commandOutputCache.clear();
@@ -338,6 +359,7 @@ export class ChatPanel implements vscode.Disposable {
 
     switch (result.status) {
       case 'cancelled':
+        this.pendingVerifyCommand = undefined;
         this.postMessage({
           type: 'addMessage',
           payload: { id: crypto.randomUUID(), role: 'system', content: 'Request cancelled.', timestamp: Date.now() },
@@ -347,6 +369,7 @@ export class ChatPanel implements vscode.Disposable {
       case 'error':
         // Preserve user message in history so retry has context.
         this.conversationHistory.push({ role: 'user', content: userMessage });
+        this.pendingVerifyCommand = undefined;
         this.postErrorMessage(this.toSafeUserMessage(result.error), true);
         break;
 
@@ -405,7 +428,9 @@ export class ChatPanel implements vscode.Disposable {
     this.commandOutputCache.clear();
     this.postMessage({ type: 'clearContextFiles' });
     // Reset gauge to reflect cleared cache
-    const mainAgent = this.lastSendMessage?.mainAgent ?? AgentName.CLAUDE;
+    const lastMsg = this.lastSendMessage;
+    const mainAgent = lastMsg?.mainAgent ?? AgentName.CLAUDE;
+    const subAgents = lastMsg?.subAgents ?? [];
     this.postContextUsage(mainAgent);
     try {
       const result = await this.workspaceWriter.applyChanges(fileChanges);
@@ -434,9 +459,6 @@ export class ChatPanel implements vscode.Disposable {
           timestamp: Date.now(),
         },
       });
-      const lastMsg = this.lastSendMessage;
-      const mainAgent = lastMsg?.mainAgent ?? AgentName.CLAUDE;
-      const subAgents = lastMsg?.subAgents ?? [];
 
       // Detect dependency file changes and offer to run install command (exclude deletions).
       // If install fails, skip the verify step — running tests against a broken install is meaningless.
@@ -449,7 +471,7 @@ export class ChatPanel implements vscode.Disposable {
           'Run',
         );
         if (choice === 'Run') {
-          await this.handleRunCommand(installCommand, mainAgent, subAgents);
+          await this.handleRunCommand(installCommand, mainAgent, subAgents, allChanged);
           // handleRunCommand calls handleSendMessage on failure, which clears pendingVerifyCommand
           // via the fileChanges.length === 0 path. Skip verify in that case.
           if (!this.pendingVerifyCommand) {
@@ -468,7 +490,7 @@ export class ChatPanel implements vscode.Disposable {
           'Run',
         );
         if (choice === 'Run') {
-          await this.handleRunCommand(verifyCommand, mainAgent, subAgents);
+          await this.handleRunCommand(verifyCommand, mainAgent, subAgents, allChanged);
         }
       }
     } catch (err) {
@@ -484,7 +506,12 @@ export class ChatPanel implements vscode.Disposable {
     }
   }
 
-  private async handleRunCommand(command: string, mainAgent: AgentName, subAgents: AgentName[]): Promise<void> {
+  private async handleRunCommand(
+    command: string,
+    mainAgent: AgentName,
+    subAgents: AgentName[],
+    preferredFilePaths: readonly string[] = [],
+  ): Promise<void> {
     // Guard: prevent concurrent executions (orchestrator has an active request)
     if (this.orchestrator.streamingBubbleId !== undefined) {
       this.postMessage({
@@ -505,7 +532,7 @@ export class ChatPanel implements vscode.Disposable {
       payload: { id: crypto.randomUUID(), role: 'system', content: `Running: ${command}`, timestamp: Date.now() },
     });
 
-    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    const workspaceRoot = resolveWorkspaceRootForCommand({ candidateFilePaths: preferredFilePaths });
     const config = await this.configManager.getConfig();
     const { stdout: output, exitCode } = await execCommand(command, workspaceRoot, config.runnerTimeoutMs);
 
@@ -574,11 +601,14 @@ export class ChatPanel implements vscode.Disposable {
       return fileChanges;
     }
 
-    const workspaceRoot = workspaceFolders[0].uri;
-
     const results = await Promise.all(
       fileChanges.map(async (change) => {
-        const targetUri = vscode.Uri.joinPath(workspaceRoot, change.filePath);
+        const targetUri = this.resolveWorkspaceUriForFilePath(change.filePath, workspaceFolders);
+        if (!targetUri) {
+          // If path resolution fails (e.g. malformed multi-root path), still show as new
+          // so the user can inspect and decide.
+          return { ...change, isNew: true };
+        }
         try {
           const existing = await vscode.workspace.fs.readFile(targetUri);
           const existingText = Buffer.from(existing).toString('utf-8');
@@ -592,6 +622,21 @@ export class ChatPanel implements vscode.Disposable {
       }),
     );
     return results.filter((c): c is FileChange => c !== null);
+  }
+
+  private resolveWorkspaceUriForFilePath(
+    filePath: string,
+    workspaceFolders: readonly vscode.WorkspaceFolder[],
+  ): vscode.Uri | undefined {
+    if (workspaceFolders.length === 1) {
+      return vscode.Uri.joinPath(workspaceFolders[0].uri, filePath);
+    }
+
+    const normalized = filePath.replace(/\\/g, '/').replace(/^\.\//, '');
+    const resolved = resolveWorkspacePathWithPrefix(normalized, workspaceFolders);
+    return resolved
+      ? vscode.Uri.joinPath(resolved.folder.uri, resolved.relativePath)
+      : undefined;
   }
 
   private postContextUsage(mainAgent: AgentName): void {
@@ -618,8 +663,8 @@ export class ChatPanel implements vscode.Disposable {
   }
 
   private saveDraftFileChanges(fileChanges: FileChange[], roundType: RoundType): void {
-    if (!this.context) return;
-    this.context.globalState.update(DRAFT_FILE_CHANGES_KEY, {
+    if (!this.context) {return;}
+    void this.context.globalState.update(DRAFT_FILE_CHANGES_KEY, {
       fileChanges,
       roundType,
       savedAt: Date.now(),
@@ -627,15 +672,15 @@ export class ChatPanel implements vscode.Disposable {
   }
 
   private clearDraftFileChanges(clearDiffContent = false): void {
-    if (!this.context) return;
-    this.context.globalState.update(DRAFT_FILE_CHANGES_KEY, undefined);
+    if (!this.context) {return;}
+    void this.context.globalState.update(DRAFT_FILE_CHANGES_KEY, undefined);
     if (clearDiffContent) {
       this.workspaceWriter.clearDiffContent();
     }
   }
 
   private restoreDraftFileChangesIfAny(): void {
-    if (!this.context) return;
+    if (!this.context) {return;}
     const draft = this.context.globalState.get<{ fileChanges: FileChange[]; roundType: RoundType; savedAt: number }>(DRAFT_FILE_CHANGES_KEY);
     if (draft && draft.fileChanges.length > 0) {
       this.postMessage({ type: 'restoreDraftFileChanges', payload: draft });
@@ -722,27 +767,74 @@ export class ChatPanel implements vscode.Disposable {
 
   private setupFileCacheWatcher(): void {
     const workspaceFolders = vscode.workspace.workspaceFolders;
-    if (!workspaceFolders || workspaceFolders.length === 0) return;
-
-    const workspaceRoot = workspaceFolders[0].uri.fsPath;
-
-    const watcher = vscode.workspace.createFileSystemWatcher(
-      new vscode.RelativePattern(workspaceFolders[0], '**/*'),
-    );
+    if (!workspaceFolders || workspaceFolders.length === 0) {
+      return;
+    }
 
     const invalidate = (uri: vscode.Uri) => {
-      // Convert absolute path to relative and evict from cache if present
-      const rel = uri.fsPath.startsWith(workspaceRoot)
-        ? uri.fsPath.slice(workspaceRoot.length).replace(/^[\\/]/, '').replace(/\\/g, '/')
-        : undefined;
-      if (rel && this.fileCache.has(rel)) {
-        this.fileCache.delete(rel);
+      const cacheKey = this.toCacheKey(uri);
+      if (cacheKey && this.fileCache.has(cacheKey)) {
+        this.fileCache.delete(cacheKey);
       }
     };
 
-    watcher.onDidChange(invalidate, undefined, this.disposables);
-    watcher.onDidDelete(invalidate, undefined, this.disposables);
-    this.disposables.push(watcher);
+    for (const folder of workspaceFolders) {
+      const watcher = vscode.workspace.createFileSystemWatcher(
+        new vscode.RelativePattern(folder, '**/*'),
+      );
+      watcher.onDidChange(invalidate, undefined, this.disposables);
+      watcher.onDidCreate(invalidate, undefined, this.disposables);
+      watcher.onDidDelete(invalidate, undefined, this.disposables);
+      this.disposables.push(watcher);
+    }
+  }
+
+  /**
+   * Refreshes cached file content before each turn to reduce stale context risk.
+   * Uses WorkspaceReader so the same security/exclusion/truncation rules apply.
+   */
+  private async refreshFileCacheBeforeTurn(): Promise<void> {
+    if (this.fileCache.size === 0) {
+      return;
+    }
+
+    const entries = Array.from(this.fileCache.entries());
+    await Promise.all(
+      entries.map(async ([relativePath, cachedContent]) => {
+        try {
+          const fresh = await this.workspaceReader.readFileForTool(relativePath);
+          if (fresh.isError) {
+            this.fileCache.delete(relativePath);
+            return;
+          }
+          if (fresh.content !== cachedContent) {
+            this.fileCache.set(relativePath, fresh.content);
+          }
+        } catch {
+          // Best-effort cache maintenance — never block a user request.
+        }
+      }),
+    );
+  }
+
+  private toCacheKey(uri: vscode.Uri): string | undefined {
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (!workspaceFolders || workspaceFolders.length === 0) {
+      return undefined;
+    }
+
+    const useRootPrefix = workspaceFolders.length > 1;
+    for (const folder of workspaceFolders) {
+      const rel = path.relative(folder.uri.fsPath, uri.fsPath);
+      if (rel.startsWith('..') || path.isAbsolute(rel)) {
+        continue;
+      }
+      const normalized = rel.split(path.sep).join('/');
+      return useRootPrefix
+        ? `${getWorkspaceFolderPrefix(folder, workspaceFolders)}/${normalized}`
+        : normalized;
+    }
+    return undefined;
   }
 
   dispose(): void {

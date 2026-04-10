@@ -205,6 +205,7 @@ export type ExtensionToWebviewMessage =
   | { type: 'clearMessages' }
   | { type: 'clearContextFiles' }
   | { type: 'toolCallProgress'; payload: { msgId: string; filePath: string } }
+  | { type: 'commandChunk'; payload: { msgId: string; command: string; chunk: string } }
   | { type: 'commandOutput'; payload: { msgId: string; command: string; stdout: string; exitCode: number } }
   | { type: 'contextUsage'; payload: { pct: number; label: string } }
   | { type: 'sessionListLoaded'; payload: { sessions: SessionIndexEntry[] } }
@@ -253,10 +254,18 @@ export function validateSendMessagePayload(raw: unknown): SendMessagePayload {
   if (!Array.isArray(subAgents)) {
     throw new ValidationError('subAgents must be an array.');
   }
+  const seenSubAgents = new Set<string>();
   for (const agent of subAgents) {
     if (typeof agent !== 'string' || !VALID_AGENT_NAMES.has(agent)) {
       throw new ValidationError(`Invalid sub-agent name: ${String(agent)}`);
     }
+    if (agent === mainAgent) {
+      throw new ValidationError('subAgents must not include the mainAgent.');
+    }
+    if (seenSubAgents.has(agent)) {
+      throw new ValidationError(`Duplicate sub-agent name: ${agent}`);
+    }
+    seenSubAgents.add(agent);
   }
 
   return {
@@ -288,15 +297,15 @@ export function validateApplyChangesPayload(raw: unknown): ApplyChangesPayload {
       throw new ValidationError('Each fileChange must be an object.');
     }
     const c = change as Record<string, unknown>;
-    if (typeof c['filePath'] !== 'string' || (c['filePath'] as string).trim().length === 0) {
+    if (typeof c['filePath'] !== 'string' || (c['filePath']).trim().length === 0) {
       throw new ValidationError('fileChange.filePath must be a non-empty string.');
     }
-    if ((c['filePath'] as string).includes('..')) {
+    if ((c['filePath']).includes('..')) {
       throw new ValidationError(
         `fileChange.filePath must not contain directory traversal: ${String(c['filePath'])}`,
       );
     }
-    if (path.isAbsolute((c['filePath'] as string).trim())) {
+    if (path.isAbsolute((c['filePath']).trim())) {
       throw new ValidationError(
         `fileChange.filePath must be a relative path: ${String(c['filePath'])}`,
       );

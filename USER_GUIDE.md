@@ -204,11 +204,17 @@ Click **Discard** to dismiss the proposed changes without writing anything. The 
 
 ---
 
-## Running Shell Commands
+## Verification After Applying Changes
 
-During any round, the AI may suggest a command to run. When it does, the command appears as a clickable **▶ button** in the chat. Clicking it shows an approve/deny dialog before anything executes.
+For **Developer** and **QA** rounds, the AI suggests a verification command to run after your file changes are written to disk (e.g. `npm test`, `npx jest --coverage`). This happens automatically as part of **Apply All Changes**:
 
-The command runs in your workspace root. **Timeout:** The default timeout is 60 seconds. Long-running commands may be cut off. Run specific test files or subsets rather than full test suites when iterating.
+1. Click **Apply All Changes** — files are written to disk.
+2. If a dependency file changed (e.g. `package.json`), a dialog offers to run the install command first.
+3. A dialog then asks: `Run verification command? npm test` — click **Run** to execute it.
+4. If the command fails, the output is shown in a collapsible bubble and automatically sent to the AI for diagnosis and fix suggestions.
+5. The AI proposes corrected files — apply them and the verification dialog appears again.
+
+**Timeout:** The default command timeout is 60 seconds (configurable up to 600 seconds via `aiRoundtable.runnerTimeout` in settings). Long-running commands may be cut off — use targeted commands (e.g. `npx jest --testPathPattern=auth`) rather than full test suites when iterating.
 
 ---
 
@@ -256,6 +262,8 @@ Toggle the tier using the **Light / Heavy** selector in the panel. The current t
    "Implement the password reset feature per file-structure.md"
    → File changes proposed → Apply All Changes
    → package.json changed? → Approve: npm install
+   → "Run verification command? npm test" → Approve
+   → Failures? → AI diagnoses and proposes fixes → Apply → repeat
 
 4. Reviewer round (GPT main, Claude sub)
    "Review the password reset implementation"
@@ -264,10 +272,7 @@ Toggle the tier using the **Light / Heavy** selector in the panel. The current t
 5. QA round (Claude main)
    "Write tests for the password reset flow targeting 80% branch coverage"
    → Test files proposed → Apply
-
-6. Ask the AI to run tests (Developer round)
-   "RUN: npm test -- --testPathPattern=passwordReset"
-   → Click the ▶ button → Approve → All green, or fix and retry
+   → "Run verification command? npm test" → Approve → confirm all pass
 ```
 
 ---
@@ -281,10 +286,7 @@ Toggle the tier using the **Light / Heavy** selector in the panel. The current t
    "The createOrder function throws a TypeError when items is undefined.
     Add a guard clause and throw a ValidationError instead."
    → AI reads the file, writes the fix → Apply
-
-3. Developer round
-   "RUN: npm test -- --testPathPattern=orders"
-   → Click the ▶ button → Approve → Confirm fix passes
+   → "Run verification command? npm test" → Approve → confirm fix passes
 ```
 
 ---
@@ -313,10 +315,8 @@ Toggle the tier using the **Light / Heavy** selector in the panel. The current t
    "Add missing test coverage for WorkspaceWriter.applyChanges — 
     focus on error paths and edge cases"
    → AI reads existing tests, extends them → Apply
-
-3. QA round
-   "RUN: npx jest --coverage src/workspace/WorkspaceWriter.ts"
-   → Click the ▶ button → Approve → Check coverage report → Fix and retry
+   → "Run verification command? npx jest --coverage ..."
+   → Approve → check coverage report → fix gaps and repeat
 ```
 
 ---
@@ -325,7 +325,7 @@ Toggle the tier using the **Light / Heavy** selector in the panel. The current t
 
 ```
 Documentation round (Claude main)
-   "Generate an accurate README for this project. 
+   "Generate an accurate README for this project.
     The source files are the source of truth."
    → AI reads source files → write_file: README.md
    → Review diff → Apply
@@ -353,8 +353,8 @@ Conversation history persists within a round. You can ask follow-up questions, r
 **Run the Reviewer round before merging.**
 The Reviewer round checks OWASP Top 10 automatically and enforces a two-step process (findings first, fixes after confirmation) to prevent accidental changes. Use it as a final gate before any PR.
 
-**When running commands via the ▶ button, use targeted commands.**
-`npm test -- --testPathPattern=auth` is faster to iterate on than `npm test`. The AI's output is also more focused when the command is specific to the code you changed.
+**Use targeted verification commands.**
+When the AI prompts "Run verification command?", the suggested command is often `npm test` (full suite). If the suite is large, click **Deny** and ask the AI to verify with a narrower command instead (e.g. "verify with `npx jest --testPathPattern=auth`"). The AI's diagnosis is also more focused when the output is specific to the code you changed.
 
 **Cancel and retry if a response is wrong.**
 The Cancel button appears while a request is running. If the response takes an unexpected direction, cancel early and rephrase your request with more specific constraints.

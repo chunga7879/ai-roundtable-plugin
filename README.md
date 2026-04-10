@@ -64,14 +64,15 @@ Choose **GitHub Copilot** (default) or **API Keys**. If you choose API Keys, you
 5. Review the response — file changes proposed by the AI appear in a **Proposed Changes** panel
 6. Click a file to preview the diff, then **Apply All Changes** or **Discard**
 7. If dependency files changed (e.g. `package.json`), an approve/deny dialog offers to run the install command automatically
-
-### Shell commands
-
-When the AI needs to run a command to complete its task, it outputs a `RUN: <command>` line which renders as a clickable **▶ command** button. Clicking shows an approve/deny dialog before anything executes.
+8. If the AI suggested a verification command (e.g. `npm test`), a second approve/deny dialog follows — approving runs the command and feeds any failure back to the AI for analysis
 
 ### File deletions
 
-When the AI deletes a file via the `delete_file` tool, the file appears with a red **DEL** badge in the Proposed Changes panel.
+When the AI removes a file via the `delete_file` tool, the file appears with a red **DEL** badge in the Proposed Changes panel and is deleted from disk when you click **Apply All Changes**.
+
+### Verification after Apply
+
+For Developer and QA rounds, the AI outputs a `VERIFY:` token at the end of its response specifying a command to run after your changes are on disk (e.g. `npm test`, `npx jest --coverage`). This token is stripped from the displayed response and surfaced as an approve/deny dialog immediately after **Apply All Changes**. If the command fails, the output is automatically sent back to the AI for diagnosis and fix suggestions.
 
 ### Round types
 
@@ -85,10 +86,6 @@ When the AI deletes a file via the `delete_file` tool, the file appears with a r
 | **DevOps** | Dockerfile, CI/CD pipelines, environment configuration |
 | **Documentation** | Generating README, API docs, CHANGELOG |
 
-### Running a shell command
-
-During any round, the AI may output a `RUN: <command>` line which renders as a clickable **▶ command** button. Clicking shows an approve/deny dialog before anything executes. The command runs in your workspace root with a configurable timeout (default 60 seconds).
-
 ---
 
 ## Project structure
@@ -101,16 +98,16 @@ src/
 ├── prompts/
 │   └── roundPrompts.ts   ← System prompts for all round types
 ├── agents/
-│   ├── AgentRunner.ts    ← 3-step pipeline (main → sub-verify → reflect)
+│   ├── AgentRunner.ts    ← 3-step pipeline (main → sub-verify → reflect) + VERIFY: parsing
 │   ├── CopilotProvider.ts← vscode.lm API (GitHub Copilot)
 │   └── ApiKeyProvider.ts ← Direct HTTPS: Anthropic / OpenAI / Google / DeepSeek
 ├── workspace/
 │   ├── WorkspaceReader.ts← Collects open files as AI context
-│   └── WorkspaceWriter.ts← Parses file changes, applies WorkspaceEdit
+│   └── WorkspaceWriter.ts← Applies file writes and deletes via WorkspaceEdit
 ├── sessions/
 │   └── SessionManager.ts ← Persists conversation history across sessions
 └── panels/
-    ├── ChatPanel.ts      ← Webview lifecycle, message routing
+    ├── ChatPanel.ts      ← Webview lifecycle, message routing, post-Apply verification flow
     ├── RoundOrchestrator.ts ← Coordinates pipeline per round type
     └── webview/
         └── index.html    ← Chat UI (vanilla JS, sandboxed)
@@ -146,5 +143,6 @@ This can happen if the Copilot API is temporarily unresponsive. The extension wi
 - **Copilot mode uses a single model for all agents** — sub-agents and main agent are the same underlying Copilot model, differentiated only by their system prompt role.
 - **Conversation history resets when you switch round type** — switching from Developer to Reviewer starts a new conversation.
 - **Max 50 workspace files** — large projects will have files truncated or omitted. Open the most relevant files before sending a request.
-- **Shell command timeout: configurable (default 60 seconds)** — long-running commands (e.g. full test suites) may be cut off.
-- **Max 50 file changes per response** — responses proposing more than 50 files will have the excess silently dropped.
+- **Shell command timeout: configurable (default 60 seconds, max 600)** — long-running commands may be cut off.
+- **Max 50 KB per file** — files larger than 50 KB are truncated when read by the AI.
+- **Max 100 tool calls per turn** — read_file, write_file, delete_file, and run_command calls combined.

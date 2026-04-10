@@ -3,6 +3,7 @@ import * as path from 'path';
 import type { FileChange } from '../types';
 import { WorkspaceError } from '../errors';
 import { DIFF_SCHEME, diffContentStore } from '../extension';
+import { resolveWorkspacePath as resolveWorkspacePathWithPrefix } from './WorkspacePath';
 
 /** Re-exported for backwards compatibility */
 export class WorkspaceWriterError extends WorkspaceError {
@@ -18,9 +19,9 @@ export function normalizePath(rawPath: string): string | null {
     .replace(/^\.\//, '')
     .replace(/^\//, '');
 
-  if (!normalized) return null;
-  if (normalized.includes('..')) return null;
-  if (path.isAbsolute(normalized)) return null;
+  if (!normalized) {return null;}
+  if (normalized.includes('..')) {return null;}
+  if (path.isAbsolute(normalized)) {return null;}
 
   return normalized;
 }
@@ -35,10 +36,7 @@ export class WorkspaceWriter {
       );
     }
 
-    const workspaceRoot = workspaceFolders[0].uri.fsPath;
-    const targetUri = vscode.Uri.file(
-      path.join(workspaceRoot, fileChange.filePath),
-    );
+    const targetUri = this.resolveTargetUri(fileChange.filePath, workspaceFolders);
 
     const newContentUri = this.createVirtualDocument(
       fileChange.filePath,
@@ -80,14 +78,13 @@ export class WorkspaceWriter {
       return { appliedFiles: [], newFiles: [], deletedFiles: [] };
     }
 
-    const workspaceRoot = workspaceFolders[0].uri;
     const edit = new vscode.WorkspaceEdit();
     const appliedFiles: string[] = [];
     const newFiles: string[] = [];
     const deletedFiles: string[] = [];
 
     for (const change of fileChanges) {
-      const targetUri = vscode.Uri.joinPath(workspaceRoot, change.filePath);
+      const targetUri = this.resolveTargetUri(change.filePath, workspaceFolders);
 
       if (change.isDeleted) {
         const fileExists = await this.fileExists(targetUri);
@@ -136,8 +133,7 @@ export class WorkspaceWriter {
       );
     }
 
-    const workspaceRoot = workspaceFolders[0].uri;
-    const targetUri = vscode.Uri.joinPath(workspaceRoot, fileChange.filePath);
+    const targetUri = this.resolveTargetUri(fileChange.filePath, workspaceFolders);
     const edit = new vscode.WorkspaceEdit();
     const fileExists = await this.fileExists(targetUri);
     const encodedContent = Buffer.from(fileChange.content, 'utf-8');
@@ -181,6 +177,25 @@ export class WorkspaceWriter {
     const key = '/' + label.replace(/[/\\]/g, '_');
     diffContentStore.set(key, content);
     return vscode.Uri.parse(`${DIFF_SCHEME}:${key}`);
+  }
+
+  private resolveTargetUri(
+    rawPath: string,
+    workspaceFolders: readonly vscode.WorkspaceFolder[],
+  ): vscode.Uri {
+    const normalized = normalizePath(rawPath);
+    if (!normalized) {
+      throw new WorkspaceWriterError(`Invalid file path: ${rawPath}`);
+    }
+
+    const resolved = resolveWorkspacePathWithPrefix(normalized, workspaceFolders);
+    if (resolved) {
+      return vscode.Uri.joinPath(resolved.folder.uri, resolved.relativePath);
+    }
+
+    throw new WorkspaceWriterError(
+      `In multi-root workspaces, file paths must start with "<workspace-folder-prefix>/". Received: ${rawPath}`,
+    );
   }
 }
 

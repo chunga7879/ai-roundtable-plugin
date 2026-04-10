@@ -151,6 +151,7 @@ export const workspace = {
   workspaceFolders: undefined as
     | Array<{ uri: Uri; name: string; index: number }>
     | undefined,
+  textDocuments: [] as Array<{ uri: Uri; isUntitled: boolean; isDirty?: boolean; getText?: () => string }>,
   getConfiguration: jest.fn().mockReturnValue({
     get: jest.fn(),
     update: jest.fn().mockResolvedValue(undefined),

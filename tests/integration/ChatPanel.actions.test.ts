@@ -2,7 +2,7 @@
  * Integration tests for ChatPanel — additional message types and branches.
  *
  * Covers: clearChat, retryLastMessage, cancelRequest, setModelTier,
- * requestSessionList, restoreSession, executeCommand (approve/deny),
+ * requestSessionList, restoreSession,
  * handleSendMessage round-type-change path, context usage posting,
  * applyChanges with install-command suggestion, handleSendMessage with empty prose.
  */
@@ -114,6 +114,29 @@ describe('ChatPanel — clearChat', () => {
     expect(msgs.some((m) => m.type === 'clearMessages')).toBe(true);
     expect(msgs.some((m) => m.type === 'clearFileChanges')).toBe(true);
   });
+
+  it('handles clearChat while a request is in-flight', async () => {
+    const slowModel = {
+      sendRequest: jest.fn().mockResolvedValue({
+        stream: (async function* () {
+          yield new vscode.LanguageModelTextPart('chunk 1');
+          await new Promise((r) => setTimeout(r, 40));
+          yield new vscode.LanguageModelTextPart('chunk 2');
+        })(),
+      }),
+    };
+    const { panel } = await setupPanel(makeConfigManager(), slowModel);
+    const handler = (panel as unknown as { _messageHandler: (m: unknown) => void })._messageHandler;
+
+    handler(validSendMessage);
+    await new Promise((r) => setTimeout(r, 5));
+    handler({ type: 'clearChat' });
+    await new Promise((r) => setTimeout(r, 120));
+
+    const msgs = panel._sentMessages as Array<{ type: string }>;
+    expect(msgs.some((m) => m.type === 'clearMessages')).toBe(true);
+    expect(msgs.some((m) => m.type === 'clearFileChanges')).toBe(true);
+  });
 });
 
 // ── retryLastMessage ──────────────────────────────────────────────────────────
@@ -218,56 +241,6 @@ describe('ChatPanel — setModelTier', () => {
   });
 });
 
-// ── executeCommand ─────────────────────────────────────────────────────────────
-
-describe('ChatPanel — executeCommand', () => {
-  afterEach(() => {
-    (vscode.workspace as { workspaceFolders: unknown }).workspaceFolders = undefined;
-  });
-
-  it('shows approval dialog and creates terminal when user approves', async () => {
-    (vscode.window.showWarningMessage as jest.Mock).mockResolvedValue('Run');
-    const { panel } = await setupPanel(makeConfigManager());
-    const handler = (panel as unknown as { _messageHandler: (m: unknown) => void })._messageHandler;
-
-    handler({ type: 'executeCommand', payload: { command: 'npm run build' } });
-    await new Promise((r) => setTimeout(r, 30));
-
-    expect(vscode.window.showWarningMessage).toHaveBeenCalled();
-    expect(vscode.window.createTerminal).toHaveBeenCalled();
-  });
-
-  it('does not create terminal when user denies the dialog', async () => {
-    (vscode.window.showWarningMessage as jest.Mock).mockResolvedValue(undefined);
-    const { panel } = await setupPanel(makeConfigManager());
-    const handler = (panel as unknown as { _messageHandler: (m: unknown) => void })._messageHandler;
-
-    handler({ type: 'executeCommand', payload: { command: 'npm run build' } });
-    await new Promise((r) => setTimeout(r, 30));
-
-    expect(vscode.window.createTerminal).not.toHaveBeenCalled();
-  });
-
-  it('ignores empty command string', async () => {
-    const { panel } = await setupPanel(makeConfigManager());
-    const handler = (panel as unknown as { _messageHandler: (m: unknown) => void })._messageHandler;
-
-    handler({ type: 'executeCommand', payload: { command: '   ' } });
-    await new Promise((r) => setTimeout(r, 20));
-
-    expect(vscode.window.showWarningMessage).not.toHaveBeenCalled();
-  });
-
-  it('ignores missing command field', async () => {
-    const { panel } = await setupPanel(makeConfigManager());
-    const handler = (panel as unknown as { _messageHandler: (m: unknown) => void })._messageHandler;
-
-    handler({ type: 'executeCommand', payload: {} });
-    await new Promise((r) => setTimeout(r, 20));
-
-    expect(vscode.window.showWarningMessage).not.toHaveBeenCalled();
-  });
-});
 
 // ── sendMessage — round type change clears history ────────────────────────────
 
@@ -281,8 +254,16 @@ describe('ChatPanel — sendMessage round type change', () => {
     const { panel } = await setupPanel(makeConfigManager(), fakeModel);
     const handler = (panel as unknown as { _messageHandler: (m: unknown) => void })._messageHandler;
 
-    // First message: DEVELOPER round
-    handler(validSendMessage);
+    // First message: non-default round (ensures currentRoundType is initialized)
+    handler({
+      type: 'sendMessage',
+      payload: {
+        userMessage: 'Write tests',
+        roundType: RoundType.QA,
+        mainAgent: AgentName.CLAUDE,
+        subAgents: [],
+      },
+    });
     await new Promise((r) => setTimeout(r, 80));
 
     panel._sentMessages.length = 0;
@@ -299,8 +280,10 @@ describe('ChatPanel — sendMessage round type change', () => {
     });
     await new Promise((r) => setTimeout(r, 80));
 
-    const msgs = panel._sentMessages as Array<{ type: string }>;
-    expect(msgs.some((m) => m.type === 'setLoading')).toBe(true);
+    const msgs = panel._sentMessages as Array<{ type: string; payload?: { roundType?: RoundType } }>;
+    const roundChanged = msgs.find((m) => m.type === 'roundChanged');
+    expect(roundChanged).toBeDefined();
+    expect(roundChanged?.payload?.roundType).toBe(RoundType.REVIEWER);
   });
 });
 
@@ -517,5 +500,231 @@ describe('ChatPanel.refreshConfig', () => {
 
     const msgs = panel._sentMessages as Array<{ type: string }>;
     expect(msgs.some((m) => m.type === 'configLoaded')).toBe(true);
+  });
+});
+
+// ── ChatPanel — VERIFY: dialog after Apply ────────────────────────────────────
+
+describe('ChatPanel — VERIFY: dialog after Apply', () => {
+  afterEach(() => {
+    (vscode.workspace as { workspaceFolders: unknown }).workspaceFolders = undefined;
+  });
+
+  it('shows VERIFY: dialog when pendingVerifyCommand is set after sendMessage with file changes', async () => {
+    const model = {
+      sendRequest: jest.fn().mockResolvedValue({
+        stream: (async function* () {
+          yield new vscode.LanguageModelToolCallPart('c1', 'write_file', {
+            path: 'src/out.ts',
+            content: 'export const x = 1;',
+          });
+          yield new vscode.LanguageModelTextPart('Done.\n\nVERIFY: npm test');
+        })(),
+      }),
+    };
+
+    const { panel } = await setupPanel(makeConfigManager(), model);
+
+    // Set up mocks AFTER setupPanel (which calls jest.clearAllMocks internally)
+    (vscode.workspace.applyEdit as jest.Mock).mockResolvedValue(true);
+    (vscode.workspace.fs.stat as jest.Mock).mockResolvedValue({ size: 10, type: 1 });
+    (vscode.window.showWarningMessage as jest.Mock).mockResolvedValue(undefined);
+    (vscode.workspace as { workspaceFolders: unknown }).workspaceFolders = [
+      { uri: vscode.Uri.file('/workspace'), name: 'test', index: 0 },
+    ];
+
+    const handler = (panel as unknown as { _messageHandler: (m: unknown) => void })._messageHandler;
+
+    // Send a message to trigger the agent (with file changes + VERIFY: token)
+    handler({
+      type: 'sendMessage',
+      payload: {
+        userMessage: 'Build something',
+        roundType: RoundType.DEVELOPER,
+        mainAgent: AgentName.CLAUDE,
+        subAgents: [] as string[],
+      },
+    });
+    await new Promise((r) => setTimeout(r, 150));
+
+    // Now apply changes
+    handler({
+      type: 'applyChanges',
+      payload: {
+        fileChanges: [
+          { filePath: 'src/out.ts', content: 'export const x = 1;', isNew: true },
+        ],
+      },
+    });
+    await new Promise((r) => setTimeout(r, 150));
+
+    expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+      expect.stringContaining('npm test'),
+      expect.anything(),
+      'Run',
+    );
+  });
+
+  it('does NOT show VERIFY: dialog when response has no VERIFY: token', async () => {
+    const model = {
+      sendRequest: jest.fn().mockResolvedValue({
+        stream: (async function* () {
+          yield new vscode.LanguageModelToolCallPart('c1', 'write_file', {
+            path: 'src/out.ts',
+            content: 'export const x = 1;',
+          });
+          yield new vscode.LanguageModelTextPart('Done. No verify token here.');
+        })(),
+      }),
+    };
+
+    const { panel } = await setupPanel(makeConfigManager(), model);
+
+    (vscode.workspace.applyEdit as jest.Mock).mockResolvedValue(true);
+    (vscode.workspace.fs.stat as jest.Mock).mockResolvedValue({ size: 10, type: 1 });
+    (vscode.window.showWarningMessage as jest.Mock).mockResolvedValue(undefined);
+    (vscode.workspace as { workspaceFolders: unknown }).workspaceFolders = [
+      { uri: vscode.Uri.file('/workspace'), name: 'test', index: 0 },
+    ];
+
+    const handler = (panel as unknown as { _messageHandler: (m: unknown) => void })._messageHandler;
+
+    handler({
+      type: 'sendMessage',
+      payload: {
+        userMessage: 'Build something',
+        roundType: RoundType.DEVELOPER,
+        mainAgent: AgentName.CLAUDE,
+        subAgents: [] as string[],
+      },
+    });
+    await new Promise((r) => setTimeout(r, 150));
+
+    handler({
+      type: 'applyChanges',
+      payload: {
+        fileChanges: [
+          { filePath: 'src/out.ts', content: 'export const x = 1;', isNew: true },
+        ],
+      },
+    });
+    await new Promise((r) => setTimeout(r, 150));
+
+    // showWarningMessage may be called for install commands, but not for verification
+    const calls = (vscode.window.showWarningMessage as jest.Mock).mock.calls;
+    const verifyCall = calls.find((args: unknown[]) =>
+      typeof args[0] === 'string' && args[0].includes('Run verification command'),
+    );
+    expect(verifyCall).toBeUndefined();
+  });
+
+  it('pendingVerifyCommand cleared by rejectChanges — VERIFY: dialog not shown on subsequent apply', async () => {
+    const model = {
+      sendRequest: jest.fn().mockResolvedValue({
+        stream: (async function* () {
+          yield new vscode.LanguageModelToolCallPart('c1', 'write_file', {
+            path: 'src/out.ts',
+            content: 'export const x = 1;',
+          });
+          yield new vscode.LanguageModelTextPart('Done.\n\nVERIFY: npm test');
+        })(),
+      }),
+    };
+
+    const { panel } = await setupPanel(makeConfigManager(), model);
+
+    (vscode.workspace.applyEdit as jest.Mock).mockResolvedValue(true);
+    (vscode.workspace.fs.stat as jest.Mock).mockResolvedValue({ size: 10, type: 1 });
+    (vscode.window.showWarningMessage as jest.Mock).mockResolvedValue(undefined);
+    (vscode.workspace as { workspaceFolders: unknown }).workspaceFolders = [
+      { uri: vscode.Uri.file('/workspace'), name: 'test', index: 0 },
+    ];
+
+    const handler = (panel as unknown as { _messageHandler: (m: unknown) => void })._messageHandler;
+
+    // Send message with VERIFY: token + file changes
+    handler({
+      type: 'sendMessage',
+      payload: {
+        userMessage: 'Build something',
+        roundType: RoundType.DEVELOPER,
+        mainAgent: AgentName.CLAUDE,
+        subAgents: [] as string[],
+      },
+    });
+    await new Promise((r) => setTimeout(r, 150));
+
+    // Reject changes — this should clear pendingVerifyCommand
+    handler({ type: 'rejectChanges' });
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Reset mock call tracking
+    (vscode.window.showWarningMessage as jest.Mock).mockClear();
+
+    // Apply a subsequent batch — VERIFY: dialog should NOT appear
+    handler({
+      type: 'applyChanges',
+      payload: {
+        fileChanges: [
+          { filePath: 'src/out.ts', content: 'some content', isNew: false },
+        ],
+      },
+    });
+    await new Promise((r) => setTimeout(r, 150));
+
+    const calls = (vscode.window.showWarningMessage as jest.Mock).mock.calls;
+    const verifyCall = calls.find((args: unknown[]) =>
+      typeof args[0] === 'string' && args[0].includes('Run verification command'),
+    );
+    expect(verifyCall).toBeUndefined();
+  });
+
+  it('pendingVerifyCommand NOT set when fileChanges = 0 — VERIFY: dialog not shown after applyChanges', async () => {
+    // Agent emits VERIFY: token but NO write_file calls → fileChanges = 0 → pendingVerifyCommand not set
+    const model = {
+      sendRequest: jest.fn().mockResolvedValue({
+        stream: (async function* () {
+          yield new vscode.LanguageModelTextPart('Done.\n\nVERIFY: npm test');
+        })(),
+      }),
+    };
+
+    const { panel } = await setupPanel(makeConfigManager(), model);
+
+    (vscode.workspace.applyEdit as jest.Mock).mockResolvedValue(true);
+    (vscode.workspace.fs.stat as jest.Mock).mockResolvedValue({ size: 10, type: 1 });
+    (vscode.window.showWarningMessage as jest.Mock).mockResolvedValue(undefined);
+    (vscode.workspace as { workspaceFolders: unknown }).workspaceFolders = [
+      { uri: vscode.Uri.file('/workspace'), name: 'test', index: 0 },
+    ];
+
+    const handler = (panel as unknown as { _messageHandler: (m: unknown) => void })._messageHandler;
+
+    handler({
+      type: 'sendMessage',
+      payload: {
+        userMessage: 'Build something',
+        roundType: RoundType.DEVELOPER,
+        mainAgent: AgentName.CLAUDE,
+        subAgents: [] as string[],
+      },
+    });
+    await new Promise((r) => setTimeout(r, 150));
+
+    handler({
+      type: 'applyChanges',
+      payload: {
+        fileChanges: [
+          { filePath: 'src/dummy.ts', content: 'const x = 1;', isNew: false },
+        ],
+      },
+    });
+    await new Promise((r) => setTimeout(r, 150));
+
+    const calls = (vscode.window.showWarningMessage as jest.Mock).mock.calls;
+    const verifyCall = calls.find((args: unknown[]) =>
+      typeof args[0] === 'string' && args[0].includes('Run verification command'),
+    );
+    expect(verifyCall).toBeUndefined();
   });
 });

@@ -6,6 +6,9 @@ const mockWindow = window as unknown as {
   activeTextEditor: typeof window.activeTextEditor;
   visibleTextEditors: typeof window.visibleTextEditors;
 };
+const mockWorkspaceWithDocs = mockWorkspace as unknown as {
+  textDocuments: Array<{ uri: Uri; isUntitled: boolean; isDirty?: boolean; getText?: () => string }>;
+};
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -23,6 +26,7 @@ function resetWorkspace() {
   (mockWorkspace as { workspaceFolders: unknown }).workspaceFolders = undefined;
   mockWindow.activeTextEditor = undefined;
   mockWindow.visibleTextEditors = [];
+  mockWorkspaceWithDocs.textDocuments = [];
   jest.clearAllMocks();
 }
 
@@ -258,6 +262,88 @@ describe('WorkspaceReader', () => {
       expect(result.isError).toBe(true);
       expect(result.content).toContain('No workspace folder');
     });
+
+    it('prefers unsaved dirty editor content over disk content', async () => {
+      setupWorkspaceRoot('/workspace');
+      mockWorkspaceWithDocs.textDocuments = [
+        {
+          uri: makeUri('/workspace/src/app.ts'),
+          isUntitled: false,
+          isDirty: true,
+          getText: () => 'const fromEditor = true;',
+        },
+      ];
+      mockWorkspace.fs.stat = jest.fn().mockResolvedValue({ size: 100, type: FileType.File });
+      mockWorkspace.fs.readFile = jest.fn().mockResolvedValue(Buffer.from('const fromDisk = true;'));
+
+      const reader = new WorkspaceReader();
+      const result = await reader.readFileForTool('src/app.ts');
+
+      expect(result.isError).toBe(false);
+      expect(result.content).toBe('const fromEditor = true;');
+      expect(mockWorkspace.fs.readFile).not.toHaveBeenCalled();
+    });
+
+    it('does not expose dirty content for excluded files like .env', async () => {
+      setupWorkspaceRoot('/workspace');
+      mockWorkspaceWithDocs.textDocuments = [
+        {
+          uri: makeUri('/workspace/.env'),
+          isUntitled: false,
+          isDirty: true,
+          getText: () => 'SECRET=from-editor',
+        },
+      ];
+
+      const reader = new WorkspaceReader();
+      const result = await reader.readFileForTool('.env');
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain('excluded');
+    });
+
+    it('requires workspace folder prefix for multi-root paths', async () => {
+      (mockWorkspace as { workspaceFolders: unknown }).workspaceFolders = [
+        { uri: makeUri('/workspace-a'), name: 'a', index: 0 },
+        { uri: makeUri('/workspace-b'), name: 'b', index: 1 },
+      ];
+
+      const reader = new WorkspaceReader();
+      const result = await reader.readFileForTool('src/app.ts');
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain('multi-root');
+    });
+
+    it('reads file using prefixed path in multi-root workspace', async () => {
+      (mockWorkspace as { workspaceFolders: unknown }).workspaceFolders = [
+        { uri: makeUri('/workspace-a'), name: 'a', index: 0 },
+        { uri: makeUri('/workspace-b'), name: 'b', index: 1 },
+      ];
+      mockWorkspace.fs.stat = jest.fn().mockResolvedValue({ size: 100, type: FileType.File });
+      mockWorkspace.fs.readFile = jest.fn().mockResolvedValue(Buffer.from('const fromB = true;'));
+
+      const reader = new WorkspaceReader();
+      const result = await reader.readFileForTool('b/src/app.ts');
+
+      expect(result.isError).toBe(false);
+      expect(result.content).toBe('const fromB = true;');
+    });
+
+    it('supports duplicate workspace folder names via indexed prefix in multi-root', async () => {
+      (mockWorkspace as { workspaceFolders: unknown }).workspaceFolders = [
+        { uri: makeUri('/workspace-a'), name: 'repo', index: 0 },
+        { uri: makeUri('/workspace-b'), name: 'repo', index: 1 },
+      ];
+      mockWorkspace.fs.stat = jest.fn().mockResolvedValue({ size: 100, type: FileType.File });
+      mockWorkspace.fs.readFile = jest.fn().mockResolvedValue(Buffer.from('const fromSecond = true;'));
+
+      const reader = new WorkspaceReader();
+      const result = await reader.readFileForTool('1:repo/src/app.ts');
+
+      expect(result.isError).toBe(false);
+      expect(result.content).toBe('const fromSecond = true;');
+    });
   });
 
     it('sets activeFilePath relative to workspace root', async () => {
@@ -273,6 +359,62 @@ describe('WorkspaceReader', () => {
       const reader = new WorkspaceReader();
       const context = await reader.buildContext();
       expect(context.activeFilePath).toBe('src/app.ts');
+    });
+
+    it('prefixes paths with workspace folder name in multi-root buildContext', async () => {
+      (mockWorkspace as { workspaceFolders: unknown }).workspaceFolders = [
+        { uri: makeUri('/workspace-a'), name: 'a', index: 0 },
+        { uri: makeUri('/workspace-b'), name: 'b', index: 1 },
+      ];
+      mockWindow.activeTextEditor = {
+        document: {
+          uri: makeUri('/workspace-b/src/app.ts'),
+          isUntitled: false,
+        },
+      } as unknown as typeof window.activeTextEditor;
+      mockWorkspace.fs.readDirectory = jest.fn().mockImplementation((uri: Uri) => {
+        if (uri.fsPath === '/workspace-a') {
+          return Promise.resolve([['a.ts', FileType.File]]);
+        }
+        if (uri.fsPath === '/workspace-b') {
+          return Promise.resolve([['app.ts', FileType.File]]);
+        }
+        return Promise.resolve([]);
+      });
+
+      const reader = new WorkspaceReader();
+      const context = await reader.buildContext();
+      expect(context.activeFilePath).toBe('b/src/app.ts');
+      expect(context.files.some((f) => f.path === 'a/a.ts')).toBe(true);
+      expect(context.files.some((f) => f.path === 'b/app.ts')).toBe(true);
+    });
+
+    it('uses indexed prefixes in buildContext when workspace folder names collide', async () => {
+      (mockWorkspace as { workspaceFolders: unknown }).workspaceFolders = [
+        { uri: makeUri('/workspace-a'), name: 'repo', index: 0 },
+        { uri: makeUri('/workspace-b'), name: 'repo', index: 1 },
+      ];
+      mockWindow.activeTextEditor = {
+        document: {
+          uri: makeUri('/workspace-b/src/app.ts'),
+          isUntitled: false,
+        },
+      } as unknown as typeof window.activeTextEditor;
+      mockWorkspace.fs.readDirectory = jest.fn().mockImplementation((uri: Uri) => {
+        if (uri.fsPath === '/workspace-a') {
+          return Promise.resolve([['a.ts', FileType.File]]);
+        }
+        if (uri.fsPath === '/workspace-b') {
+          return Promise.resolve([['app.ts', FileType.File]]);
+        }
+        return Promise.resolve([]);
+      });
+
+      const reader = new WorkspaceReader();
+      const context = await reader.buildContext();
+      expect(context.activeFilePath).toBe('1:repo/src/app.ts');
+      expect(context.files.some((f) => f.path === '0:repo/a.ts')).toBe(true);
+      expect(context.files.some((f) => f.path === '1:repo/app.ts')).toBe(true);
     });
 
     // ── Security regression: workspace containment ──────────────────────────────

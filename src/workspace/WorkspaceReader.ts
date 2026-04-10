@@ -2,6 +2,10 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import type { WorkspaceContext, WorkspaceFile } from '../types';
 import { WorkspaceError } from '../errors';
+import {
+  formatWorkspacePath as formatWorkspacePathWithPrefix,
+  resolveWorkspacePath as resolveWorkspacePathWithPrefix,
+} from './WorkspacePath';
 
 const MAX_FILE_SIZE_BYTES = 50_000;
 const MAX_FILES_TO_INCLUDE = 50;
@@ -135,29 +139,41 @@ export class WorkspaceReader {
     if (!workspaceFolders || workspaceFolders.length === 0) {
       return { files: [] };
     }
+    const useRootPrefix = workspaceFolders.length > 1;
 
     let activeFilePath: string | undefined;
     let activeEditor: vscode.TextEditor | undefined;
+    let activeEditorRoot: vscode.WorkspaceFolder | undefined;
     try {
       activeEditor = vscode.window.activeTextEditor;
-      activeFilePath = activeEditor?.document.uri.fsPath;
+      if (activeEditor?.document.uri) {
+        activeEditorRoot = this.findContainingWorkspaceFolder(
+          activeEditor.document.uri.fsPath,
+          workspaceFolders,
+        );
+        if (activeEditorRoot) {
+          const rel = this.toRelativePath(activeEditor.document.uri.fsPath, activeEditorRoot.uri.fsPath);
+          if (!this.isExcludedRelativePath(rel, activeEditorRoot.uri.fsPath)) {
+            activeFilePath = this.formatWorkspacePath(rel, activeEditorRoot, useRootPrefix, workspaceFolders);
+          }
+        }
+      }
     } catch {
       // activeTextEditor may throw in some environments — degrade gracefully
     }
 
-    const filesToInclude: vscode.Uri[] = [];
-
-    // Priority 3: Files in workspace (breadth-first, respecting limits)
-    const rootUri = workspaceFolders[0].uri;
-
-    const isInsideWorkspace = (uri: vscode.Uri): boolean => {
-      const rel = path.relative(rootUri.fsPath, uri.fsPath);
-      return !rel.startsWith('..') && !path.isAbsolute(rel);
-    };
+    const filesToInclude: Array<{ uri: vscode.Uri; root: vscode.WorkspaceFolder }> = [];
+    const includedFsPaths = new Set<string>();
 
     // Priority 1: Currently open/active file
-    if (activeEditor && !activeEditor.document.isUntitled && isInsideWorkspace(activeEditor.document.uri)) {
-      filesToInclude.push(activeEditor.document.uri);
+    if (
+      activeEditor &&
+      !activeEditor.document.isUntitled &&
+      activeEditorRoot &&
+      !includedFsPaths.has(activeEditor.document.uri.fsPath)
+    ) {
+      filesToInclude.push({ uri: activeEditor.document.uri, root: activeEditorRoot });
+      includedFsPaths.add(activeEditor.document.uri.fsPath);
     }
 
     // Priority 2: All visible editors
@@ -165,55 +181,62 @@ export class WorkspaceReader {
       for (const editor of vscode.window.visibleTextEditors) {
         if (!editor.document.isUntitled && editor !== activeEditor) {
           const uri = editor.document.uri;
-          if (isInsideWorkspace(uri) && !filesToInclude.some((f) => f.fsPath === uri.fsPath)) {
-            filesToInclude.push(uri);
+          const root = this.findContainingWorkspaceFolder(uri.fsPath, workspaceFolders);
+          if (root && !includedFsPaths.has(uri.fsPath)) {
+            filesToInclude.push({ uri, root });
+            includedFsPaths.add(uri.fsPath);
           }
         }
       }
     } catch {
       // visibleTextEditors access may fail in tests — degrade gracefully
     }
-    const workspaceFiles = await this.collectWorkspaceFiles(
-      rootUri,
-      MAX_FILES_TO_INCLUDE - filesToInclude.length,
-      filesToInclude.map((u) => u.fsPath),
-    );
 
-    for (const uri of workspaceFiles) {
-      if (!filesToInclude.some((f) => f.fsPath === uri.fsPath)) {
-        filesToInclude.push(uri);
+    // Priority 3: Files in workspace (breadth-first, respecting limits across all roots)
+    let remaining = Math.max(0, MAX_FILES_TO_INCLUDE - filesToInclude.length);
+    for (const folder of workspaceFolders) {
+      if (remaining <= 0) {
+        break;
+      }
+      const workspaceFiles = await this.collectWorkspaceFiles(
+        folder.uri,
+        remaining,
+        Array.from(includedFsPaths),
+      );
+      for (const uri of workspaceFiles) {
+        if (!includedFsPaths.has(uri.fsPath)) {
+          filesToInclude.push({ uri, root: folder });
+          includedFsPaths.add(uri.fsPath);
+          remaining--;
+          if (remaining <= 0) {
+            break;
+          }
+        }
       }
     }
 
     // Build file list without reading content — agent reads what it needs via read_file tool
     const files: WorkspaceFile[] = [];
-    for (const uri of filesToInclude) {
+    for (const { uri, root } of filesToInclude) {
       if (files.length >= MAX_FILES_TO_INCLUDE) {
         break;
       }
       const fsPath = uri.fsPath;
-      const relativePath = this.toRelativePath(fsPath, rootUri.fsPath);
-      const ext = path.extname(fsPath).toLowerCase();
-      // Apply the same exclusion checks as readWorkspaceFile to keep the list clean
-      const basename = path.basename(fsPath);
-      const lowerBasename = basename.toLowerCase();
-      if (
-        EXCLUDED_EXTENSIONS.has(ext) ||
-        EXCLUDED_SENSITIVE_EXTENSIONS.has(ext) ||
-        EXCLUDED_FILENAMES.has(basename) ||
-        EXCLUDED_FILENAME_PATTERNS.some((p) => p.test(lowerBasename)) ||
-        this.isInExcludedDir(fsPath, rootUri.fsPath)
-      ) {
+      const relativePath = this.toRelativePath(fsPath, root.uri.fsPath);
+      if (this.isExcludedRelativePath(relativePath, root.uri.fsPath)) {
         continue;
       }
-      files.push({ path: relativePath, content: '', language: this.getLanguage(ext) });
+      const ext = path.extname(fsPath).toLowerCase();
+      files.push({
+        path: this.formatWorkspacePath(relativePath, root, useRootPrefix, workspaceFolders),
+        content: '',
+        language: this.getLanguage(ext),
+      });
     }
 
     return {
       files,
-      activeFilePath: activeFilePath
-        ? this.toRelativePath(activeFilePath, rootUri.fsPath)
-        : undefined,
+      activeFilePath,
     };
   }
 
@@ -226,10 +249,26 @@ export class WorkspaceReader {
     if (!workspaceFolders || workspaceFolders.length === 0) {
       return [];
     }
-    const rootUri = workspaceFolders[0].uri;
-    const result: vscode.Uri[] = [];
-    await this.traverseDirectory(rootUri, rootUri.fsPath, result, 2000, []);
-    return result.map((u) => this.toRelativePath(u.fsPath, rootUri.fsPath));
+    const useRootPrefix = workspaceFolders.length > 1;
+    const result: string[] = [];
+    const seen = new Set<string>();
+
+    for (const folder of workspaceFolders) {
+      const uris: vscode.Uri[] = [];
+      await this.traverseDirectory(folder.uri, folder.uri.fsPath, uris, 2000, []);
+      for (const uri of uris) {
+        const rel = this.toRelativePath(uri.fsPath, folder.uri.fsPath);
+        if (this.isExcludedRelativePath(rel, folder.uri.fsPath)) {
+          continue;
+        }
+        const display = this.formatWorkspacePath(rel, folder, useRootPrefix, workspaceFolders);
+        if (!seen.has(display)) {
+          seen.add(display);
+          result.push(display);
+        }
+      }
+    }
+    return result;
   }
 
   /**
@@ -242,9 +281,6 @@ export class WorkspaceReader {
       return { content: 'No workspace folder is open.', isError: true };
     }
 
-    const rootUri = workspaceFolders[0].uri;
-    const rootFsPath = rootUri.fsPath;
-
     // Reject absolute paths and traversal before any normalization
     if (path.isAbsolute(relativePath) || relativePath.includes('..')) {
       return { content: `Invalid file path: ${relativePath}`, isError: true };
@@ -256,14 +292,123 @@ export class WorkspaceReader {
       return { content: `Invalid file path: ${relativePath}`, isError: true };
     }
 
-    const targetUri = vscode.Uri.joinPath(rootUri, normalized);
-    const workspaceFile = await this.readWorkspaceFile(targetUri, rootFsPath);
+    const resolved = this.resolveWorkspacePath(normalized, workspaceFolders);
+    if (!resolved) {
+      if (workspaceFolders.length > 1) {
+        return {
+          content: `Ambiguous file path: ${relativePath}. Use "<workspace-folder-prefix>/<path>" in multi-root workspaces.`,
+          isError: true,
+        };
+      }
+      return { content: `Invalid file path: ${relativePath}`, isError: true };
+    }
+
+    if (this.isExcludedRelativePath(resolved.relativePath, resolved.rootFsPath)) {
+      return { content: `File not found or excluded: ${relativePath}`, isError: true };
+    }
+
+    // Prefer unsaved in-editor content when available so tool reads reflect the latest edits.
+    const dirtyContent = this.getDirtyEditorContent(resolved.rootFsPath, resolved.relativePath);
+    if (dirtyContent !== undefined) {
+      return { content: dirtyContent, isError: false };
+    }
+
+    const targetUri = vscode.Uri.joinPath(resolved.rootUri, resolved.relativePath);
+    const workspaceFile = await this.readWorkspaceFile(targetUri, resolved.rootFsPath);
 
     if (!workspaceFile) {
       return { content: `File not found or excluded: ${relativePath}`, isError: true };
     }
 
     return { content: workspaceFile.content, isError: false };
+  }
+
+  private resolveWorkspacePath(
+    normalizedPath: string,
+    workspaceFolders: readonly vscode.WorkspaceFolder[],
+  ): { rootUri: vscode.Uri; rootFsPath: string; relativePath: string } | null {
+    const resolved = resolveWorkspacePathWithPrefix(normalizedPath, workspaceFolders);
+    if (!resolved) {
+      return null;
+    }
+    return {
+      rootUri: resolved.folder.uri,
+      rootFsPath: resolved.folder.uri.fsPath,
+      relativePath: resolved.relativePath,
+    };
+  }
+
+  private findContainingWorkspaceFolder(
+    fsPath: string,
+    workspaceFolders: readonly vscode.WorkspaceFolder[],
+  ): vscode.WorkspaceFolder | undefined {
+    for (const folder of workspaceFolders) {
+      const rel = path.relative(folder.uri.fsPath, fsPath);
+      if (!rel.startsWith('..') && !path.isAbsolute(rel)) {
+        return folder;
+      }
+    }
+    return undefined;
+  }
+
+  private formatWorkspacePath(
+    relativePath: string,
+    root: vscode.WorkspaceFolder,
+    useRootPrefix: boolean,
+    workspaceFolders: readonly vscode.WorkspaceFolder[],
+  ): string {
+    return useRootPrefix
+      ? formatWorkspacePathWithPrefix(relativePath, root, workspaceFolders)
+      : relativePath;
+  }
+
+  private isExcludedRelativePath(relativePath: string, workspaceRoot: string): boolean {
+    const ext = path.extname(relativePath).toLowerCase();
+    const basename = path.basename(relativePath);
+    const lowerBasename = basename.toLowerCase();
+    if (
+      EXCLUDED_EXTENSIONS.has(ext) ||
+      EXCLUDED_SENSITIVE_EXTENSIONS.has(ext) ||
+      EXCLUDED_FILENAMES.has(basename) ||
+      EXCLUDED_FILENAME_PATTERNS.some((p) => p.test(lowerBasename))
+    ) {
+      return true;
+    }
+
+    const absolutePath = path.join(workspaceRoot, relativePath);
+    return this.isInExcludedDir(absolutePath, workspaceRoot);
+  }
+
+  /**
+   * Returns unsaved editor content for a workspace-relative path, if present.
+   * This keeps AI reads aligned with what the user currently sees in the editor.
+   */
+  private getDirtyEditorContent(
+    workspaceRoot: string,
+    normalizedRelativePath: string,
+  ): string | undefined {
+    let textDocuments: readonly vscode.TextDocument[];
+    try {
+      textDocuments = vscode.workspace.textDocuments ?? [];
+    } catch {
+      return undefined;
+    }
+
+    for (const doc of textDocuments) {
+      if (doc.isUntitled || !doc.isDirty || typeof doc.getText !== 'function') {
+        continue;
+      }
+
+      const relative = this.toRelativePath(doc.uri.fsPath, workspaceRoot);
+      if (relative.startsWith('..') || path.isAbsolute(relative)) {
+        continue;
+      }
+
+      if (relative === normalizedRelativePath) {
+        return doc.getText();
+      }
+    }
+    return undefined;
   }
 
   private async readWorkspaceFile(

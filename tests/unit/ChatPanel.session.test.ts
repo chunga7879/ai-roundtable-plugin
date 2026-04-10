@@ -15,7 +15,7 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import { ChatPanel } from '../../src/panels/ChatPanel';
 import type { FileChange } from '../../src/types';
-import { ProviderMode, RoundType } from '../../src/types';
+import { AgentName, ProviderMode, RoundType } from '../../src/types';
 
 const flushPromises = () => new Promise<void>((resolve) => setImmediate(resolve));
 
@@ -114,6 +114,50 @@ describe('clearChat', () => {
 
     const writesAfter = (vscode.workspace.fs.writeFile as jest.Mock).mock.calls.length;
     expect(writesAfter).toBeGreaterThan(writesBefore);
+  });
+
+  it('does not create an extra session file when first message uses non-default round', async () => {
+    const configManager = {
+      ...makeConfigManager(),
+      getConfig: jest.fn().mockResolvedValue({
+        providerMode: ProviderMode.COPILOT,
+        anthropicApiKey: undefined,
+        openaiApiKey: undefined,
+        googleApiKey: undefined,
+        deepseekApiKey: undefined,
+        copilotModelFamily: undefined,
+        runnerTimeoutMs: 30_000,
+      }),
+    };
+    const { onMessage } = createPanel(configManager);
+    await flushPromises();
+
+    const writesBefore = (vscode.workspace.fs.writeFile as jest.Mock).mock.calls;
+    const sessionPathsBefore = new Set(
+      writesBefore
+        .map((c) => (c[0] as vscode.Uri).fsPath)
+        .filter((p) => p.endsWith('.json') && !p.endsWith('index.json')),
+    );
+
+    await onMessage?.({
+      type: 'sendMessage',
+      payload: {
+        userMessage: 'Run QA checks',
+        roundType: RoundType.QA,
+        mainAgent: AgentName.CLAUDE,
+        subAgents: [],
+      },
+    });
+    await flushPromises();
+
+    const writesAfter = (vscode.workspace.fs.writeFile as jest.Mock).mock.calls;
+    const sessionPathsAfter = new Set(
+      writesAfter
+        .map((c) => (c[0] as vscode.Uri).fsPath)
+        .filter((p) => p.endsWith('.json') && !p.endsWith('index.json')),
+    );
+
+    expect(sessionPathsAfter.size).toBe(sessionPathsBefore.size);
   });
 });
 

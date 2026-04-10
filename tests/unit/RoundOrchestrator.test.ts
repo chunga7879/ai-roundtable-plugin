@@ -537,6 +537,54 @@ describe('RoundOrchestrator.runCommandWithApproval — via run()', () => {
     const result = await orchestrator.run(makeParams());
     expect(result.status).toBe('success');
   });
+
+  it('prefers the workspace root inferred from the last touched multi-root file path', async () => {
+    (vscode.workspace as { workspaceFolders: unknown }).workspaceFolders = [
+      { uri: vscode.Uri.file('/var'), name: 'rootA', index: 0 },
+      { uri: vscode.Uri.file('/tmp'), name: 'rootB', index: 1 },
+    ];
+    (vscode.window.showWarningMessage as jest.Mock).mockResolvedValue('Run');
+
+    let requestCount = 0;
+    const model = {
+      sendRequest: jest.fn().mockImplementation(() => {
+        requestCount++;
+        if (requestCount === 1) {
+          return Promise.resolve({
+            stream: (async function* () {
+              yield new vscode.LanguageModelToolCallPart('c1', 'read_file', { path: 'rootB/src/app.ts' });
+              yield new vscode.LanguageModelToolCallPart('c2', 'run_command', { command: 'pwd' });
+              yield new vscode.LanguageModelTextPart('ran');
+            })(),
+          });
+        }
+        return Promise.resolve({
+          stream: (async function* () {
+            yield new vscode.LanguageModelTextPart('done');
+          })(),
+        });
+      }),
+    };
+    (vscode.lm.selectChatModels as jest.Mock).mockResolvedValue([model]);
+
+    const emitted: ExtensionToWebviewMessage[] = [];
+    const orchestrator = new RoundOrchestrator(
+      makeConfigManager() as never,
+      makeWorkspaceReader() as never,
+      (msg) => emitted.push(msg),
+    );
+
+    const result = await orchestrator.run(makeParams());
+    expect(result.status).toBe('success');
+
+    const commandOutput = emitted.find((m) => m.type === 'commandOutput') as
+      | { type: 'commandOutput'; payload: { stdout: string } }
+      | undefined;
+    expect(commandOutput).toBeDefined();
+    expect(commandOutput?.payload.stdout).toContain('/tmp');
+
+    (vscode.workspace as { workspaceFolders: unknown }).workspaceFolders = undefined;
+  });
 });
 
 // ── execCommand — success ─────────────────────────────────────────────────────

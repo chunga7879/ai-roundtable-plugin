@@ -191,6 +191,65 @@ describe('appendTurn', () => {
   });
 });
 
+// ── updateSessionRoundType ────────────────────────────────────────────────────
+
+describe('updateSessionRoundType', () => {
+  it('updates session file and index roundType', async () => {
+    const session = {
+      id: 'sess-1',
+      workspaceId: 'abc',
+      roundType: RoundType.DEVELOPER,
+      createdAt: 1000,
+      updatedAt: 1000,
+      turns: [] as { role: 'user' | 'assistant'; content: string }[],
+    };
+    const index = [{ id: 'sess-1', workspaceId: 'abc', roundType: RoundType.DEVELOPER, createdAt: 1000, updatedAt: 1000, turnCount: 0, preview: '' }];
+
+    mockFs.readFile.mockImplementation((uri: Uri) => {
+      if (uri.fsPath.includes('sess-1')) return Promise.resolve(encodeJson(session));
+      if (uri.fsPath.endsWith('index.json')) return Promise.resolve(encodeJson(index));
+      return Promise.reject(new Error('not found'));
+    });
+
+    const manager = makeManager();
+    await manager.updateSessionRoundType('sess-1', RoundType.QA);
+
+    const writeCalls = (mockFs.writeFile as jest.Mock).mock.calls;
+    const sessionWrite = writeCalls.find((call) => (call[0] as Uri).fsPath.includes('sess-1'));
+    const indexWrites = writeCalls.filter((call) => (call[0] as Uri).fsPath.endsWith('index.json'));
+
+    expect(sessionWrite).toBeDefined();
+    expect(indexWrites.length).toBeGreaterThan(0);
+
+    const writtenSession = JSON.parse(Buffer.from(sessionWrite![1] as Uint8Array).toString());
+    const writtenIndex = JSON.parse(Buffer.from(indexWrites[indexWrites.length - 1][1] as Uint8Array).toString());
+    expect(writtenSession.roundType).toBe(RoundType.QA);
+    expect(writtenIndex[0].roundType).toBe(RoundType.QA);
+  });
+
+  it('is a no-op when session roundType is already the same', async () => {
+    const session = {
+      id: 'sess-1',
+      workspaceId: 'abc',
+      roundType: RoundType.DEVELOPER,
+      createdAt: 1000,
+      updatedAt: 1000,
+      turns: [] as { role: 'user' | 'assistant'; content: string }[],
+    };
+    mockFs.readFile.mockImplementation((uri: Uri) => {
+      if (uri.fsPath.includes('sess-1')) return Promise.resolve(encodeJson(session));
+      if (uri.fsPath.endsWith('index.json')) return Promise.resolve(encodeJson([]));
+      return Promise.reject(new Error('not found'));
+    });
+
+    const writesBefore = (mockFs.writeFile as jest.Mock).mock.calls.length;
+    const manager = makeManager();
+    await manager.updateSessionRoundType('sess-1', RoundType.DEVELOPER);
+    const writesAfter = (mockFs.writeFile as jest.Mock).mock.calls.length;
+    expect(writesAfter).toBe(writesBefore);
+  });
+});
+
 // ── listSessions ──────────────────────────────────────────────────────────────
 
 describe('listSessions', () => {

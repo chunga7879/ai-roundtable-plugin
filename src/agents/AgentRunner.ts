@@ -12,9 +12,10 @@ import type {
   ToolResult,
   TokenUsage,
 } from '../types';
-import { ProviderMode, RoundType } from '../types';
+import { ProviderMode } from '../types';
 import {
   buildReflectionPrompt,
+  buildReflectionSystemPrompt,
   buildSubAgentSystemPrompt,
   buildSubAgentUserMessage,
   buildSystemPrompt,
@@ -81,6 +82,9 @@ export class AgentRunner {
       : userMessage;
 
     let toolCallCount = 0;
+    let reflectionWriteCount = 0;
+    const MAX_REFLECTION_WRITES = 20;
+    let allowedReflectionFilePaths: Set<string> = new Set();
     // Accumulates files written via write_file tool across all callAgent invocations.
     const allFileChanges: FileChange[] = [];
 
@@ -154,6 +158,79 @@ export class AgentRunner {
       };
     };
 
+    // Reflection-only tool handler: allows write_file and delete_file only.
+    // run_command is blocked (staged files are not yet on disk).
+    // read_file is blocked (file contents are inlined in the reflection prompt).
+    const makeReflectionToolHandler = (): ((toolCall: ToolCall) => Promise<ToolResult>) => {
+      return (toolCall: ToolCall): Promise<ToolResult> => {
+        const resolve = (result: ToolResult): Promise<ToolResult> => Promise.resolve(result);
+        if (toolCall.name === 'write_file') {
+          if (reflectionWriteCount >= MAX_REFLECTION_WRITES) {
+            return resolve({ id: toolCall.id, content: `Reflection write limit (${MAX_REFLECTION_WRITES}) reached.`, isError: true });
+          }
+          const normalized = normalizePath(toolCall.filePath);
+          if (!normalized) {
+            return resolve({ id: toolCall.id, content: `Invalid file path: ${toolCall.filePath}`, isError: true });
+          }
+          if (!allowedReflectionFilePaths.has(normalized)) {
+            return resolve({
+              id: toolCall.id,
+              content: `Reflection may only modify files written in the initial response. Blocked path: ${normalized}`,
+              isError: true,
+            });
+          }
+          reflectionWriteCount++;
+          onProgress({ type: 'tool_write_file', agentName: mainAgent, filePath: normalized });
+          const existing = allFileChanges.findIndex((f) => f.filePath === normalized);
+          const change: FileChange = { filePath: normalized, content: toolCall.content, isNew: false };
+          if (existing >= 0) {
+            allFileChanges[existing] = change;
+          } else {
+            allFileChanges.push(change);
+          }
+          return resolve({ id: toolCall.id, content: `Staged write to ${normalized}`, isError: false });
+        }
+
+        if (toolCall.name === 'delete_file') {
+          const normalized = normalizePath(toolCall.filePath);
+          if (!normalized) {
+            return resolve({ id: toolCall.id, content: `Invalid file path: ${toolCall.filePath}`, isError: true });
+          }
+          if (!allowedReflectionFilePaths.has(normalized)) {
+            return resolve({
+              id: toolCall.id,
+              content: `Reflection may only modify files written in the initial response. Blocked path: ${normalized}`,
+              isError: true,
+            });
+          }
+          onProgress({ type: 'tool_delete_file', agentName: mainAgent, filePath: normalized });
+          const existing = allFileChanges.findIndex((f) => f.filePath === normalized);
+          const change: FileChange = { filePath: normalized, content: '', isNew: false, isDeleted: true };
+          if (existing >= 0) {
+            allFileChanges[existing] = change;
+          } else {
+            allFileChanges.push(change);
+          }
+          return resolve({ id: toolCall.id, content: `Staged delete of ${normalized}`, isError: false });
+        }
+
+        if (toolCall.name === 'run_command') {
+          return resolve({
+            id: toolCall.id,
+            content: 'run_command is not available during reflection. Use VERIFY: to suggest post-apply commands.',
+            isError: true,
+          });
+        }
+
+        // read_file: blocked — file contents are already inlined in the reflection prompt
+        return resolve({
+          id: toolCall.id,
+          content: 'read_file is not available during reflection. File contents are already provided in the prompt.',
+          isError: true,
+        });
+      };
+    };
+
     // Accumulate token usage across all calls
     const totalUsage: TokenUsage = { inputTokens: 0, outputTokens: 0 };
     const addUsage = (usage?: TokenUsage) => {
@@ -190,7 +267,7 @@ export class AgentRunner {
     const mainAgentFileChanges = [...allFileChanges];
 
     // Step 2: Sub agents verify in parallel (skip if none selected or same as main)
-    const uniqueSubAgents = subAgents.filter((a) => a !== mainAgent);
+    const uniqueSubAgents = Array.from(new Set(subAgents)).filter((a) => a !== mainAgent);
     let subAgentVerifications: SubAgentVerification[] = [];
 
     if (uniqueSubAgents.length > 0) {
@@ -215,6 +292,15 @@ export class AgentRunner {
             .map((f) => `[FILE: ${f.path}]\n\`\`\`\n${f.content}\n\`\`\``)
             .join('\n\n')}\n\n[END FILES]`
         : '';
+      const writtenFilesSection = mainAgentFileChanges.length > 0
+        ? `[FILES WRITTEN BY PRIMARY AGENT]\n\n${mainAgentFileChanges
+            .map((f) => (
+              f.isDeleted
+                ? `[FILE DELETED: ${f.filePath}]`
+                : `[FILE: ${f.filePath}]\n\`\`\`\n${f.content}\n\`\`\``
+            ))
+            .join('\n\n')}\n\n[END WRITTEN FILES]`
+        : '';
 
       // Include command outputs so sub-agents can verify the primary agent's interpretation
       const commandOutputsSection = cachedCommandOutputs.size > 0
@@ -227,7 +313,7 @@ export class AgentRunner {
         ? `Prior conversation context:\n${priorUserTurns}\n\nThe primary agent was given the current request:\n${userMessage}\n\nVerify whether its response (shown below) correctly and completely addresses this request.`
         : `The primary agent was given the following request:\n\n${userMessage}\n\nVerify whether its response (shown below) correctly and completely addresses this request.`;
 
-      const contextSections = [resolvedFilesSection, commandOutputsSection].filter(Boolean).join('\n\n');
+      const contextSections = [resolvedFilesSection, writtenFilesSection, commandOutputsSection].filter(Boolean).join('\n\n');
 
       // User message: all data the verifier needs — files, commands, primary response, user request
       const subAgentUserMessage = buildSubAgentUserMessage(
@@ -287,44 +373,41 @@ export class AgentRunner {
     const validFeedbacks = subAgentVerifications.filter(
       (v) => !v.feedback.startsWith('[Verification unavailable'),
     );
+    const mandatoryConsensusIssues = this.extractConsensusIssues(validFeedbacks);
 
     let reflectedResponse: string;
 
     if (validFeedbacks.length > 0) {
       onProgress({ type: 'reflection_start', agentName: mainAgent, mainAgentResponse });
+      allowedReflectionFilePaths = new Set(mainAgentFileChanges.map((f) => f.filePath));
 
-      // Developer and QA rounds need exact code context to apply precise fixes —
-      // inline written file contents so the reflection agent has full code context.
-      // Other rounds (documentation, requirements, architect, reviewer) only need prose —
-      // note which files were written so the reflection agent can re-emit them.
-      const FILE_WRITING_ROUNDS = new Set([RoundType.DEVELOPER, RoundType.QA]);
-      let reflectionMainResponse: string;
-      if (FILE_WRITING_ROUNDS.has(roundType)) {
-        const writtenFilesSection = mainAgentFileChanges.length > 0
-          ? `\n\n[FILES WRITTEN VIA write_file TOOL]\n${mainAgentFileChanges.map((f) => `[FILE: ${f.filePath}]\n\`\`\`\n${f.content}\n\`\`\``).join('\n\n')}`
-          : '';
-        reflectionMainResponse = mainAgentResponse + writtenFilesSection;
-      } else {
-        const writtenFilePaths = mainAgentFileChanges.map((f) => f.filePath);
-        const filePathNote = writtenFilePaths.length > 0
-          ? `\n\n[FILES YOU WROTE — re-emit all of these using write_file tool in your final response]\n${writtenFilePaths.map((p) => `- ${p}`).join('\n')}`
-          : '';
-        reflectionMainResponse = mainAgentResponse + filePathNote;
-      }
+      // All rounds inline written file contents so reflection can apply precise fixes via write_file.
+      const writtenFilesSection = mainAgentFileChanges.length > 0
+        ? `\n\n[FILES WRITTEN VIA write_file TOOL — re-emit any file you modify using write_file]\n${mainAgentFileChanges
+            .map((f) => (
+              f.isDeleted
+                ? `[FILE DELETED: ${f.filePath}]`
+                : `[FILE: ${f.filePath}]\n\`\`\`\n${f.content}\n\`\`\``
+            ))
+            .join('\n\n')}`
+        : '';
+      const reflectionMainResponse = mainAgentResponse + writtenFilesSection;
       const reflectionUserMessage = buildReflectionPrompt(
         reflectionMainResponse,
         validFeedbacks.map((v) => ({
           agentName: v.agentName,
           feedback: v.feedback,
         })),
+        mandatoryConsensusIssues,
       );
 
       const { content: reflected, usage: reflectUsage } = await this.callAgent(
         mainAgent,
         {
-          systemPrompt,
+          systemPrompt: buildReflectionSystemPrompt(roundType),
           userMessage: reflectionUserMessage,
           onChunk: (chunk) => onProgress({ type: 'reflection_chunk', agentName: mainAgent, chunk }),
+          onToolCall: makeReflectionToolHandler(),
         },
         cancellationToken,
       );
@@ -352,9 +435,15 @@ export class AgentRunner {
     let verifyCommand: string | undefined;
     const responseLines = reflectedResponse.split('\n');
     const filteredLines: string[] = [];
+    let inCodeBlock = false;
     for (const line of responseLines) {
       const trimmed = line.trim();
-      if (trimmed.startsWith(VERIFY_PREFIX)) {
+      if (trimmed.startsWith('```')) {
+        inCodeBlock = !inCodeBlock;
+        filteredLines.push(line);
+        continue;
+      }
+      if (!inCodeBlock && trimmed.startsWith(VERIFY_PREFIX)) {
         const cmd = trimmed.slice(VERIFY_PREFIX.length).trim();
         if (cmd.length > 0) {
           verifyCommand = cmd;
@@ -466,10 +555,167 @@ export class AgentRunner {
       .join('\n');
 
     const parts: string[] = [];
-    if (cachedSection) parts.push(`[FILES FROM PREVIOUS TURN]\n${cachedSection}\n[END FILES FROM PREVIOUS TURN]`);
-    if (uncachedList) parts.push(`[WORKSPACE FILES]\n${activeNote}${uncachedList}\n[END WORKSPACE FILES]\n\nUse the read_file tool to read any file you need.`);
+    if (cachedSection) {parts.push(`[FILES FROM PREVIOUS TURN]\n${cachedSection}\n[END FILES FROM PREVIOUS TURN]`);}
+    if (uncachedList) {parts.push(`[WORKSPACE FILES]\n${activeNote}${uncachedList}\n[END WORKSPACE FILES]\n\nUse the read_file tool to read any file you need.`);}
 
     return parts.join('\n\n');
+  }
+
+  /**
+   * Extracts issue titles from sub-agent feedback and returns issues that were
+   * flagged by every valid sub-agent (consensus).
+   */
+  private extractConsensusIssues(verifications: SubAgentVerification[]): string[] {
+    if (verifications.length < 2) {
+      return [];
+    }
+
+    const counts = new Map<string, number>();
+    const canonicalLabelByKey = new Map<string, string>();
+
+    for (const verification of verifications) {
+      const titles = this.extractIssueTitles(verification.feedback);
+      const uniqueKeysForAgent = new Set<string>();
+      for (const title of titles) {
+        const key = this.normalizeIssueTitle(title);
+        if (!key || uniqueKeysForAgent.has(key)) {
+          continue;
+        }
+        uniqueKeysForAgent.add(key);
+        canonicalLabelByKey.set(key, canonicalLabelByKey.get(key) ?? title);
+      }
+      for (const key of uniqueKeysForAgent) {
+        counts.set(key, (counts.get(key) ?? 0) + 1);
+      }
+    }
+
+    const requiredCount = verifications.length;
+    const consensusKeys = Array.from(counts.entries())
+      .filter(([, count]) => count === requiredCount)
+      .map(([key]) => key);
+
+    return consensusKeys
+      .map((key) => canonicalLabelByKey.get(key) ?? key)
+      .slice(0, 12);
+  }
+
+  /**
+   * Pulls issue titles from a verifier response.
+   * Preferred format:
+   *   {"issues":[{"title":"...","detail":"..."}]}
+   * Legacy fallback:
+   *   ISSUES:
+   *   - title
+   *   DETAILS:
+   */
+  private extractIssueTitles(feedback: string): string[] {
+    const jsonIssues = this.extractIssueTitlesFromJson(feedback);
+    if (jsonIssues !== null) {
+      return jsonIssues;
+    }
+
+    if (/ISSUES:\s*NONE/i.test(feedback)) {
+      return [];
+    }
+
+    const issuesSection = feedback.match(/ISSUES:\s*([\s\S]*?)(?:\nDETAILS:|$)/i)?.[1] ?? feedback;
+    const titles = issuesSection
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => /^([-*]|\d+\.)\s+/.test(line))
+      .map((line) => line.replace(/^([-*]|\d+\.)\s+/, '').trim())
+      .filter((line) => line.length > 0 && !/^(none|n\/a)$/i.test(line));
+
+    return Array.from(new Set(titles)).slice(0, 20);
+  }
+
+  /**
+   * Parses JSON verifier output. Returns:
+   * - string[] when JSON parse succeeds (including empty array for no issues)
+   * - null when no valid JSON issue payload is found (caller should fall back)
+   */
+  private extractIssueTitlesFromJson(feedback: string): string[] | null {
+    const candidates = this.extractJsonCandidates(feedback);
+    for (const candidate of candidates) {
+      try {
+        const parsed = JSON.parse(candidate) as unknown;
+        const titles = this.extractIssueTitlesFromParsedJson(parsed);
+        if (titles !== null) {
+          return titles;
+        }
+      } catch {
+        // Ignore malformed JSON candidates and continue with others.
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Returns JSON snippets from verifier feedback.
+   * Priority:
+   * 1) fenced code blocks
+   * 2) entire feedback body
+   */
+  private extractJsonCandidates(feedback: string): string[] {
+    const candidates: string[] = [];
+    const fenced = feedback.match(/```(?:json)?\s*([\s\S]*?)```/gi) ?? [];
+    for (const block of fenced) {
+      const inner = block.replace(/^```(?:json)?\s*/i, '').replace(/```$/i, '').trim();
+      if (inner.length > 0) {
+        candidates.push(inner);
+      }
+    }
+
+    const whole = feedback.trim();
+    if (whole.length > 0) {
+      candidates.push(whole);
+    }
+    return candidates;
+  }
+
+  private extractIssueTitlesFromParsedJson(parsed: unknown): string[] | null {
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return null;
+    }
+
+    const payload = parsed as Record<string, unknown>;
+    if (!Object.prototype.hasOwnProperty.call(payload, 'issues')) {
+      return null;
+    }
+
+    const issues = payload.issues;
+    if (Array.isArray(issues)) {
+      const titles = issues
+        .map((item) => {
+          if (typeof item === 'string') {
+            return item.trim();
+          }
+          if (item && typeof item === 'object') {
+            const title = (item as Record<string, unknown>).title;
+            if (typeof title === 'string') {
+              return title.trim();
+            }
+          }
+          return '';
+        })
+        .filter((title) => title.length > 0 && !/^(none|n\/a)$/i.test(title));
+      return Array.from(new Set(titles)).slice(0, 20);
+    }
+
+    if (typeof issues === 'string' && /^(none|n\/a)$/i.test(issues.trim())) {
+      return [];
+    }
+
+    return [];
+  }
+
+  private normalizeIssueTitle(issue: string): string {
+    return issue
+      .toLowerCase()
+      .replace(/[`"'()[\]{}]/g, '')
+      .replace(/[^a-z0-9\s_-]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
   }
 }
 
@@ -479,6 +725,7 @@ export type ProgressEvent =
   | { type: 'main_agent_done'; agentName: AgentName }
   | { type: 'tool_read'; agentName: AgentName; filePath: string }
   | { type: 'tool_run_command'; agentName: AgentName; command: string }
+  | { type: 'tool_run_command_chunk'; agentName: AgentName; command: string; chunk: string }
   | { type: 'tool_run_command_done'; agentName: AgentName; command: string; stdout: string; exitCode: number }
   | { type: 'tool_write_file'; agentName: AgentName; filePath: string }
   | { type: 'tool_delete_file'; agentName: AgentName; filePath: string }

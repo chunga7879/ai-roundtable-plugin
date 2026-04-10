@@ -10,11 +10,12 @@ import type {
   RoundRequest,
   TokenUsage,
 } from '../types';
-import { RoundType } from '../types';
+import type { RoundType } from '../types';
 import type { ProgressEvent } from '../agents/AgentRunner';
 import { AgentRunner } from '../agents/AgentRunner';
 import { CopilotProvider } from '../agents/CopilotProvider';
 import { ApiKeyProvider } from '../agents/ApiKeyProvider';
+import { resolveWorkspaceRootForCommand } from '../workspace/WorkspaceRootResolver';
 import type { WorkspaceReader } from '../workspace/WorkspaceReader';
 import type { ConfigManager } from '../extension';
 import type { ExtensionConfig } from '../types';
@@ -57,6 +58,7 @@ export class RoundOrchestrator {
   private streamingAgentName: AgentName | undefined;
   private verifierPlaceholderIds: Map<string, string> = new Map();
   private currentCancellationTokenSource: vscode.CancellationTokenSource | undefined;
+  private lastToolFilePath: string | undefined;
 
   constructor(
     private readonly configManager: ConfigManager,
@@ -91,6 +93,7 @@ export class RoundOrchestrator {
     this.emit({ type: 'setLoading', payload: { loading: true } });
     this.emit({ type: 'clearFileChanges' });
     this.emit({ type: 'clearContextFiles' });
+    this.lastToolFilePath = undefined;
 
     let succeeded = false;
     try {
@@ -192,6 +195,7 @@ export class RoundOrchestrator {
         break;
 
       case 'tool_read':
+        this.lastToolFilePath = event.filePath;
         if (this.streamingMsgId) {
           this.emit({ type: 'toolCallProgress', payload: { msgId: this.streamingMsgId, filePath: event.filePath } });
         }
@@ -204,6 +208,12 @@ export class RoundOrchestrator {
         }
         break;
 
+      case 'tool_run_command_chunk':
+        if (this.streamingMsgId) {
+          this.emit({ type: 'commandChunk', payload: { msgId: this.streamingMsgId, command: event.command, chunk: event.chunk } });
+        }
+        break;
+
       case 'tool_run_command_done':
         if (this.streamingMsgId) {
           this.emit({ type: 'commandOutput', payload: { msgId: this.streamingMsgId, command: event.command, stdout: event.stdout, exitCode: event.exitCode } });
@@ -211,12 +221,14 @@ export class RoundOrchestrator {
         break;
 
       case 'tool_write_file':
+        this.lastToolFilePath = event.filePath;
         if (this.streamingMsgId) {
           this.emit({ type: 'toolCallProgress', payload: { msgId: this.streamingMsgId, filePath: `✎ ${event.filePath}` } });
         }
         break;
 
       case 'tool_delete_file':
+        this.lastToolFilePath = event.filePath;
         if (this.streamingMsgId) {
           this.emit({ type: 'toolCallProgress', payload: { msgId: this.streamingMsgId, filePath: `✗ ${event.filePath}` } });
         }
@@ -320,9 +332,15 @@ export class RoundOrchestrator {
       return { command, stdout: '[User denied command execution]', exitCode: 1 };
     }
 
-    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    const workspaceRoot = resolveWorkspaceRootForCommand({
+      candidateFilePaths: this.lastToolFilePath ? [this.lastToolFilePath] : [],
+    });
     const config = await this.configManager.getConfig();
-    return execCommand(command, workspaceRoot, config.runnerTimeoutMs, cancellationToken);
+    const msgId = this.streamingMsgId;
+    const onChunk = msgId
+      ? (chunk: string) => this.emit({ type: 'commandChunk', payload: { msgId, command, chunk } })
+      : undefined;
+    return execCommand(command, workspaceRoot, config.runnerTimeoutMs, cancellationToken, onChunk);
   }
 
   private buildAgentRunner(config: ExtensionConfig): AgentRunner {
@@ -351,17 +369,71 @@ export function execCommand(
   cwd: string | undefined,
   timeoutMs: number,
   cancellationToken?: vscode.CancellationToken,
+  onChunk?: (chunk: string) => void,
 ): Promise<CommandOutput> {
   return new Promise((resolve) => {
     try {
-      const child = cp.exec(command, { cwd, timeout: timeoutMs, maxBuffer: EXEC_MAX_OUTPUT }, (err, stdout, stderr) => {
-        cancelDisposable?.dispose();
-        const combined = [stdout, stderr].filter(Boolean).join('\n').slice(0, EXEC_MAX_OUTPUT);
-        resolve({ command, stdout: combined || '(no output)', exitCode: err?.code ?? (err ? 1 : 0) });
+      const shell = process.platform === 'win32' ? 'cmd.exe' : '/bin/sh';
+      const shellFlag = process.platform === 'win32' ? '/c' : '-c';
+      const child = cp.spawn(shell, [shellFlag, command], {
+        cwd,
+        env: process.env,
       });
+
+      const chunks: string[] = [];
+      let resolved = false;
+      let totalBytes = 0;
+
+      const handleData = (data: Buffer) => {
+        if (resolved) {return;}
+        const text = data.toString('utf8');
+        totalBytes += text.length;
+        if (totalBytes > EXEC_MAX_OUTPUT) {return;} // stop accumulating but keep process running
+        chunks.push(text);
+        if (onChunk) {
+          onChunk(text);
+        }
+      };
+
+      child.stdout.on('data', (d: Buffer) => handleData(d));
+      child.stderr.on('data', (d: Buffer) => handleData(d));
+
+      const timeout = setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          child.kill();
+          const stdout = chunks.join('') || '(no output)';
+          resolve({ command, stdout: stdout + '\n[Timed out]', exitCode: 1 });
+        }
+      }, timeoutMs);
+
+      child.on('close', (code) => {
+        if (resolved) {return;}
+        resolved = true;
+        clearTimeout(timeout);
+        cancelDisposable?.dispose();
+        let stdout = chunks.join('') || '(no output)';
+        if (totalBytes > EXEC_MAX_OUTPUT) {
+          stdout += `\n[... output truncated at ${EXEC_MAX_OUTPUT} bytes ...]`;
+        }
+        resolve({ command, stdout, exitCode: code ?? 1 });
+      });
+
+      child.on('error', (err) => {
+        if (resolved) {return;}
+        resolved = true;
+        clearTimeout(timeout);
+        cancelDisposable?.dispose();
+        resolve({ command, stdout: String(err), exitCode: 1 });
+      });
+
       const cancelDisposable = cancellationToken?.onCancellationRequested(() => {
-        child.kill();
-        resolve({ command, stdout: '[Cancelled]', exitCode: 1 });
+        if (!resolved) {
+          resolved = true;
+          clearTimeout(timeout);
+          child.kill();
+          resolve({ command, stdout: chunks.join('') + '\n[Cancelled]', exitCode: 1 });
+        }
       });
     } catch (syncErr) {
       resolve({ command, stdout: String(syncErr), exitCode: 1 });

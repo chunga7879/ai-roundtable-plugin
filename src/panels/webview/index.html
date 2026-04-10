@@ -230,9 +230,20 @@
       opacity: 0.6;
       letter-spacing: 0.03em;
     }
-    .terminal-box-status { margin-left: auto; }
+    .terminal-box-status { margin-left: auto; display: flex; align-items: center; gap: 6px; }
     .terminal-box-status .exit-ok  { color: var(--vscode-testing-iconPassed, #4caf50); }
     .terminal-box-status .exit-err { color: var(--vscode-errorForeground, #f44); }
+    .terminal-box-expand-btn {
+      background: none;
+      border: none;
+      cursor: pointer;
+      font-size: 10px;
+      color: var(--vscode-descriptionForeground);
+      padding: 0 2px;
+      opacity: 0.7;
+      font-family: inherit;
+    }
+    .terminal-box-expand-btn:hover { opacity: 1; }
 
     .terminal-box .tool-call-block {
       display: flex;
@@ -267,24 +278,50 @@
     .tool-call-block .exit-ok  { color: var(--vscode-testing-iconPassed, #4caf50); margin-left: auto; }
     .tool-call-block .exit-err { color: var(--vscode-errorForeground, #f44); margin-left: auto; }
 
-    .terminal-box .command-output-block {
+    /* Terminal output area — collapsed (live tail during run, last few lines when done) */
+    .terminal-box-output {
       font-size: 11px;
       font-family: var(--vscode-editor-font-family, monospace);
       color: var(--vscode-terminal-foreground, var(--vscode-foreground));
       background: transparent;
-      border: none;
       border-top: 1px solid var(--vscode-panel-border, #333);
       padding: 4px 8px;
-      margin: 0;
-      border-radius: 0;
       white-space: pre-wrap;
       word-break: break-all;
-      max-height: 200px;
+      max-height: 120px;
+      overflow: hidden;
+    }
+    .terminal-box-output.error { color: var(--vscode-errorForeground, #f44); }
+
+    /* Expanded full output overlay */
+    .terminal-box-full {
+      display: none;
+      font-size: 11px;
+      font-family: var(--vscode-editor-font-family, monospace);
+      color: var(--vscode-terminal-foreground, var(--vscode-foreground));
+      background: transparent;
+      border-top: 1px solid var(--vscode-panel-border, #333);
+      padding: 4px 8px;
+      white-space: pre-wrap;
+      word-break: break-all;
+      max-height: 400px;
       overflow-y: auto;
     }
-    .terminal-box .command-output-block.error {
-      color: var(--vscode-errorForeground, #f44);
+    .terminal-box-full.error { color: var(--vscode-errorForeground, #f44); }
+    .terminal-box.expanded .terminal-box-output { display: none; }
+    .terminal-box.expanded .terminal-box-full { display: block; }
+
+    /* Spinner for running state */
+    .terminal-box-spinner {
+      display: inline-block;
+      animation: spin 1s linear infinite;
+      font-style: normal;
     }
+    @keyframes spin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+
     .command-output-block {
       font-size: 11px;
       font-family: var(--vscode-editor-font-family, monospace);
@@ -1151,8 +1188,8 @@
         architect:    { desc: 'Design system architecture, tech stack, and file structure.', next: 'Next: Developer' },
         developer:    { desc: 'Write complete production code for every file.', next: 'Next: Reviewer or QA' },
         reviewer:     { desc: 'Adversarial code review with OWASP security checks.', next: 'Next: Developer (apply fixes) or QA' },
-        qa:           { desc: 'Generate unit, integration, and security tests.', next: 'Next: ask AI to RUN: npm test' },
-        devops:       { desc: 'Generate Dockerfile, CI/CD pipeline, and env config.', next: 'Next: ask AI to RUN: docker-compose up' },
+        qa:           { desc: 'Generate unit, integration, and security tests.', next: 'Next: Apply changes → verify tests pass' },
+        devops:       { desc: 'Generate Dockerfile, CI/CD pipeline, and env config.', next: 'Next: Apply changes → verify build' },
         documentation: { desc: 'Generate README, API docs, and CHANGELOG from actual code.', next: '' },
       };
 
@@ -1641,18 +1678,19 @@
         // Clear "Thinking..." on first tool call
         if (textNode) textNode.textContent = '';
         wrapper.dataset.streamBuffer = '';
-        // Insert tool call block before stream-text: [block1][block2]...[stream-text][cursor]
+
         const isCommand = payload.filePath.startsWith('$ ');
         const block = document.createElement('div');
         block.className = 'tool-call-block' + (isCommand ? '' : ' standalone');
         block.textContent = (isCommand ? '' : 'Read \u00B7 ') + payload.filePath;
 
         if (isCommand) {
-          // Wrap in terminal box
+          const command = payload.filePath.slice(2).trim();
           const termBox = document.createElement('div');
           termBox.className = 'terminal-box';
-          termBox.dataset.command = payload.filePath.slice(2).trim(); // strip '$ '
+          termBox.dataset.command = command;
 
+          // Header
           const header = document.createElement('div');
           header.className = 'terminal-box-header';
 
@@ -1666,15 +1704,66 @@
           const statusEl = document.createElement('span');
           statusEl.className = 'terminal-box-status';
 
+          // Spinner (removed when done)
+          const spinner = document.createElement('span');
+          spinner.className = 'terminal-box-spinner';
+          spinner.textContent = '\u2B6E'; // ⭮
+          statusEl.appendChild(spinner);
+
           header.appendChild(dot);
           header.appendChild(title);
           header.appendChild(statusEl);
           termBox.appendChild(header);
           termBox.appendChild(block);
+
+          // Live tail output area (shown while running and collapsed when done)
+          const outputEl = document.createElement('div');
+          outputEl.className = 'terminal-box-output';
+          termBox.appendChild(outputEl);
+
+          // Full output area (shown when expanded)
+          const fullEl = document.createElement('div');
+          fullEl.className = 'terminal-box-full';
+          termBox.appendChild(fullEl);
+
           bodyEl.insertBefore(termBox, textNode || cursor);
         } else {
           bodyEl.insertBefore(block, textNode || cursor);
         }
+        scrollToBottom();
+      }
+
+      /**
+       * @param {{msgId: string, command: string, chunk: string}} payload
+       */
+      function handleCommandChunk(payload) {
+        const wrapper = document.getElementById('msg-' + payload.msgId);
+        if (!wrapper) return;
+        const bodyEl = wrapper.querySelector('.message-body');
+        if (!bodyEl) return;
+
+        const termBox = findTerminalBox(bodyEl, payload.command);
+        if (!termBox) return;
+
+        // Accumulate full output on dataset
+        termBox.dataset.fullOutput = (termBox.dataset.fullOutput || '') + payload.chunk;
+
+        // Live tail: show last 8 lines in collapsed view
+        const allLines = termBox.dataset.fullOutput.split('\n');
+        const TAIL_LINES = 8;
+        const tailLines = allLines.slice(-TAIL_LINES);
+        const outputEl = termBox.querySelector('.terminal-box-output');
+        if (outputEl) outputEl.textContent = tailLines.join('\n');
+
+        // Update full view only if currently expanded
+        if (termBox.classList.contains('expanded')) {
+          const fullEl = termBox.querySelector('.terminal-box-full');
+          if (fullEl) {
+            fullEl.textContent = termBox.dataset.fullOutput;
+            fullEl.scrollTop = fullEl.scrollHeight;
+          }
+        }
+
         scrollToBottom();
       }
 
@@ -1687,91 +1776,69 @@
         const bodyEl = wrapper.querySelector('.message-body');
         if (!bodyEl) return;
 
-        // Find the terminal-box that owns this command
-        const allTermBoxes = bodyEl.querySelectorAll('.terminal-box');
-        let termBox = null;
-        for (let i = allTermBoxes.length - 1; i >= 0; i--) {
-          if (allTermBoxes[i].dataset.command === payload.command) {
-            termBox = allTermBoxes[i];
-            break;
-          }
-        }
+        const termBox = findTerminalBox(bodyEl, payload.command);
+        if (!termBox) return;
 
         const isError = payload.exitCode !== 0;
+        const fullOutput = payload.stdout;
+        const lines = fullOutput.split('\n');
+        const TAIL_LINES = 8;
 
-        if (termBox) {
-          // Update terminal-box header status badge
-          const statusEl = termBox.querySelector('.terminal-box-status');
-          if (statusEl) {
-            const badge = document.createElement('span');
-            badge.className = isError ? 'exit-err' : 'exit-ok';
-            badge.textContent = isError ? '\u2717 ' + payload.exitCode : '\u2713';
-            statusEl.appendChild(badge);
-          }
+        // Remove spinner, add exit badge + expand button
+        const statusEl = termBox.querySelector('.terminal-box-status');
+        if (statusEl) {
+          statusEl.innerHTML = '';
+          const badge = document.createElement('span');
+          badge.className = isError ? 'exit-err' : 'exit-ok';
+          badge.textContent = isError ? '\u2717 ' + payload.exitCode : '\u2713';
+          statusEl.appendChild(badge);
 
-          const MAX_LINES = 20;
-          const lines = payload.stdout.split('\n');
-          const block = document.createElement('div');
-          block.className = 'command-output-block' + (isError ? ' error' : '');
-          if (lines.length > MAX_LINES) {
-            const preview = document.createElement('span');
-            preview.textContent = lines.slice(0, MAX_LINES).join('\n');
-            const details = document.createElement('details');
-            details.className = 'command-output-more';
-            const summary = document.createElement('summary');
-            summary.textContent = '\u2026 ' + (lines.length - MAX_LINES) + ' more lines';
-            const rest = document.createElement('span');
-            rest.textContent = '\n' + lines.slice(MAX_LINES).join('\n');
-            details.appendChild(summary);
-            details.appendChild(rest);
-            block.appendChild(preview);
-            block.appendChild(details);
-          } else {
-            block.textContent = payload.stdout;
+          if (lines.length > TAIL_LINES) {
+            const expandBtn = document.createElement('button');
+            expandBtn.className = 'terminal-box-expand-btn';
+            expandBtn.textContent = 'expand';
+            expandBtn.addEventListener('click', () => {
+              const expanded = termBox.classList.toggle('expanded');
+              expandBtn.textContent = expanded ? 'collapse' : 'expand';
+              if (expanded) {
+                const fullEl = termBox.querySelector('.terminal-box-full');
+                if (fullEl) fullEl.scrollTop = fullEl.scrollHeight;
+              }
+            });
+            statusEl.appendChild(expandBtn);
           }
-          termBox.appendChild(block);
-        } else {
-          // Fallback: find old-style tool-call-block and attach below it
-          const allBlocks = bodyEl.querySelectorAll('.tool-call-block');
-          let cmdBlock = null;
-          for (let i = allBlocks.length - 1; i >= 0; i--) {
-            if (allBlocks[i].textContent && allBlocks[i].textContent.includes('$ ' + payload.command)) {
-              cmdBlock = allBlocks[i];
-              break;
-            }
-          }
-          if (cmdBlock) {
-            const badge = document.createElement('span');
-            badge.className = isError ? 'exit-err' : 'exit-ok';
-            badge.textContent = isError ? '\u2717 ' + payload.exitCode : '\u2713';
-            cmdBlock.appendChild(badge);
-          }
-
-          const MAX_LINES = 20;
-          const lines = payload.stdout.split('\n');
-          const block = document.createElement('div');
-          block.className = 'command-output-block' + (isError ? ' error' : '');
-          if (lines.length > MAX_LINES) {
-            const preview = document.createElement('span');
-            preview.textContent = lines.slice(0, MAX_LINES).join('\n');
-            const details = document.createElement('details');
-            details.className = 'command-output-more';
-            const summary = document.createElement('summary');
-            summary.textContent = '\u2026 ' + (lines.length - MAX_LINES) + ' more lines';
-            const rest = document.createElement('span');
-            rest.textContent = '\n' + lines.slice(MAX_LINES).join('\n');
-            details.appendChild(summary);
-            details.appendChild(rest);
-            block.appendChild(preview);
-            block.appendChild(details);
-          } else {
-            block.textContent = payload.stdout;
-          }
-          const textNode = bodyEl.querySelector('.stream-text');
-          const cursor = bodyEl.querySelector('.stream-cursor');
-          bodyEl.insertBefore(block, textNode || cursor);
         }
+
+        // Collapsed tail view
+        const outputEl = termBox.querySelector('.terminal-box-output');
+        if (outputEl) {
+          outputEl.textContent = lines.slice(-TAIL_LINES).join('\n');
+          if (isError) outputEl.classList.add('error');
+        }
+
+        // Full output view
+        const fullEl = termBox.querySelector('.terminal-box-full');
+        if (fullEl) {
+          fullEl.textContent = fullOutput;
+          if (isError) fullEl.classList.add('error');
+        }
+
         scrollToBottom();
+      }
+
+      /**
+       * Find the most recent terminal-box for a given command in a message body.
+       * @param {Element} bodyEl
+       * @param {string} command
+       */
+      function findTerminalBox(bodyEl, command) {
+        const allTermBoxes = bodyEl.querySelectorAll('.terminal-box');
+        for (let i = allTermBoxes.length - 1; i >= 0; i--) {
+          if (allTermBoxes[i].dataset.command === command) {
+            return allTermBoxes[i];
+          }
+        }
+        return null;
       }
 
       /**
@@ -2056,6 +2123,10 @@
 
           case 'toolCallProgress':
             handleToolCallProgress(message.payload);
+            break;
+
+          case 'commandChunk':
+            handleCommandChunk(message.payload);
             break;
 
           case 'commandOutput':

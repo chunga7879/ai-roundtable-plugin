@@ -321,7 +321,7 @@ export class ApiKeyProvider {
     const totalUsage = { inputTokens: 0, outputTokens: 0 };
     let finalText = '';
 
-    while (true) {
+    for (;;) {
       const body = JSON.stringify({
         model: this.models.claude,
         max_tokens: DEFAULT_MAX_TOKENS,
@@ -363,7 +363,7 @@ export class ApiKeyProvider {
       }
 
       const textBlock = parsed.content?.find((c) => c.type === 'text');
-      if (textBlock) finalText += textBlock.text;
+      if (textBlock) {finalText += textBlock.text;}
 
       const toolUseBlocks = parsed.content?.filter((c) => c.type === 'tool_use') ?? [];
       if (toolUseBlocks.length === 0 || !options.onToolCall || parsed.stop_reason !== 'tool_use') {
@@ -445,7 +445,7 @@ export class ApiKeyProvider {
     const totalUsage = { inputTokens: 0, outputTokens: 0 };
     let finalText = '';
 
-    while (true) {
+    for (;;) {
       const body = JSON.stringify({
         model: params.model,
         max_tokens: DEFAULT_MAX_TOKENS,
@@ -485,7 +485,7 @@ export class ApiKeyProvider {
 
       const message = parsed.choices?.[0]?.message;
       const finishReason = parsed.choices?.[0]?.finish_reason;
-      if (message?.content) finalText += message.content;
+      if (message?.content) {finalText += message.content;}
 
       const toolCalls = message?.tool_calls;
       if (!toolCalls?.length || !options.onToolCall || finishReason !== 'tool_calls') {
@@ -551,7 +551,7 @@ export class ApiKeyProvider {
     const totalUsage = { inputTokens: 0, outputTokens: 0 };
     let finalText = '';
 
-    while (true) {
+    for (;;) {
       const body = JSON.stringify({
         system_instruction: { parts: [{ text: options.systemPrompt }] },
         contents,
@@ -591,7 +591,7 @@ export class ApiKeyProvider {
 
       const parts = parsed.candidates?.[0]?.content?.parts ?? [];
       const textPart = parts.find((p) => p.text !== undefined);
-      if (textPart?.text) finalText += textPart.text;
+      if (textPart?.text) {finalText += textPart.text;}
 
       const functionCalls = parts.filter((p) => p.functionCall !== undefined);
       const finishReason = parsed.candidates?.[0]?.finishReason;
@@ -609,7 +609,10 @@ export class ApiKeyProvider {
       // Execute tool calls and append function responses
       const responseParts: Array<Record<string, unknown>> = [];
       for (const part of functionCalls) {
-        const fc = part.functionCall!;
+        const fc = part.functionCall;
+        if (!fc) {
+          continue;
+        }
         const result = fc.name === 'run_command'
           ? await options.onToolCall({ id: fc.name, name: 'run_command', command: typeof fc.args['command'] === 'string' ? fc.args['command'] : '' })
           : fc.name === 'write_file'
@@ -651,7 +654,7 @@ export class ApiKeyProvider {
     let outputTokens = 0;
     let finalText = '';
 
-    while (true) {
+    for (;;) {
       const body = JSON.stringify({
         model: this.models.claude,
         max_tokens: DEFAULT_MAX_TOKENS,
@@ -681,9 +684,9 @@ export class ApiKeyProvider {
         agentLabel: AgentName.CLAUDE,
         cancellationToken: options.cancellationToken,
         onLine: (line) => {
-          if (!line.startsWith('data: ')) return;
+          if (!line.startsWith('data: ')) {return;}
           const data = line.slice(6);
-          if (data === '[DONE]') return;
+          if (data === '[DONE]') {return;}
           try {
             const parsed = JSON.parse(data) as Record<string, unknown>;
             const type = parsed['type'] as string | undefined;
@@ -711,7 +714,7 @@ export class ApiKeyProvider {
                 options.onChunk?.(delta['text']);
               } else if (deltaType === 'input_json_delta' && typeof delta?.['partial_json'] === 'string') {
                 const block = toolBlocks.get(index);
-                if (block) block.inputJson += delta['partial_json'];
+                if (block) {block.inputJson += delta['partial_json'];}
               }
             } else if (type === 'message_delta') {
               const delta = parsed['delta'] as Record<string, unknown> | undefined;
@@ -736,7 +739,7 @@ export class ApiKeyProvider {
 
       // Append assistant message with text + tool_use blocks
       const assistantContent: Array<Record<string, unknown>> = [];
-      if (text) assistantContent.push({ type: 'text', text });
+      if (text) {assistantContent.push({ type: 'text', text });}
       for (const [, block] of toolBlocks) {
         let input: Record<string, unknown> = {};
         try { input = JSON.parse(block.inputJson) as Record<string, unknown>; } catch { /* use empty */ }
@@ -820,7 +823,7 @@ export class ApiKeyProvider {
     let outputTokens = 0;
     let finalText = '';
 
-    while (true) {
+    for (;;) {
       const body = JSON.stringify({
         model: params.model,
         max_tokens: DEFAULT_MAX_TOKENS,
@@ -848,16 +851,16 @@ export class ApiKeyProvider {
         agentLabel: params.agentLabel,
         cancellationToken: options.cancellationToken,
         onLine: (line) => {
-          if (!line.startsWith('data: ')) return;
+          if (!line.startsWith('data: ')) {return;}
           const data = line.slice(6);
-          if (data === '[DONE]') return;
+          if (data === '[DONE]') {return;}
           try {
             const parsed = JSON.parse(data) as Record<string, unknown>;
             const choices = parsed['choices'] as Array<Record<string, unknown>> | undefined;
             const choice = choices?.[0];
             const delta = choice?.['delta'] as Record<string, unknown> | undefined;
             const fr = choice?.['finish_reason'] as string | undefined;
-            if (fr) finishReason = fr;
+            if (fr) {finishReason = fr;}
 
             if (typeof delta?.['content'] === 'string' && delta['content']) {
               contentChunks.push(delta['content']);
@@ -871,11 +874,14 @@ export class ApiKeyProvider {
                 if (!toolCalls.has(index)) {
                   toolCalls.set(index, { id: '', name: '', argsJson: '' });
                 }
-                const existing = toolCalls.get(index)!;
-                if (tc['id']) existing.id = tc['id'] as string;
+                const existing = toolCalls.get(index);
+                if (!existing) {
+                  continue;
+                }
+                if (tc['id']) {existing.id = tc['id'] as string;}
                 const fn = tc['function'] as Record<string, unknown> | undefined;
-                if (fn?.['name']) existing.name = fn['name'] as string;
-                if (fn?.['arguments']) existing.argsJson += fn['arguments'] as string;
+                if (fn?.['name']) {existing.name = fn['name'] as string;}
+                if (fn?.['arguments']) {existing.argsJson += fn['arguments'] as string;}
               }
             }
 
@@ -953,7 +959,7 @@ export class ApiKeyProvider {
     let outputTokens = 0;
     let finalText = '';
 
-    while (true) {
+    for (;;) {
       const body = JSON.stringify({
         system_instruction: { parts: [{ text: options.systemPrompt }] },
         contents,
@@ -977,14 +983,16 @@ export class ApiKeyProvider {
         agentLabel: AgentName.GEMINI,
         cancellationToken: options.cancellationToken,
         onLine: (line) => {
-          if (!line.startsWith('data: ')) return;
+          if (!line.startsWith('data: ')) {return;}
           const data = line.slice(6);
           try {
             const parsed = JSON.parse(data) as Record<string, unknown>;
             if (parsed['error']) {
               const err = parsed['error'] as Record<string, unknown>;
+              const status = typeof err['status'] === 'string' ? err['status'] : 'unknown';
+              const message = typeof err['message'] === 'string' ? err['message'] : 'Unknown error';
               throw new ApiKeyProviderError(
-                `Google Gemini API error (${err['status'] ?? 'unknown'}): ${err['message']}`,
+                `Google Gemini API error (${status}): ${message}`,
               );
             }
             const candidates = parsed['candidates'] as Array<Record<string, unknown>> | undefined;
@@ -1006,7 +1014,7 @@ export class ApiKeyProvider {
               outputTokens = (usageMeta['candidatesTokenCount'] as number) ?? outputTokens;
             }
           } catch (err) {
-            if (err instanceof ApiKeyProviderError) throw err;
+            if (err instanceof ApiKeyProviderError) {throw err;}
             /* ignore malformed SSE lines */
           }
         },
@@ -1025,7 +1033,7 @@ export class ApiKeyProvider {
 
       // Append model turn with text + function calls
       const modelParts: Array<Record<string, unknown>> = [];
-      if (text) modelParts.push({ text });
+      if (text) {modelParts.push({ text });}
       modelParts.push(...functionCallParts);
       contents.push({ role: 'model', parts: modelParts });
 
@@ -1152,9 +1160,13 @@ export class ApiKeyProvider {
       const cancelDisposable = params.cancellationToken?.onCancellationRequested(() => {
         req.destroy(new CancellationError());
       });
+      const disposeCancellation = () => {
+        cancelDisposable?.dispose();
+      };
+      req.on('close', disposeCancellation);
 
       req.on('error', (err: Error) => {
-        cancelDisposable?.dispose();
+        disposeCancellation();
         if (err instanceof CancellationError || err instanceof ApiKeyProviderError) {
           reject(err);
         } else {
@@ -1221,6 +1233,7 @@ export class ApiKeyProvider {
           });
 
           res.on('end', () => {
+            disposeCancellation();
             const responseText = Buffer.concat(chunks).toString('utf-8');
 
             if (
@@ -1241,6 +1254,7 @@ export class ApiKeyProvider {
           });
 
           res.on('error', (err: Error) => {
+            disposeCancellation();
             reject(
               new ApiKeyProviderError(
                 `Network error reading response from ${params.hostname}: ${err.message}`,
@@ -1263,9 +1277,13 @@ export class ApiKeyProvider {
       const cancelDisposable = params.cancellationToken?.onCancellationRequested(() => {
         req.destroy(new CancellationError());
       });
+      const disposeCancellation = () => {
+        cancelDisposable?.dispose();
+      };
+      req.on('close', disposeCancellation);
 
       req.on('error', (err: Error) => {
-        cancelDisposable?.dispose();
+        disposeCancellation();
         if (err instanceof CancellationError || err instanceof ApiKeyProviderError) {
           reject(err);
         } else {

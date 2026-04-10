@@ -1285,6 +1285,42 @@ describe('AgentRunner', () => {
       expect(capturedReflectionMessages[0]).toContain(mainResponse);
     });
 
+    it('uses a reflection-specific system prompt for the reflection call', async () => {
+      let callCount = 0;
+      let reflectionSystemPrompt = '';
+      const copilotProvider = {
+        sendRequest: jest.fn().mockImplementation((opts: { systemPrompt: string }) => {
+          callCount++;
+          if (callCount === 1) {
+            return Promise.resolve('Main response');
+          }
+          if (callCount === 2) {
+            return Promise.resolve('Sub feedback');
+          }
+          reflectionSystemPrompt = opts.systemPrompt;
+          return Promise.resolve('Reflected');
+        }),
+        isAvailable: jest.fn().mockResolvedValue(true),
+        invalidateModelCache: jest.fn(),
+      };
+
+      const runner = new AgentRunner({
+        copilotProvider: copilotProvider as never,
+        apiKeyProvider: makeApiKeyProvider() as never,
+        providerMode: ProviderMode.COPILOT,
+        workspaceReader: makeWorkspaceReader() as never,
+      });
+
+      await runner.runRound(
+        makeRoundRequest({ roundType: RoundType.DEVELOPER, subAgents: [AgentName.GPT] }),
+        makeCancellationToken(),
+        jest.fn(),
+      );
+
+      expect(reflectionSystemPrompt).toContain('REFLECTION MODE OVERRIDES (HIGHEST PRIORITY):');
+      expect(reflectionSystemPrompt).toContain('run_command and read_file are not available in reflection.');
+    });
+
     it('reflection emits reflection_chunk progress events', async () => {
       let callCount = 0;
       const chunkEvents: string[] = [];
@@ -1316,6 +1352,86 @@ describe('AgentRunner', () => {
 
       expect(chunkEvents).toContain('chunk1');
       expect(chunkEvents).toContain('chunk2');
+    });
+
+    it('blocks reflection write_file for paths not written in the initial response', async () => {
+      let callCount = 0;
+      let reflectionToolResult: ToolResult | undefined;
+      const copilotProvider = {
+        sendRequest: jest.fn().mockImplementation(async (opts: { onToolCall?: (tc: ToolCall) => Promise<ToolResult> }) => {
+          callCount++;
+          if (callCount === 1 && opts.onToolCall) {
+            await opts.onToolCall({ id: 'm1', name: 'write_file', filePath: 'src/allowed.ts', content: 'export const a = 1;' });
+            return 'Main response';
+          }
+          if (callCount === 2) {
+            return 'Sub feedback';
+          }
+          if (opts.onToolCall) {
+            reflectionToolResult = await opts.onToolCall({
+              id: 'r1',
+              name: 'write_file',
+              filePath: 'src/blocked.ts',
+              content: 'export const b = 2;',
+            });
+          }
+          return 'Reflected';
+        }),
+        isAvailable: jest.fn().mockResolvedValue(true),
+        invalidateModelCache: jest.fn(),
+      };
+      const runner = new AgentRunner({
+        copilotProvider: copilotProvider as never,
+        apiKeyProvider: makeApiKeyProvider() as never,
+        providerMode: ProviderMode.COPILOT,
+        workspaceReader: makeWorkspaceReader() as never,
+      });
+
+      const result = await runner.runRound(
+        makeRoundRequest({ subAgents: [AgentName.GPT] }),
+        makeCancellationToken(),
+        jest.fn(),
+      );
+
+      expect(reflectionToolResult?.isError).toBe(true);
+      expect(reflectionToolResult?.content).toContain('Reflection may only modify files written in the initial response');
+      expect(result.fileChanges).toHaveLength(1);
+      expect(result.fileChanges[0].filePath).toBe('src/allowed.ts');
+    });
+
+    it('builds mandatory consensus issues from JSON verifier output', async () => {
+      let callCount = 0;
+      let capturedReflectionMsg = '';
+      const feedbackA = '{"issues":[{"title":"Missing null checks","detail":"Validate nullable paths before dereference"}]}';
+      const feedbackB = '{"issues":[{"title":"Missing null checks","detail":"Guard null input and return early"}]}';
+      const copilotProvider = {
+        sendRequest: jest.fn().mockImplementation((opts: { userMessage: string }) => {
+          callCount++;
+          if (callCount === 1) return Promise.resolve('Main response');
+          if (callCount === 2) return Promise.resolve(feedbackA);
+          if (callCount === 3) return Promise.resolve(feedbackB);
+          capturedReflectionMsg = opts.userMessage;
+          return Promise.resolve('Reflected');
+        }),
+        isAvailable: jest.fn().mockResolvedValue(true),
+        invalidateModelCache: jest.fn(),
+      };
+
+      const runner = new AgentRunner({
+        copilotProvider: copilotProvider as never,
+        apiKeyProvider: makeApiKeyProvider() as never,
+        providerMode: ProviderMode.COPILOT,
+        workspaceReader: makeWorkspaceReader() as never,
+      });
+
+      await runner.runRound(
+        makeRoundRequest({ subAgents: [AgentName.GPT, AgentName.GEMINI] }),
+        makeCancellationToken(),
+        jest.fn(),
+      );
+
+      expect(capturedReflectionMsg).toContain('[MANDATORY CONSENSUS ISSUES — CODE-EXTRACTED]');
+      expect(capturedReflectionMsg).toContain('Missing null checks');
     });
   });
 
@@ -1815,73 +1931,45 @@ describe('AgentRunner', () => {
       expect(writeEvents[0].filePath).toBe('src/out.ts');
     });
 
-    it('DEVELOPER round reflection includes [FILES WRITTEN VIA write_file TOOL] section when files written', async () => {
-      // Covers line 286-287: writtenFilesSection when mainAgentFileChanges.length > 0
-      let callCount = 0;
-      let capturedReflectionMsg = '';
-      const copilotProvider = {
-        sendRequest: jest.fn().mockImplementation(async (opts: { userMessage: string; onToolCall?: (tc: ToolCall) => Promise<ToolResult> }) => {
-          callCount++;
-          if (callCount === 1 && opts.onToolCall) {
-            await opts.onToolCall({ id: 'w1', name: 'write_file', filePath: 'src/app.ts', content: 'const x = 1;' });
-          }
-          if (callCount === 3) capturedReflectionMsg = opts.userMessage;
-          return Promise.resolve(callCount === 2 ? 'Sub feedback' : 'Response');
-        }),
-        isAvailable: jest.fn().mockResolvedValue(true),
-        invalidateModelCache: jest.fn(),
-      };
-      const runner = new AgentRunner({
-        copilotProvider: copilotProvider as never,
-        apiKeyProvider: makeApiKeyProvider() as never,
-        providerMode: ProviderMode.COPILOT,
-        workspaceReader: makeWorkspaceReader() as never,
-      });
+    it('all rounds inline written file contents in reflection prompt', async () => {
+      // All rounds now inline file contents so reflection can apply fixes via write_file.
+      const testCases: Array<{ roundType: RoundType; filePath: string; content: string }> = [
+        { roundType: RoundType.DEVELOPER, filePath: 'src/app.ts', content: 'const x = 1;' },
+        { roundType: RoundType.ARCHITECT, filePath: 'docs/spec.md', content: '# Spec' },
+      ];
 
-      await runner.runRound(
-        makeRoundRequest({ roundType: RoundType.DEVELOPER, subAgents: [AgentName.GPT] }),
-        makeCancellationToken(),
-        jest.fn(),
-      );
+      for (const { roundType, filePath, content } of testCases) {
+        let callCount = 0;
+        let capturedReflectionMsg = '';
+        const copilotProvider = {
+          sendRequest: jest.fn().mockImplementation(async (opts: { userMessage: string; onToolCall?: (tc: ToolCall) => Promise<ToolResult> }) => {
+            callCount++;
+            if (callCount === 1 && opts.onToolCall) {
+              await opts.onToolCall({ id: 'w1', name: 'write_file', filePath, content });
+            }
+            if (callCount === 3) capturedReflectionMsg = opts.userMessage;
+            return Promise.resolve(callCount === 2 ? 'Sub feedback' : 'Response');
+          }),
+          isAvailable: jest.fn().mockResolvedValue(true),
+          invalidateModelCache: jest.fn(),
+        };
+        const runner = new AgentRunner({
+          copilotProvider: copilotProvider as never,
+          apiKeyProvider: makeApiKeyProvider() as never,
+          providerMode: ProviderMode.COPILOT,
+          workspaceReader: makeWorkspaceReader() as never,
+        });
 
-      expect(capturedReflectionMsg).toContain('[FILES WRITTEN VIA write_file TOOL]');
-      expect(capturedReflectionMsg).toContain('src/app.ts');
-      expect(capturedReflectionMsg).toContain('const x = 1;');
-    });
+        await runner.runRound(
+          makeRoundRequest({ roundType, subAgents: [AgentName.GPT] }),
+          makeCancellationToken(),
+          jest.fn(),
+        );
 
-    it('non-DEVELOPER round reflection includes write_file paths in [FILES YOU WROTE] note', async () => {
-      // Covers lines 292-293: mainAgentFileChanges paths merged into writtenFilePaths
-      let callCount = 0;
-      let capturedReflectionMsg = '';
-      const copilotProvider = {
-        sendRequest: jest.fn().mockImplementation(async (opts: { userMessage: string; onToolCall?: (tc: ToolCall) => Promise<ToolResult> }) => {
-          callCount++;
-          if (callCount === 1 && opts.onToolCall) {
-            await opts.onToolCall({ id: 'w1', name: 'write_file', filePath: 'docs/spec.md', content: '# Spec' });
-          }
-          if (callCount === 3) capturedReflectionMsg = opts.userMessage;
-          return Promise.resolve(callCount === 2 ? 'Sub feedback' : 'Response');
-        }),
-        isAvailable: jest.fn().mockResolvedValue(true),
-        invalidateModelCache: jest.fn(),
-      };
-      const runner = new AgentRunner({
-        copilotProvider: copilotProvider as never,
-        apiKeyProvider: makeApiKeyProvider() as never,
-        providerMode: ProviderMode.COPILOT,
-        workspaceReader: makeWorkspaceReader() as never,
-      });
-
-      await runner.runRound(
-        makeRoundRequest({ roundType: RoundType.ARCHITECT, subAgents: [AgentName.GPT] }),
-        makeCancellationToken(),
-        jest.fn(),
-      );
-
-      expect(capturedReflectionMsg).toContain('[FILES YOU WROTE');
-      expect(capturedReflectionMsg).toContain('docs/spec.md');
-      // Full content should NOT appear in prose-only reflection
-      expect(capturedReflectionMsg).not.toContain('# Spec');
+        expect(capturedReflectionMsg).toContain('[FILES WRITTEN VIA write_file TOOL');
+        expect(capturedReflectionMsg).toContain(filePath);
+        expect(capturedReflectionMsg).toContain(content);
+      }
     });
 
     it('fileChanges contains only write_file tool results (no FILE: block parsing)', async () => {
@@ -1952,6 +2040,138 @@ describe('AgentRunner', () => {
       await expect(
         runner.runRound(makeRoundRequest(), makeCancellationToken(), jest.fn()),
       ).rejects.toThrow(CancellationError);
+    });
+  });
+
+  // ── VERIFY: token parsing ─────────────────────────────────────────────────────
+
+  describe('VERIFY: token parsing', () => {
+    function makeRunner(response: string) {
+      const copilotProvider = makeCopilotProvider(response);
+      const runner = new AgentRunner({
+        copilotProvider: copilotProvider as never,
+        apiKeyProvider: makeApiKeyProvider() as never,
+        providerMode: ProviderMode.COPILOT,
+        workspaceReader: makeWorkspaceReader() as never,
+      });
+      return runner;
+    }
+
+    it('basic extraction — extracts verifyCommand and removes VERIFY: line from display', async () => {
+      const runner = makeRunner('Done.\n\nVERIFY: npm test');
+      const result = await runner.runRound(
+        makeRoundRequest({ subAgents: [] }),
+        makeCancellationToken(),
+        jest.fn(),
+      );
+
+      expect(result.verifyCommand).toBe('npm test');
+      expect(result.reflectedResponse).not.toContain('VERIFY:');
+      expect(result.reflectedResponse).toContain('Done.');
+    });
+
+    it('no VERIFY: line — verifyCommand is undefined and reflectedResponse equals original', async () => {
+      const response = 'Plain response with no special token.';
+      const runner = makeRunner(response);
+      const result = await runner.runRound(
+        makeRoundRequest({ subAgents: [] }),
+        makeCancellationToken(),
+        jest.fn(),
+      );
+
+      expect(result.verifyCommand).toBeUndefined();
+      expect(result.reflectedResponse).toBe(response);
+    });
+
+    it('VERIFY: inside a code fence — not extracted (inCodeBlock guard)', async () => {
+      const runner = makeRunner('Here:\n```\nVERIFY: npm test\n```\nDone.');
+      const result = await runner.runRound(
+        makeRoundRequest({ subAgents: [] }),
+        makeCancellationToken(),
+        jest.fn(),
+      );
+
+      expect(result.verifyCommand).toBeUndefined();
+    });
+
+    it('VERIFY: with empty command — verifyCommand remains undefined', async () => {
+      const runner = makeRunner('Some text.\nVERIFY:\nMore text.');
+      const result = await runner.runRound(
+        makeRoundRequest({ subAgents: [] }),
+        makeCancellationToken(),
+        jest.fn(),
+      );
+
+      expect(result.verifyCommand).toBeUndefined();
+    });
+
+    it('VERIFY: with whitespace-only command — verifyCommand remains undefined', async () => {
+      const runner = makeRunner('Some text.\nVERIFY:   \nMore text.');
+      const result = await runner.runRound(
+        makeRoundRequest({ subAgents: [] }),
+        makeCancellationToken(),
+        jest.fn(),
+      );
+
+      expect(result.verifyCommand).toBeUndefined();
+    });
+
+    it('VERIFY: with extra whitespace — command is trimmed correctly', async () => {
+      const runner = makeRunner('Done.\n  VERIFY:   npx jest --coverage  ');
+      const result = await runner.runRound(
+        makeRoundRequest({ subAgents: [] }),
+        makeCancellationToken(),
+        jest.fn(),
+      );
+
+      expect(result.verifyCommand).toBe('npx jest --coverage');
+    });
+
+    it('multiple VERIFY: lines — last one wins', async () => {
+      const runner = makeRunner('VERIFY: npm test\nVERIFY: npx jest');
+      const result = await runner.runRound(
+        makeRoundRequest({ subAgents: [] }),
+        makeCancellationToken(),
+        jest.fn(),
+      );
+
+      expect(result.verifyCommand).toBe('npx jest');
+    });
+
+    it('VERIFY: in middle of response — surrounding lines are kept in displayResponse', async () => {
+      const runner = makeRunner('Line1\nVERIFY: npm test\nLine3');
+      const result = await runner.runRound(
+        makeRoundRequest({ subAgents: [] }),
+        makeCancellationToken(),
+        jest.fn(),
+      );
+
+      expect(result.verifyCommand).toBe('npm test');
+      expect(result.reflectedResponse).toContain('Line1');
+      expect(result.reflectedResponse).toContain('Line3');
+      expect(result.reflectedResponse).not.toContain('VERIFY:');
+    });
+
+    it('VERIFY: token is returned in RoundResult.verifyCommand', async () => {
+      const runner = makeRunner('All done.\n\nVERIFY: npm test');
+      const result = await runner.runRound(
+        makeRoundRequest({ subAgents: [] }),
+        makeCancellationToken(),
+        jest.fn(),
+      );
+
+      expect(result.verifyCommand).toBe('npm test');
+    });
+
+    it('no VERIFY: token — result.verifyCommand is undefined', async () => {
+      const runner = makeRunner('Just a normal response.');
+      const result = await runner.runRound(
+        makeRoundRequest({ subAgents: [] }),
+        makeCancellationToken(),
+        jest.fn(),
+      );
+
+      expect(result.verifyCommand).toBeUndefined();
     });
   });
 });

@@ -1,8 +1,6 @@
 /**
  * Security-focused tests for ChatPanel:
- *  - runCommandWithApproval: user approval gate
  *  - MAX_ERROR_MESSAGE_LENGTH truncation
- *  - executeCommand input validation
  */
 
 jest.mock('vscode');
@@ -11,12 +9,8 @@ jest.mock('child_process');
 
 import * as vscode from 'vscode';
 import * as fs from 'fs';
-import * as cp from 'child_process';
 import { ChatPanel } from '../../src/panels/ChatPanel';
 import { ProviderMode } from '../../src/types';
-
-/** Drain all pending microtasks and macrotasks so fire-and-forget async chains complete. */
-const flushPromises = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -62,105 +56,6 @@ function createPanel(configManager = makeConfigManager()) {
   return { panel, onMessageCallback };
 }
 
-// ── runCommandWithApproval: user approval gate ────────────────────────────────
-
-describe('ChatPanel — runCommandWithApproval security gate', () => {
-  beforeEach(() => {
-    jest.clearAllMocks();
-    (ChatPanel as unknown as { instance: undefined }).instance = undefined;
-  });
-
-  afterEach(() => {
-    (ChatPanel as unknown as { instance: undefined }).instance = undefined;
-  });
-
-  it('does NOT execute command when user dismisses the approval dialog', async () => {
-    // showWarningMessage returns undefined = user dismissed
-    (vscode.window.showWarningMessage as jest.Mock).mockResolvedValue(undefined);
-
-    const { onMessageCallback } = createPanel();
-    if (!onMessageCallback) return;
-
-    await onMessageCallback({
-      type: 'executeCommand',
-      payload: { command: 'rm -rf /' },
-    });
-    await flushPromises();
-
-    // Approval was shown
-    expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
-      expect.stringContaining('rm -rf /'),
-      expect.anything(),
-      'Run',
-    );
-    // cp.exec must NOT have been called
-    expect(cp.exec as unknown as jest.Mock).not.toHaveBeenCalled();
-  });
-
-  it('opens terminal and sends command when user clicks Run', async () => {
-    (vscode.window.showWarningMessage as jest.Mock).mockResolvedValue('Run');
-
-    const { onMessageCallback } = createPanel();
-    if (!onMessageCallback) return;
-
-    await onMessageCallback({
-      type: 'executeCommand',
-      payload: { command: 'ls -la' },
-    });
-    await flushPromises();
-
-    expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
-      expect.stringContaining('ls -la'),
-      expect.anything(),
-      'Run',
-    );
-    // Terminal is used — NOT cp.exec
-    expect(vscode.window.createTerminal).toHaveBeenCalledWith(
-      expect.objectContaining({ name: 'AI Roundtable' }),
-    );
-    const terminal = (vscode.window.createTerminal as jest.Mock).mock.results[0]?.value;
-    expect(terminal.sendText).toHaveBeenCalledWith('ls -la');
-    expect(cp.exec as unknown as jest.Mock).not.toHaveBeenCalled();
-  });
-});
-
-// ── executeCommand input validation ──────────────────────────────────────────
-
-describe('ChatPanel — executeCommand input validation', () => {
-  beforeEach(() => {
-    jest.clearAllMocks();
-    (ChatPanel as unknown as { instance: undefined }).instance = undefined;
-  });
-
-  afterEach(() => {
-    (ChatPanel as unknown as { instance: undefined }).instance = undefined;
-  });
-
-  it('ignores executeCommand with empty string', async () => {
-    const { onMessageCallback } = createPanel();
-    if (!onMessageCallback) return;
-
-    await onMessageCallback({ type: 'executeCommand', payload: { command: '' } });
-    expect(vscode.window.showWarningMessage).not.toHaveBeenCalled();
-  });
-
-  it('ignores executeCommand with whitespace-only string', async () => {
-    const { onMessageCallback } = createPanel();
-    if (!onMessageCallback) return;
-
-    await onMessageCallback({ type: 'executeCommand', payload: { command: '   ' } });
-    expect(vscode.window.showWarningMessage).not.toHaveBeenCalled();
-  });
-
-  it('ignores executeCommand with missing payload', async () => {
-    const { onMessageCallback } = createPanel();
-    if (!onMessageCallback) return;
-
-    await onMessageCallback({ type: 'executeCommand', payload: {} });
-    expect(vscode.window.showWarningMessage).not.toHaveBeenCalled();
-  });
-});
-
 // ── MAX_ERROR_MESSAGE_LENGTH truncation ───────────────────────────────────────
 
 describe('ChatPanel — error message truncation', () => {
@@ -193,5 +88,42 @@ describe('ChatPanel — error message truncation', () => {
     if (errorContent?.payload?.content) {
       expect(errorContent.payload.content.length).toBeLessThanOrEqual(300 + 1); // +1 for '…'
     }
+  });
+});
+
+describe('ChatPanel — file cache watcher wiring', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    (ChatPanel as unknown as { instance: undefined }).instance = undefined;
+  });
+
+  afterEach(() => {
+    (ChatPanel as unknown as { instance: undefined }).instance = undefined;
+  });
+
+  it('registers onDidCreate invalidation handler on file watcher', () => {
+    createPanel();
+
+    const watcher = (vscode.workspace.createFileSystemWatcher as jest.Mock).mock.results[0]?.value as
+      | { onDidCreate: jest.Mock }
+      | undefined;
+    expect(watcher?.onDidCreate).toHaveBeenCalled();
+  });
+
+  it('creates one watcher per workspace folder in multi-root mode', () => {
+    (vscode.workspace as { workspaceFolders: unknown }).workspaceFolders = [
+      { uri: { fsPath: '/workspace-a' }, name: 'a', index: 0 },
+      { uri: { fsPath: '/workspace-b' }, name: 'b', index: 1 },
+    ];
+    (fs.readFileSync as jest.Mock).mockReturnValue('<html>{{NONCE}}</html>');
+    ChatPanel.createOrReveal(
+      {
+        extensionUri: { fsPath: '/ext', scheme: 'file' } as vscode.Uri,
+        globalStorageUri: { fsPath: '/global-storage', scheme: 'file' } as vscode.Uri,
+        globalState: { get: jest.fn().mockReturnValue(undefined), update: jest.fn().mockResolvedValue(undefined) },
+      } as unknown as vscode.ExtensionContext,
+      makeConfigManager() as never,
+    );
+    expect(vscode.workspace.createFileSystemWatcher).toHaveBeenCalledTimes(2);
   });
 });

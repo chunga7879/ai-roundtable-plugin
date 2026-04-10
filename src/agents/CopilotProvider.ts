@@ -34,17 +34,17 @@ function extractXmlToolCalls(text: string): Array<{ name: 'read_file'; path: str
     const body = m[2];
     if (toolName === 'read_file') {
       const paramMatch = /<parameter\s+name="path">([^<]+)<\/parameter>/.exec(body);
-      if (paramMatch) calls.push({ name: 'read_file', path: paramMatch[1].trim() });
+      if (paramMatch) {calls.push({ name: 'read_file', path: paramMatch[1].trim() });}
     } else if (toolName === 'run_command') {
       const paramMatch = /<parameter\s+name="command">([^<]+)<\/parameter>/.exec(body);
-      if (paramMatch) calls.push({ name: 'run_command', command: paramMatch[1].trim() });
+      if (paramMatch) {calls.push({ name: 'run_command', command: paramMatch[1].trim() });}
     } else if (toolName === 'write_file') {
       const pathMatch = /<parameter\s+name="path">([^<]+)<\/parameter>/.exec(body);
       const contentMatch = /<parameter\s+name="content">([\s\S]*?)<\/parameter>/.exec(body);
-      if (pathMatch && contentMatch) calls.push({ name: 'write_file', path: pathMatch[1].trim(), content: contentMatch[1] });
+      if (pathMatch && contentMatch) {calls.push({ name: 'write_file', path: pathMatch[1].trim(), content: contentMatch[1] });}
     } else if (toolName === 'delete_file') {
       const paramMatch = /<parameter\s+name="path">([^<]+)<\/parameter>/.exec(body);
-      if (paramMatch) calls.push({ name: 'delete_file', path: paramMatch[1].trim() });
+      if (paramMatch) {calls.push({ name: 'delete_file', path: paramMatch[1].trim() });}
     }
   }
   return calls;
@@ -232,7 +232,7 @@ export class CopilotProvider {
     let finalText = '';
 
     // Agentic loop: keep calling until no more tool calls
-    while (true) {
+    for (;;) {
       if (cancellationToken.isCancellationRequested) {
         throw new vscode.CancellationError();
       }
@@ -241,7 +241,7 @@ export class CopilotProvider {
       try {
         response = await model.sendRequest(messages, { tools }, cancellationToken);
       } catch (err) {
-        if (err instanceof vscode.CancellationError) throw err;
+        if (err instanceof vscode.CancellationError) {throw err;}
         this.invalidateModelCache();
         throw new CopilotProviderError(
           `Copilot request failed for agent ${agentName}: ${err instanceof Error ? err.message : String(err)}`,
@@ -265,7 +265,7 @@ export class CopilotProvider {
           }
         }
       } catch (err) {
-        if (err instanceof vscode.CancellationError) throw err;
+        if (err instanceof vscode.CancellationError) {throw err;}
         throw new CopilotProviderError(
           `Failed to read Copilot response stream for agent ${agentName}: ${err instanceof Error ? err.message : String(err)}`,
           err,
@@ -325,8 +325,8 @@ export class CopilotProvider {
 
       // Append assistant message with text + tool calls
       const assistantParts: (vscode.LanguageModelTextPart | vscode.LanguageModelToolCallPart)[] = [];
-      if (text) assistantParts.push(new vscode.LanguageModelTextPart(text));
-      for (const tc of toolCallParts) assistantParts.push(tc);
+      if (text) {assistantParts.push(new vscode.LanguageModelTextPart(text));}
+      for (const tc of toolCallParts) {assistantParts.push(tc);}
       messages.push(vscode.LanguageModelChatMessage.Assistant(assistantParts));
 
       // Execute tool calls and append results

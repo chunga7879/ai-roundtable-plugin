@@ -89,7 +89,7 @@
           "default": 60,
           "minimum": 10,
           "maximum": 600,
-          "description": "Timeout in seconds for shell commands run in the Runner round (10–600)."
+          "description": "Timeout in seconds for shell commands run during agent execution (10–600)."
         },
         "aiRoundtable.copilotModelFamily": {
           "type": "string",

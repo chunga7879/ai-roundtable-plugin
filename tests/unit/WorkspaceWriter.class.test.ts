@@ -9,6 +9,20 @@ function setWorkspace(rootPath = '/workspace/project') {
   ];
 }
 
+function setMultiRootWorkspace() {
+  (vscode.workspace as { workspaceFolders: unknown }).workspaceFolders = [
+    { uri: vscode.Uri.file('/workspace/a'), name: 'a', index: 0 },
+    { uri: vscode.Uri.file('/workspace/b'), name: 'b', index: 1 },
+  ];
+}
+
+function setMultiRootWorkspaceWithDuplicateNames() {
+  (vscode.workspace as { workspaceFolders: unknown }).workspaceFolders = [
+    { uri: vscode.Uri.file('/workspace/a'), name: 'repo', index: 0 },
+    { uri: vscode.Uri.file('/workspace/b'), name: 'repo', index: 1 },
+  ];
+}
+
 function clearWorkspace() {
   (vscode.workspace as { workspaceFolders: unknown }).workspaceFolders = undefined;
 }
@@ -58,6 +72,13 @@ describe('WorkspaceWriter.previewChange', () => {
       expect.stringContaining('(new file)'),
       expect.anything(),
     );
+  });
+
+  it('requires workspace prefix for multi-root preview paths', async () => {
+    setMultiRootWorkspace();
+    const writer = new WorkspaceWriter();
+    await expect(writer.previewChange({ ...existingChange, filePath: 'src/app.ts' }))
+      .rejects.toBeInstanceOf(WorkspaceWriterError);
   });
 });
 
@@ -127,6 +148,27 @@ describe('WorkspaceWriter.applyChanges', () => {
     await writer.applyChanges([existingChange, { ...existingChange, filePath: 'src/b.ts' }]);
     expect(vscode.workspace.applyEdit).toHaveBeenCalledTimes(1);
   });
+
+  it('supports prefixed file paths in multi-root workspaces', async () => {
+    setMultiRootWorkspace();
+    const writer = new WorkspaceWriter();
+    const result = await writer.applyChanges([{ ...existingChange, filePath: 'b/src/app.ts' }]);
+    expect(result.appliedFiles).toContain('b/src/app.ts');
+  });
+
+  it('supports indexed prefixes when workspace folder names collide', async () => {
+    setMultiRootWorkspaceWithDuplicateNames();
+    const writer = new WorkspaceWriter();
+    const result = await writer.applyChanges([{ ...existingChange, filePath: '1:repo/src/app.ts' }]);
+    expect(result.appliedFiles).toContain('1:repo/src/app.ts');
+  });
+
+  it('rejects unprefixed file paths in multi-root workspaces', async () => {
+    setMultiRootWorkspace();
+    const writer = new WorkspaceWriter();
+    await expect(writer.applyChanges([existingChange]))
+      .rejects.toBeInstanceOf(WorkspaceWriterError);
+  });
 });
 
 // ── applySingleChange ─────────────────────────────────────────────────────────
@@ -165,5 +207,19 @@ describe('WorkspaceWriter.applySingleChange', () => {
     const writer = new WorkspaceWriter();
     await expect(writer.applySingleChange(existingChange))
       .rejects.toBeInstanceOf(WorkspaceWriterError);
+  });
+
+  it('supports prefixed applySingleChange path in multi-root workspaces', async () => {
+    setMultiRootWorkspace();
+    const writer = new WorkspaceWriter();
+    await expect(writer.applySingleChange({ ...existingChange, filePath: 'a/src/app.ts' }))
+      .resolves.toBeUndefined();
+  });
+
+  it('supports indexed applySingleChange prefix when workspace folder names collide', async () => {
+    setMultiRootWorkspaceWithDuplicateNames();
+    const writer = new WorkspaceWriter();
+    await expect(writer.applySingleChange({ ...existingChange, filePath: '0:repo/src/app.ts' }))
+      .resolves.toBeUndefined();
   });
 });

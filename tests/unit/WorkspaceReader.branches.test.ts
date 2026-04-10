@@ -15,6 +15,9 @@ const mockWindow = vscode.window as unknown as {
   activeTextEditor: typeof vscode.window.activeTextEditor;
   visibleTextEditors: typeof vscode.window.visibleTextEditors;
 };
+const mockWorkspaceWithDocs = mockWs as unknown as {
+  textDocuments: Array<{ uri: vscode.Uri; isUntitled: boolean; isDirty?: boolean; getText?: () => string }>;
+};
 
 function makeUri(path: string) {
   return vscode.Uri.file(path);
@@ -30,6 +33,7 @@ function teardown() {
   (mockWs as unknown as { workspaceFolders: unknown }).workspaceFolders = undefined;
   mockWindow.activeTextEditor = undefined;
   mockWindow.visibleTextEditors = [];
+  mockWorkspaceWithDocs.textDocuments = [];
   jest.clearAllMocks();
 }
 

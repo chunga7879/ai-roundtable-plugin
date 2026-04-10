@@ -73,7 +73,7 @@ Agents without a configured key are automatically disabled in the UI.
 **What happens:**
 - Agent calls `read_file` for files it needs (up to the tool call limit)
 - Agent produces prose response and/or calls `write_file` for each file it creates or modifies
-- Agent may call `run_command` to lint, audit, or test code (Developer/DevOps rounds)
+- Agent may call `run_command` to lint or audit code against the current workspace state (Developer/DevOps rounds) — NOT for test or build commands (files are staged, not yet on disk)
 
 **Output:**
 - Text response (streamed to UI)
@@ -104,8 +104,7 @@ Sub-agents run **in parallel**. Each produces independent feedback without seein
 **Input:**
 - Same system prompt as Step 1 (role expertise + execution instructions)
 - Main agent's Step 1 response
-- For Developer and QA rounds: full content of all files written in Step 1 (so the agent can apply precise code fixes)
-- For all other rounds: list of file paths written in Step 1 (agent re-emits them via `write_file`)
+- For all rounds: full content of files written in Step 1 (so reflection can apply precise fixes via `write_file`)
 - All valid sub-agent feedbacks
 
 **Reflection rules:**
@@ -308,7 +307,7 @@ All reviewers provide independent passes. Main agent aggregates findings. Unanim
 1. Reads existing test files — extends coverage rather than rewriting
 2. Identifies untested branches, edge cases, failure paths, and security scenarios
 3. Writes complete test files via `write_file`
-4. May call `run_command` to verify tests pass
+4. Outputs `VERIFY: <test command>` so the user can run tests after Apply
 
 **Output:**
 - Prose: what coverage was added and why
@@ -431,6 +430,8 @@ User clicks a file → VS Code diff preview (current vs proposed)
   → validateApplyChangesPayload() (re-validated in extension host)
   → WorkspaceWriter.applyChanges() → vscode.workspace.applyEdit
   → If dependency files changed → approve/deny dialog for install command
+  → If AI output a VERIFY: command → approve/deny dialog to run verification command
+      → If command exits non-zero → output fed back to AI for diagnosis and fix
   → File cache cleared (next turn re-reads from disk)
 
 "Discard" → panel hides, no changes written
@@ -490,7 +491,7 @@ Reviewer round (GPT main, Claude sub)
 QA round (Claude main)
   "Write tests for the auth module"
   → write_file calls for tests/auth/*.test.ts → apply changes
-  → RUN: npm test → click ▶ button → approve → fix failures and retry
+  → "Run verification command? npm test" dialog → Approve → fix failures and retry
 ```
 
 ---
@@ -506,7 +507,7 @@ Developer round (Claude main)
   "getUser() returns undefined for deleted users, should throw NotFoundError"
   → read_file: src/users/service.ts
   → write_file: src/users/service.ts with fix → apply changes
-  → RUN: npm test -- --testPathPattern=users → click ▶ button → approve
+  → "Run verification command?" dialog → Approve
 ```
 
 ---
@@ -540,8 +541,8 @@ QA round (Claude main)
   → read_file: src/workspace/WorkspaceWriter.ts
   → read_file: tests/unit/WorkspaceWriter.test.ts
   → write_file: tests/unit/WorkspaceWriter.test.ts → apply
-  → RUN: npx jest --coverage tests/unit/WorkspaceWriter.test.ts
-     → click ▶ button → approve → identify remaining gaps → fix and retry
+  → "Run verification command? npx jest --coverage tests/unit/WorkspaceWriter.test.ts" dialog
+     → Approve → identify remaining gaps → fix and retry
 ```
 
 ---
@@ -592,7 +593,6 @@ Turn 3: "Show me the Redis data model"
 | `previewChange` | `{ fileChange }` | Open diff view for one file |
 | `requestConfig` | — | Get current provider config |
 | `configureProvider` | — | Open provider setup flow |
-| `executeCommand` | `{ command }` | Request approve/deny then execute a command |
 | `clearChat` | — | Clear current conversation |
 | `retryLastMessage` | — | Retry the last failed message |
 | `cancelRequest` | — | Cancel the in-flight request |
