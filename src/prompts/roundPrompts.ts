@@ -1,4 +1,4 @@
-import { RoundType } from '../types';
+import type { RoundType } from '../types';
 import { ROUND_LABELS, ROUND_PROMPTS } from './roundPromptCatalog';
 import {
   BASE_SYSTEM_HEADER,
