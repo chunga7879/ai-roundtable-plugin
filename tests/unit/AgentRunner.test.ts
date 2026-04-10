@@ -1433,6 +1433,48 @@ describe('AgentRunner', () => {
       expect(capturedReflectionMsg).toContain('[MANDATORY CONSENSUS ISSUES — CODE-EXTRACTED]');
       expect(capturedReflectionMsg).toContain('Missing null checks');
     });
+
+    it('extracts JSON issues even when verifier adds surrounding prose', async () => {
+      let callCount = 0;
+      let capturedReflectionMsg = '';
+      const feedbackA = [
+        'Verifier summary:',
+        '{"issues":[{"title":"Missing auth checks","detail":"Protect admin endpoint"}]}',
+        'End of report.',
+      ].join('\n');
+      const feedbackB = [
+        'Please review findings below.',
+        '{"issues":[{"title":"Missing auth checks","detail":"Enforce RBAC on route"}]}',
+      ].join('\n');
+      const copilotProvider = {
+        sendRequest: jest.fn().mockImplementation((opts: { userMessage: string }) => {
+          callCount++;
+          if (callCount === 1) return Promise.resolve('Main response');
+          if (callCount === 2) return Promise.resolve(feedbackA);
+          if (callCount === 3) return Promise.resolve(feedbackB);
+          capturedReflectionMsg = opts.userMessage;
+          return Promise.resolve('Reflected');
+        }),
+        isAvailable: jest.fn().mockResolvedValue(true),
+        invalidateModelCache: jest.fn(),
+      };
+
+      const runner = new AgentRunner({
+        copilotProvider: copilotProvider as never,
+        apiKeyProvider: makeApiKeyProvider() as never,
+        providerMode: ProviderMode.COPILOT,
+        workspaceReader: makeWorkspaceReader() as never,
+      });
+
+      await runner.runRound(
+        makeRoundRequest({ subAgents: [AgentName.GPT, AgentName.GEMINI] }),
+        makeCancellationToken(),
+        jest.fn(),
+      );
+
+      expect(capturedReflectionMsg).toContain('[MANDATORY CONSENSUS ISSUES — CODE-EXTRACTED]');
+      expect(capturedReflectionMsg).toContain('Missing auth checks');
+    });
   });
 
   // ── Sub-agent context passing ─────────────────────────────────────────────────

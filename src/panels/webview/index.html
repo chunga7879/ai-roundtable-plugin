@@ -509,6 +509,80 @@
     }
     details[open] .sub-agent-toggle { transform: rotate(90deg); }
     .sub-agent-details-body { padding-top: var(--spacing-sm); }
+    .verifier-report {
+      display: flex;
+      flex-direction: column;
+      gap: var(--spacing-md);
+    }
+    .verifier-report-header {
+      display: flex;
+      align-items: center;
+      gap: var(--spacing-xs);
+      color: var(--vscode-foreground);
+      font-size: var(--font-size-md);
+      font-weight: 600;
+      letter-spacing: 0.01em;
+    }
+    .verifier-report-count {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 18px;
+      height: 18px;
+      padding: 0 6px;
+      border-radius: 999px;
+      font-size: 10px;
+      line-height: 1;
+      background: var(--vscode-badge-background, rgba(128, 128, 128, 0.35));
+      color: var(--vscode-badge-foreground, var(--vscode-foreground));
+    }
+    .verifier-issues {
+      display: flex;
+      flex-direction: column;
+      gap: var(--spacing-sm);
+    }
+    .verifier-issue-card {
+      border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.45));
+      border-left: 3px solid var(--vscode-focusBorder, #007acc);
+      border-radius: var(--border-radius);
+      padding: var(--spacing-md);
+      background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+    }
+    .verifier-issue-title {
+      font-size: calc(var(--font-size-md) + 1px);
+      font-weight: 600;
+      line-height: 1.45;
+      margin-bottom: 6px;
+      color: var(--vscode-foreground);
+    }
+    .verifier-issue-detail {
+      font-size: var(--font-size-md);
+      line-height: 1.65;
+      color: var(--vscode-foreground);
+      word-break: break-word;
+    }
+    .verifier-issue-detail p { margin: 0.3em 0; }
+    .verifier-issue-detail p:first-child { margin-top: 0; }
+    .verifier-issue-detail p:last-child { margin-bottom: 0; }
+    .verifier-issue-detail ul,
+    .verifier-issue-detail ol { margin: 0.35em 0; padding-left: 1.3em; }
+    .verifier-issue-detail li { margin: 0.15em 0; }
+    .verifier-issue-detail code {
+      font-family: var(--vscode-editor-font-family, monospace);
+      font-size: 0.9em;
+      background-color: var(--vscode-textCodeBlock-background, rgba(128,128,128,0.15));
+      padding: 0.08em 0.3em;
+      border-radius: 3px;
+    }
+    .verifier-empty {
+      border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+      border-radius: var(--border-radius);
+      padding: var(--spacing-md);
+      background: var(--vscode-editor-background);
+      color: var(--vscode-testing-iconPassed, #4caf50);
+      font-size: var(--font-size-md);
+      font-weight: 500;
+    }
 
     .message-body.error {
       background-color: var(--vscode-inputValidation-errorBackground);
@@ -1363,7 +1437,7 @@
 
           const body = document.createElement('div');
           body.className = 'sub-agent-details-body message-body sub-agent';
-          renderAgentContent(body, msg.content);
+          renderSubAgentContent(body, msg.content, true);
           details.appendChild(body);
 
           wrapper.appendChild(details);
@@ -1583,6 +1657,226 @@
       }
 
       /**
+       * @param {HTMLElement} container
+       * @param {string} content
+       * @param {boolean} isVerifier
+       */
+      function renderSubAgentContent(container, content, isVerifier) {
+        if (!isVerifier) {
+          renderAgentContent(container, content);
+          return;
+        }
+        const issues = extractVerifierIssues(content);
+        if (issues === null) {
+          renderAgentContent(container, content);
+          return;
+        }
+        renderVerifierIssues(container, issues);
+      }
+
+      /**
+       * @param {string} content
+       * @returns {Array<{title: string, detail: string}> | null}
+       */
+      function extractVerifierIssues(content) {
+        const candidates = [];
+        const pushUnique = function (value) {
+          const trimmed = value.trim();
+          if (!trimmed || candidates.includes(trimmed)) {
+            return;
+          }
+          candidates.push(trimmed);
+        };
+
+        const fenced = content.match(/```(?:json)?\s*([\s\S]*?)```/gi) || [];
+        for (const block of fenced) {
+          const inner = block.replace(/^```(?:json)?\s*/i, '').replace(/```$/i, '');
+          pushUnique(inner);
+        }
+
+        const whole = content.trim();
+        if (whole) {
+          const extracted = extractEnclosingJsonObject(whole, '"issues"');
+          if (extracted) {
+            pushUnique(extracted);
+          }
+          pushUnique(whole);
+        }
+
+        for (const candidate of candidates) {
+          try {
+            const parsed = JSON.parse(candidate);
+            const issues = normalizeVerifierIssuesPayload(parsed);
+            if (issues !== null) {
+              return issues;
+            }
+          } catch (_) {
+            // Try the next candidate.
+          }
+        }
+        return null;
+      }
+
+      /**
+       * @param {unknown} parsed
+       * @returns {Array<{title: string, detail: string}> | null}
+       */
+      function normalizeVerifierIssuesPayload(parsed) {
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          return null;
+        }
+        if (!Object.prototype.hasOwnProperty.call(parsed, 'issues')) {
+          return null;
+        }
+
+        const payload = /** @type {{issues?: unknown}} */ (parsed);
+        const issuesValue = payload.issues;
+
+        if (Array.isArray(issuesValue)) {
+          return issuesValue
+            .map(function (item, index) {
+              if (typeof item === 'string') {
+                const title = item.trim();
+                return {
+                  title: title || ('Issue ' + String(index + 1)),
+                  detail: '',
+                };
+              }
+              if (item && typeof item === 'object') {
+                const issueObj = /** @type {{title?: unknown, detail?: unknown}} */ (item);
+                const rawTitle = typeof issueObj.title === 'string' ? issueObj.title.trim() : '';
+                const rawDetail = typeof issueObj.detail === 'string' ? issueObj.detail.trim() : '';
+                if (!rawTitle && !rawDetail) {
+                  return null;
+                }
+                return {
+                  title: rawTitle || ('Issue ' + String(index + 1)),
+                  detail: rawDetail,
+                };
+              }
+              return null;
+            })
+            .filter(function (issue) { return issue !== null; });
+        }
+
+        if (typeof issuesValue === 'string' && /^(none|n\/a)$/i.test(issuesValue.trim())) {
+          return [];
+        }
+
+        return [];
+      }
+
+      /**
+       * @param {string} text
+       * @param {string} requiredToken
+       * @returns {string | null}
+       */
+      function extractEnclosingJsonObject(text, requiredToken) {
+        const tokenIndex = text.indexOf(requiredToken);
+        if (tokenIndex === -1) {
+          return null;
+        }
+
+        const objectStart = text.lastIndexOf('{', tokenIndex);
+        if (objectStart === -1) {
+          return null;
+        }
+
+        let depth = 0;
+        let inString = false;
+        let escaped = false;
+
+        for (let i = objectStart; i < text.length; i++) {
+          const ch = text[i];
+
+          if (inString) {
+            if (escaped) {
+              escaped = false;
+              continue;
+            }
+            if (ch === '\\') {
+              escaped = true;
+              continue;
+            }
+            if (ch === '"') {
+              inString = false;
+            }
+            continue;
+          }
+
+          if (ch === '"') {
+            inString = true;
+            continue;
+          }
+          if (ch === '{') {
+            depth += 1;
+            continue;
+          }
+          if (ch === '}') {
+            depth -= 1;
+            if (depth === 0) {
+              return text.slice(objectStart, i + 1);
+            }
+          }
+        }
+
+        return null;
+      }
+
+      /**
+       * @param {HTMLElement} container
+       * @param {Array<{title: string, detail: string}>} issues
+       */
+      function renderVerifierIssues(container, issues) {
+        const report = document.createElement('div');
+        report.className = 'verifier-report';
+
+        const header = document.createElement('div');
+        header.className = 'verifier-report-header';
+        header.textContent = 'Verifier Findings';
+
+        const count = document.createElement('span');
+        count.className = 'verifier-report-count';
+        count.textContent = String(issues.length);
+        header.appendChild(count);
+        report.appendChild(header);
+
+        if (issues.length === 0) {
+          const empty = document.createElement('div');
+          empty.className = 'verifier-empty';
+          empty.textContent = 'No actionable issues reported.';
+          report.appendChild(empty);
+          container.appendChild(report);
+          return;
+        }
+
+        const list = document.createElement('div');
+        list.className = 'verifier-issues';
+
+        issues.forEach(function (issue, index) {
+          const card = document.createElement('div');
+          card.className = 'verifier-issue-card';
+
+          const title = document.createElement('div');
+          title.className = 'verifier-issue-title';
+          title.textContent = String(index + 1) + '. ' + issue.title;
+          card.appendChild(title);
+
+          if (issue.detail) {
+            const detail = document.createElement('div');
+            detail.className = 'verifier-issue-detail';
+            renderMarkdown(detail, issue.detail);
+            card.appendChild(detail);
+          }
+
+          list.appendChild(card);
+        });
+
+        report.appendChild(list);
+        container.appendChild(report);
+      }
+
+      /**
        * @param {{id: string, content: string}} update
        */
       function updateMessage(update) {
@@ -1661,7 +1955,7 @@
 
         const body = document.createElement('div');
         body.className = 'sub-agent-details-body message-body sub-agent';
-        renderAgentContent(body, payload.content);
+        renderSubAgentContent(body, payload.content, /\(verifier\)/i.test(payload.label));
         details.appendChild(body);
 
         wrapper.appendChild(details);

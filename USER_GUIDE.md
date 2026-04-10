@@ -44,6 +44,11 @@ The **main agent** is the AI model that produces the response to your request. Y
 
 You can select zero, one, or multiple sub-agents. More sub-agents increases reliability at the cost of more API calls and latency.
 
+Sub-agents do not have tool access. They verify using the primary agent's context package:
+- files read by the primary agent,
+- files written by the primary agent, and
+- command outputs produced by the primary agent.
+
 **Why use sub-agents?** A second independent model reviewing an output catches errors the first model missed. Two independent reviewers flagging the same issue is strong evidence that the issue is real — and the pipeline uses this signal to decide what the main agent must fix.
 
 ### What is Reflection?
@@ -52,6 +57,11 @@ After sub-agents provide feedback, the main agent runs a third time in **reflect
 
 - If **all** sub-agents flagged the same issue → the main agent **must** correct it.
 - If only **some** sub-agents flagged it → the main agent **decides**; it must explain any rejections.
+
+Reflection has strict safety constraints:
+- `read_file` and `run_command` are disabled.
+- The agent may modify only files that were written in Step 1 of the same turn.
+- If a required fix touches files outside that set, it must report them via `OUT_OF_SCOPE_CHANGES_JSON` instead of editing those files.
 
 ---
 
@@ -130,7 +140,7 @@ Select one or more additional agents to verify the main agent's output. For most
 - **1 sub-agent** — good balance: catches obvious errors without large cost
 - **2+ sub-agents** — highest reliability; use for critical reviews, security-sensitive code, or complex architecture
 
-**Note:** The main agent and a sub-agent should be **different** models. If you select the same model as both main and sub-agent, the sub-agent step is skipped automatically.
+**Note:** The main agent and sub-agents must be different. Selecting the same model as both main and sub-agent is rejected by input validation.
 
 ---
 

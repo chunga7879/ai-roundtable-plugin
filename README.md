@@ -32,6 +32,7 @@ git clone <repo>
 cd ai-roundtable-plugin
 npm install
 npm run compile        # or: npm run watch
+npm run quality:check  # lint + coverage gate
 ```
 
 Press `F5` in VS Code to launch the Extension Development Host.
@@ -96,7 +97,9 @@ src/
 ├── errors.ts             ← Typed error hierarchy
 ├── types/index.ts        ← Enums, interfaces, webview message validators
 ├── prompts/
-│   └── roundPrompts.ts   ← System prompts for all round types
+│   ├── roundPrompts.ts       ← Prompt builders (main/sub/reflection)
+│   ├── roundPromptCatalog.ts ← Round-specific expertise/instructions
+│   └── roundPromptPolicies.ts← Shared tool/reflection/sub-agent policies
 ├── agents/
 │   ├── AgentRunner.ts    ← 3-step pipeline (main → sub-verify → reflect) + VERIFY: parsing
 │   ├── CopilotProvider.ts← vscode.lm API (GitHub Copilot)

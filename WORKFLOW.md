@@ -31,7 +31,9 @@ VS Code Extension Host
 ├── sessions/
 │   └── SessionManager.ts  ← Persists and restores conversation history
 ├── prompts/
-│   └── roundPrompts.ts    ← System prompts for all round types
+│   ├── roundPrompts.ts        ← Prompt builders (main/sub/reflection)
+│   ├── roundPromptCatalog.ts  ← Round-specific expertise/instructions
+│   └── roundPromptPolicies.ts ← Shared tool/reflection/sub-agent policies
 ├── types/index.ts         ← Shared types + webview input validators
 └── errors.ts              ← Typed error hierarchy
 ```
@@ -73,7 +75,8 @@ Agents without a configured key are automatically disabled in the UI.
 **What happens:**
 - Agent calls `read_file` for files it needs (up to the tool call limit)
 - Agent produces prose response and/or calls `write_file` for each file it creates or modifies
-- Agent may call `run_command` to lint or audit code against the current workspace state (Developer/DevOps rounds) — NOT for test or build commands (files are staged, not yet on disk)
+- Agent may call `run_command` only for checks against current on-disk workspace state (for example dependency/security checks)
+- Validation of newly written files belongs in `VERIFY:` post-apply commands, not `run_command`
 
 **Output:**
 - Text response (streamed to UI)
@@ -86,6 +89,7 @@ Agents without a configured key are automatically disabled in the UI.
 **Input per sub-agent:**
 - System prompt: role expertise only — no tool-call instructions (sub-agents cannot call tools)
 - Files read by the main agent during Step 1
+- Files written by the main agent during Step 1
 - Command outputs produced by the main agent during Step 1
 - Prior user turns from conversation history (for context)
 - Main agent's full response from Step 1
@@ -102,14 +106,18 @@ Sub-agents run **in parallel**. Each produces independent feedback without seein
 ### Step 3 — Reflection (skipped if no valid sub-agent feedback)
 
 **Input:**
-- Same system prompt as Step 1 (role expertise + execution instructions)
+- Reflection system prompt (role expertise + reflection-only overrides)
 - Main agent's Step 1 response
 - For all rounds: full content of files written in Step 1 (so reflection can apply precise fixes via `write_file`)
 - All valid sub-agent feedbacks
 
 **Reflection rules:**
-- ALL sub-agents flagged the same issue → main agent **must** correct it
+- Mandatory issues come from code-extracted consensus list (`[MANDATORY CONSENSUS ISSUES — CODE-EXTRACTED]`)
+- ALL valid sub-agents flagged the same issue → main agent **must** correct it
 - Only some sub-agents flagged an issue → main agent decides; must write `REJECTED [agent]: [reason]` if rejecting feedback
+- `read_file` and `run_command` are disabled in reflection
+- Reflection may modify only files written in Step 1 of the same turn
+- If a required fix touches other files, reflection must emit `OUT_OF_SCOPE_CHANGES_JSON` instead of editing them
 
 **Output:**
 - Final refined text response (streamed to UI)
@@ -222,13 +230,14 @@ Sub-agents may challenge different aspects (e.g. one flags security, another fla
 **Process:**
 1. Reads existing files before writing — extends or fixes rather than rewrites
 2. Writes complete, immediately runnable code via `write_file` for each file
-3. Calls `run_command` to lint and audit new dependencies
+3. Uses `run_command` only for dependency/security checks against current on-disk workspace state when needed
 4. Emits pre-output flags: `⚠️ UNVERIFIED`, `⚠️ SECURITY_SENSITIVE`, `⚠️ VERSION_CONFLICT` when applicable
+5. Emits `VERIFY:` command(s) for post-apply validation of newly written code
 
 **Output:**
 - Prose: what was changed and any flags
 - `write_file: <path>` — one call per file created or modified (complete content, no placeholders)
-- `run_command: <lint/audit command>` — verifies code quality inline
+- `VERIFY: <command>` — suggested post-apply validation command
 
 #### Main Agent + 1 Sub-Agent
 

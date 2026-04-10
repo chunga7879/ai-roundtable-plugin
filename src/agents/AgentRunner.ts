@@ -658,19 +658,84 @@ export class AgentRunner {
    */
   private extractJsonCandidates(feedback: string): string[] {
     const candidates: string[] = [];
+    const pushUnique = (value: string): void => {
+      const trimmed = value.trim();
+      if (trimmed.length === 0 || candidates.includes(trimmed)) {
+        return;
+      }
+      candidates.push(trimmed);
+    };
+
     const fenced = feedback.match(/```(?:json)?\s*([\s\S]*?)```/gi) ?? [];
     for (const block of fenced) {
       const inner = block.replace(/^```(?:json)?\s*/i, '').replace(/```$/i, '').trim();
-      if (inner.length > 0) {
-        candidates.push(inner);
-      }
+      pushUnique(inner);
     }
 
     const whole = feedback.trim();
-    if (whole.length > 0) {
-      candidates.push(whole);
+    if (whole.length === 0) {
+      return candidates;
     }
+
+    const extractedObject = this.extractEnclosingJsonObject(whole, '"issues"');
+    if (extractedObject) {
+      pushUnique(extractedObject);
+    }
+    pushUnique(whole);
+
     return candidates;
+  }
+
+  private extractEnclosingJsonObject(text: string, requiredToken: string): string | null {
+    const tokenIndex = text.indexOf(requiredToken);
+    if (tokenIndex === -1) {
+      return null;
+    }
+
+    const objectStart = text.lastIndexOf('{', tokenIndex);
+    if (objectStart === -1) {
+      return null;
+    }
+
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+
+    for (let i = objectStart; i < text.length; i++) {
+      const ch = text[i];
+
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+          continue;
+        }
+        if (ch === '\\') {
+          escaped = true;
+          continue;
+        }
+        if (ch === '"') {
+          inString = false;
+        }
+        continue;
+      }
+
+      if (ch === '"') {
+        inString = true;
+        continue;
+      }
+      if (ch === '{') {
+        depth += 1;
+        continue;
+      }
+      if (ch === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          return text.slice(objectStart, i + 1);
+        }
+      }
+    }
+
+    return null;
   }
 
   private extractIssueTitlesFromParsedJson(parsed: unknown): string[] | null {
