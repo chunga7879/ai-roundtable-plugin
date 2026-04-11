@@ -216,6 +216,7 @@ const MODELS: Record<ModelTier, Record<'claude' | 'openai' | 'deepseek', string>
 
 const REQUEST_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_TOKENS = 16_384;
+const MAX_TOOL_LOOP_TURNS = 12;
 const GEMINI_MODEL_CACHE_TTL_MS = 15 * 60 * 1000;
 const GEMINI_MODEL_CANDIDATES: Record<ModelTier, string[]> = {
   heavy: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-pro'],
@@ -323,6 +324,80 @@ export class ApiKeyProvider {
     }
   }
 
+  private resolveEnabledToolSet(options: LLMRequestOptions): Set<ToolCall['name']> {
+    const allTools: ToolCall['name'][] = ['read_file', 'run_command', 'write_file', 'delete_file'];
+    if (!options.onToolCall) {
+      return new Set<ToolCall['name']>();
+    }
+    if (!options.enabledTools || options.enabledTools.length === 0) {
+      return new Set(allTools);
+    }
+    const allowed = new Set(allTools);
+    const filtered = options.enabledTools.filter((name): name is ToolCall['name'] => allowed.has(name));
+    return filtered.length > 0 ? new Set(filtered) : new Set(allTools);
+  }
+
+  private assertToolLoopLimit(loopTurn: number, provider: string): void {
+    if (loopTurn > MAX_TOOL_LOOP_TURNS) {
+      throw new ApiKeyProviderError(
+        `${provider} tool-call loop exceeded ${MAX_TOOL_LOOP_TURNS} turns. ` +
+        'Stopping to prevent an infinite loop.',
+      );
+    }
+  }
+
+  private buildToolCall(
+    rawName: string,
+    id: string,
+    args: Record<string, unknown>,
+  ): ToolCall {
+    if (rawName === 'run_command') {
+      return {
+        id,
+        name: 'run_command',
+        command: typeof args['command'] === 'string' ? args['command'] : '',
+      };
+    }
+    if (rawName === 'write_file') {
+      return {
+        id,
+        name: 'write_file',
+        filePath: typeof args['path'] === 'string' ? args['path'] : '',
+        content: typeof args['content'] === 'string' ? args['content'] : '',
+      };
+    }
+    if (rawName === 'delete_file') {
+      return {
+        id,
+        name: 'delete_file',
+        filePath: typeof args['path'] === 'string' ? args['path'] : '',
+      };
+    }
+    return {
+      id,
+      name: 'read_file',
+      filePath: typeof args['path'] === 'string' ? args['path'] : '',
+    };
+  }
+
+  private async executeToolCall(
+    options: LLMRequestOptions,
+    enabledToolSet: Set<ToolCall['name']>,
+    toolCall: ToolCall,
+  ): Promise<ToolResult> {
+    if (!options.onToolCall) {
+      return { id: toolCall.id, content: 'Tool execution is not available in this context.', isError: true };
+    }
+    if (!enabledToolSet.has(toolCall.name)) {
+      return {
+        id: toolCall.id,
+        content: `Tool "${toolCall.name}" is not enabled in this phase.`,
+        isError: true,
+      };
+    }
+    return options.onToolCall(toolCall);
+  }
+
   private async sendClaudeRequest(options: LLMRequestOptions): Promise<ApiKeyResponse> {
     const apiKey = this.options.anthropicApiKey;
     if (!apiKey) {
@@ -337,11 +412,18 @@ export class ApiKeyProvider {
       { role: 'user', content: options.userMessage },
     ];
 
-    const tools = options.onToolCall ? [READ_FILE_TOOL_ANTHROPIC, RUN_COMMAND_TOOL_ANTHROPIC, WRITE_FILE_TOOL_ANTHROPIC, DELETE_FILE_TOOL_ANTHROPIC] : undefined;
+    const enabledToolSet = this.resolveEnabledToolSet(options);
+    const tools = options.onToolCall
+      ? [READ_FILE_TOOL_ANTHROPIC, RUN_COMMAND_TOOL_ANTHROPIC, WRITE_FILE_TOOL_ANTHROPIC, DELETE_FILE_TOOL_ANTHROPIC]
+          .filter((tool) => enabledToolSet.has(tool.name as ToolCall['name']))
+      : undefined;
     const totalUsage = { inputTokens: 0, outputTokens: 0 };
     let finalText = '';
+    let loopTurn = 0;
 
     for (;;) {
+      loopTurn++;
+      this.assertToolLoopLimit(loopTurn, 'Anthropic');
       const body = JSON.stringify({
         model: this.models.claude,
         max_tokens: DEFAULT_MAX_TOKENS,
@@ -400,13 +482,8 @@ export class ApiKeyProvider {
       // Execute tool calls and build tool_result message
       const toolResults: Array<{ type: string; tool_use_id: string; content: string }> = [];
       for (const block of toolUseBlocks) {
-        const result = block.name === 'run_command'
-          ? await options.onToolCall({ id: block.id ?? '', name: 'run_command', command: typeof block.input?.['command'] === 'string' ? block.input['command'] : '' })
-          : block.name === 'write_file'
-            ? await options.onToolCall({ id: block.id ?? '', name: 'write_file', filePath: typeof block.input?.['path'] === 'string' ? block.input['path'] : '', content: typeof block.input?.['content'] === 'string' ? block.input['content'] : '' })
-            : block.name === 'delete_file'
-              ? await options.onToolCall({ id: block.id ?? '', name: 'delete_file', filePath: typeof block.input?.['path'] === 'string' ? block.input['path'] : '' })
-              : await options.onToolCall({ id: block.id ?? '', name: 'read_file', filePath: typeof block.input?.['path'] === 'string' ? block.input['path'] : '' });
+        const toolCall = this.buildToolCall(block.name ?? '', block.id ?? '', block.input ?? {});
+        const result = await this.executeToolCall(options, enabledToolSet, toolCall);
         toolResults.push({ type: 'tool_result', tool_use_id: block.id ?? '', content: result.content });
       }
       messages.push({ role: 'user', content: toolResults });
@@ -461,11 +538,18 @@ export class ApiKeyProvider {
       { role: 'user', content: options.userMessage },
     ];
 
-    const tools = options.onToolCall ? [READ_FILE_TOOL_OPENAI, RUN_COMMAND_TOOL_OPENAI, WRITE_FILE_TOOL_OPENAI, DELETE_FILE_TOOL_OPENAI] : undefined;
+    const enabledToolSet = this.resolveEnabledToolSet(options);
+    const tools = options.onToolCall
+      ? [READ_FILE_TOOL_OPENAI, RUN_COMMAND_TOOL_OPENAI, WRITE_FILE_TOOL_OPENAI, DELETE_FILE_TOOL_OPENAI]
+          .filter((tool) => enabledToolSet.has(tool.function.name as ToolCall['name']))
+      : undefined;
     const totalUsage = { inputTokens: 0, outputTokens: 0 };
     let finalText = '';
+    let loopTurn = 0;
 
     for (;;) {
+      loopTurn++;
+      this.assertToolLoopLimit(loopTurn, params.errorPrefix);
       const body = JSON.stringify({
         model: params.model,
         max_tokens: DEFAULT_MAX_TOKENS,
@@ -527,13 +611,8 @@ export class ApiKeyProvider {
         } catch {
           args = {};
         }
-        const result = tc.function.name === 'run_command'
-          ? await options.onToolCall({ id: tc.id, name: 'run_command', command: typeof args['command'] === 'string' ? args['command'] : '' })
-          : tc.function.name === 'write_file'
-            ? await options.onToolCall({ id: tc.id, name: 'write_file', filePath: typeof args['path'] === 'string' ? args['path'] : '', content: typeof args['content'] === 'string' ? args['content'] : '' })
-            : tc.function.name === 'delete_file'
-              ? await options.onToolCall({ id: tc.id, name: 'delete_file', filePath: typeof args['path'] === 'string' ? args['path'] : '' })
-              : await options.onToolCall({ id: tc.id, name: 'read_file', filePath: typeof args['path'] === 'string' ? args['path'] : '' });
+        const toolCall = this.buildToolCall(tc.function.name, tc.id, args);
+        const result = await this.executeToolCall(options, enabledToolSet, toolCall);
         messages.push({ role: 'tool', tool_call_id: tc.id, content: result.content });
       }
     }
@@ -567,13 +646,20 @@ export class ApiKeyProvider {
       { role: 'user', parts: [{ text: options.userMessage }] },
     ];
 
+    const enabledToolSet = this.resolveEnabledToolSet(options);
     const tools = options.onToolCall
-      ? [{ functionDeclarations: [READ_FILE_TOOL_GEMINI, RUN_COMMAND_TOOL_GEMINI, WRITE_FILE_TOOL_GEMINI, DELETE_FILE_TOOL_GEMINI] }]
+      ? [{
+          functionDeclarations: [READ_FILE_TOOL_GEMINI, RUN_COMMAND_TOOL_GEMINI, WRITE_FILE_TOOL_GEMINI, DELETE_FILE_TOOL_GEMINI]
+            .filter((tool) => enabledToolSet.has(tool.name as ToolCall['name'])),
+        }]
       : undefined;
     const totalUsage = { inputTokens: 0, outputTokens: 0 };
     let finalText = '';
+    let loopTurn = 0;
 
     for (;;) {
+      loopTurn++;
+      this.assertToolLoopLimit(loopTurn, 'Google Gemini');
       const body = JSON.stringify({
         system_instruction: { parts: [{ text: options.systemPrompt }] },
         contents,
@@ -631,13 +717,8 @@ export class ApiKeyProvider {
         if (!fc) {
           continue;
         }
-        const result = fc.name === 'run_command'
-          ? await options.onToolCall({ id: fc.name, name: 'run_command', command: typeof fc.args['command'] === 'string' ? fc.args['command'] : '' })
-          : fc.name === 'write_file'
-            ? await options.onToolCall({ id: fc.name, name: 'write_file', filePath: typeof fc.args['path'] === 'string' ? fc.args['path'] : '', content: typeof fc.args['content'] === 'string' ? fc.args['content'] : '' })
-            : fc.name === 'delete_file'
-              ? await options.onToolCall({ id: fc.name, name: 'delete_file', filePath: typeof fc.args['path'] === 'string' ? fc.args['path'] : '' })
-              : await options.onToolCall({ id: fc.name, name: 'read_file', filePath: typeof fc.args['path'] === 'string' ? fc.args['path'] : '' });
+        const toolCall = this.buildToolCall(fc.name, fc.name, fc.args);
+        const result = await this.executeToolCall(options, enabledToolSet, toolCall);
         responseParts.push({ functionResponse: { name: fc.name, response: { content: result.content } } });
       }
       contents.push({ role: 'user', parts: responseParts });
@@ -661,7 +742,11 @@ export class ApiKeyProvider {
       );
     }
 
-    const tools = options.onToolCall ? [READ_FILE_TOOL_ANTHROPIC, RUN_COMMAND_TOOL_ANTHROPIC, WRITE_FILE_TOOL_ANTHROPIC, DELETE_FILE_TOOL_ANTHROPIC] : undefined;
+    const enabledToolSet = this.resolveEnabledToolSet(options);
+    const tools = options.onToolCall
+      ? [READ_FILE_TOOL_ANTHROPIC, RUN_COMMAND_TOOL_ANTHROPIC, WRITE_FILE_TOOL_ANTHROPIC, DELETE_FILE_TOOL_ANTHROPIC]
+          .filter((tool) => enabledToolSet.has(tool.name as ToolCall['name']))
+      : undefined;
     const history = options.conversationHistory ?? [];
     const messages: Array<{ role: string; content: unknown }> = [
       ...history.map((turn) => ({ role: turn.role, content: turn.content })),
@@ -671,8 +756,11 @@ export class ApiKeyProvider {
     let inputTokens = 0;
     let outputTokens = 0;
     let finalText = '';
+    let loopTurn = 0;
 
     for (;;) {
+      loopTurn++;
+      this.assertToolLoopLimit(loopTurn, 'Anthropic (stream)');
       const body = JSON.stringify({
         model: this.models.claude,
         max_tokens: DEFAULT_MAX_TOKENS,
@@ -770,13 +858,8 @@ export class ApiKeyProvider {
       for (const [, block] of toolBlocks) {
         let input: Record<string, unknown> = {};
         try { input = JSON.parse(block.inputJson) as Record<string, unknown>; } catch { /* use empty */ }
-        const result = block.name === 'run_command'
-          ? await options.onToolCall({ id: block.id, name: 'run_command', command: typeof input['command'] === 'string' ? input['command'] : '' })
-          : block.name === 'write_file'
-            ? await options.onToolCall({ id: block.id, name: 'write_file', filePath: typeof input['path'] === 'string' ? input['path'] : '', content: typeof input['content'] === 'string' ? input['content'] : '' })
-            : block.name === 'delete_file'
-              ? await options.onToolCall({ id: block.id, name: 'delete_file', filePath: typeof input['path'] === 'string' ? input['path'] : '' })
-              : await options.onToolCall({ id: block.id, name: 'read_file', filePath: typeof input['path'] === 'string' ? input['path'] : '' });
+        const toolCall = this.buildToolCall(block.name, block.id, input);
+        const result = await this.executeToolCall(options, enabledToolSet, toolCall);
         toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: result.content });
       }
       messages.push({ role: 'user', content: toolResults });
@@ -829,7 +912,11 @@ export class ApiKeyProvider {
     options: LLMRequestOptions,
     params: { apiKey: string; hostname: string; path: string; model: string; agentLabel: AgentName; errorPrefix: string },
   ): Promise<ApiKeyResponse> {
-    const tools = options.onToolCall ? [READ_FILE_TOOL_OPENAI, RUN_COMMAND_TOOL_OPENAI, WRITE_FILE_TOOL_OPENAI, DELETE_FILE_TOOL_OPENAI] : undefined;
+    const enabledToolSet = this.resolveEnabledToolSet(options);
+    const tools = options.onToolCall
+      ? [READ_FILE_TOOL_OPENAI, RUN_COMMAND_TOOL_OPENAI, WRITE_FILE_TOOL_OPENAI, DELETE_FILE_TOOL_OPENAI]
+          .filter((tool) => enabledToolSet.has(tool.function.name as ToolCall['name']))
+      : undefined;
     const history = options.conversationHistory ?? [];
     const messages: Array<Record<string, unknown>> = [
       { role: 'system', content: options.systemPrompt },
@@ -840,8 +927,11 @@ export class ApiKeyProvider {
     let inputTokens = 0;
     let outputTokens = 0;
     let finalText = '';
+    let loopTurn = 0;
 
     for (;;) {
+      loopTurn++;
+      this.assertToolLoopLimit(loopTurn, `${params.errorPrefix} (stream)`);
       const body = JSON.stringify({
         model: params.model,
         max_tokens: DEFAULT_MAX_TOKENS,
@@ -935,13 +1025,8 @@ export class ApiKeyProvider {
       for (const tc of toolCalls.values()) {
         let args: Record<string, unknown> = {};
         try { args = JSON.parse(tc.argsJson) as Record<string, unknown>; } catch { /* use empty */ }
-        const result = tc.name === 'run_command'
-          ? await options.onToolCall({ id: tc.id, name: 'run_command', command: typeof args['command'] === 'string' ? args['command'] : '' })
-          : tc.name === 'write_file'
-            ? await options.onToolCall({ id: tc.id, name: 'write_file', filePath: typeof args['path'] === 'string' ? args['path'] : '', content: typeof args['content'] === 'string' ? args['content'] : '' })
-            : tc.name === 'delete_file'
-              ? await options.onToolCall({ id: tc.id, name: 'delete_file', filePath: typeof args['path'] === 'string' ? args['path'] : '' })
-              : await options.onToolCall({ id: tc.id, name: 'read_file', filePath: typeof args['path'] === 'string' ? args['path'] : '' });
+        const toolCall = this.buildToolCall(tc.name, tc.id, args);
+        const result = await this.executeToolCall(options, enabledToolSet, toolCall);
         messages.push({ role: 'tool', tool_call_id: tc.id, content: result.content });
       }
     }
@@ -965,7 +1050,13 @@ export class ApiKeyProvider {
     const modelCandidates = this.getStaticGeminiModelCandidates();
     let modelIndex = 0;
 
-    const tools = options.onToolCall ? [{ functionDeclarations: [READ_FILE_TOOL_GEMINI, RUN_COMMAND_TOOL_GEMINI, WRITE_FILE_TOOL_GEMINI, DELETE_FILE_TOOL_GEMINI] }] : undefined;
+    const enabledToolSet = this.resolveEnabledToolSet(options);
+    const tools = options.onToolCall
+      ? [{
+          functionDeclarations: [READ_FILE_TOOL_GEMINI, RUN_COMMAND_TOOL_GEMINI, WRITE_FILE_TOOL_GEMINI, DELETE_FILE_TOOL_GEMINI]
+            .filter((tool) => enabledToolSet.has(tool.name as ToolCall['name'])),
+        }]
+      : undefined;
     const history = options.conversationHistory ?? [];
     const contents: Array<Record<string, unknown>> = [
       ...history.map((turn) => ({
@@ -978,8 +1069,11 @@ export class ApiKeyProvider {
     let inputTokens = 0;
     let outputTokens = 0;
     let finalText = '';
+    let loopTurn = 0;
 
     for (;;) {
+      loopTurn++;
+      this.assertToolLoopLimit(loopTurn, 'Google Gemini (stream)');
       const body = JSON.stringify({
         system_instruction: { parts: [{ text: options.systemPrompt }] },
         contents,
@@ -1056,13 +1150,8 @@ export class ApiKeyProvider {
       const responseParts: Array<Record<string, unknown>> = [];
       for (const part of functionCallParts) {
         const fc = part['functionCall'] as { name: string; args: Record<string, unknown> };
-        const result = fc.name === 'run_command'
-          ? await options.onToolCall({ id: fc.name, name: 'run_command', command: typeof fc.args['command'] === 'string' ? fc.args['command'] : '' })
-          : fc.name === 'write_file'
-            ? await options.onToolCall({ id: fc.name, name: 'write_file', filePath: typeof fc.args['path'] === 'string' ? fc.args['path'] : '', content: typeof fc.args['content'] === 'string' ? fc.args['content'] : '' })
-            : fc.name === 'delete_file'
-              ? await options.onToolCall({ id: fc.name, name: 'delete_file', filePath: typeof fc.args['path'] === 'string' ? fc.args['path'] : '' })
-              : await options.onToolCall({ id: fc.name, name: 'read_file', filePath: typeof fc.args['path'] === 'string' ? fc.args['path'] : '' });
+        const toolCall = this.buildToolCall(fc.name, fc.name, fc.args);
+        const result = await this.executeToolCall(options, enabledToolSet, toolCall);
         responseParts.push({ functionResponse: { name: fc.name, response: { content: result.content } } });
       }
       contents.push({ role: 'user', parts: responseParts });
