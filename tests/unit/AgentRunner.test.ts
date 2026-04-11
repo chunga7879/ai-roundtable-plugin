@@ -836,6 +836,78 @@ describe('AgentRunner', () => {
 
       expect(progressEvents).toContain('tool_run_command');
     });
+
+    it('passes raw run_command text to execution callback', async () => {
+      const onRunCommand = jest.fn().mockResolvedValue({
+        command: 'npm test -- --listTests',
+        stdout: 'ok',
+        exitCode: 0,
+      });
+      const cachedCommandOutputs = new Map();
+      const copilotProvider = makeCopilotProviderWithToolCall({
+        id: 'tool-1',
+        name: 'run_command',
+        command: 'cd /workspace && npm test -- --listTests',
+      });
+
+      const runner = new AgentRunner({
+        copilotProvider: copilotProvider as never,
+        apiKeyProvider: makeApiKeyProvider() as never,
+        providerMode: ProviderMode.COPILOT,
+        workspaceReader: makeWorkspaceReader() as never,
+      });
+
+      await runner.runRound(
+        makeRoundRequest({ cachedCommandOutputs }),
+        makeCancellationToken(),
+        jest.fn(),
+        onRunCommand,
+      );
+
+      expect(onRunCommand).toHaveBeenCalledWith('cd /workspace && npm test -- --listTests');
+      expect(cachedCommandOutputs.get('npm test -- --listTests')).toEqual({
+        command: 'npm test -- --listTests',
+        stdout: 'ok',
+        exitCode: 0,
+      });
+    });
+
+    it('uses output.command as cache/progress key when command text changes downstream', async () => {
+      const progressEvents: Array<{ type: string; command?: string }> = [];
+      const onRunCommand = jest.fn().mockResolvedValue({
+        command: 'npm test',
+        stdout: '[Command normalized] Removed redundant "cd /workspace" prefix.\n\nok',
+        exitCode: 0,
+      });
+      const cachedCommandOutputs = new Map();
+      const copilotProvider = makeCopilotProviderWithToolCall({
+        id: 'tool-1',
+        name: 'run_command',
+        command: 'cd /workspace && npm test',
+      });
+
+      const runner = new AgentRunner({
+        copilotProvider: copilotProvider as never,
+        apiKeyProvider: makeApiKeyProvider() as never,
+        providerMode: ProviderMode.COPILOT,
+        workspaceReader: makeWorkspaceReader() as never,
+      });
+
+      await runner.runRound(
+        makeRoundRequest({ cachedCommandOutputs }),
+        makeCancellationToken(),
+        (event) => progressEvents.push({ type: event.type, command: (event as { command?: string }).command }),
+        onRunCommand,
+      );
+
+      expect(onRunCommand).toHaveBeenCalledWith('cd /workspace && npm test');
+      expect(cachedCommandOutputs.get('npm test')).toEqual({
+        command: 'npm test',
+        stdout: '[Command normalized] Removed redundant "cd /workspace" prefix.\n\nok',
+        exitCode: 0,
+      });
+      expect(progressEvents.some((e) => e.type === 'tool_run_command_done' && e.command === 'npm test')).toBe(true);
+    });
   });
 
   // ── Multi-turn behavior ───────────────────────────────────────────────────────

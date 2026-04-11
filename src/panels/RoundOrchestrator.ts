@@ -16,6 +16,7 @@ import { AgentRunner } from '../agents/AgentRunner';
 import { CopilotProvider } from '../agents/CopilotProvider';
 import { ApiKeyProvider } from '../agents/ApiKeyProvider';
 import { resolveWorkspaceRootForCommand } from '../workspace/WorkspaceRootResolver';
+import { sanitizeCommandForWorkspace } from '../workspace/CommandSanitizer';
 import type { WorkspaceReader } from '../workspace/WorkspaceReader';
 import type { ConfigManager } from '../extension';
 import type { ExtensionConfig } from '../types';
@@ -590,11 +591,25 @@ export function execCommand(
   cancellationToken?: vscode.CancellationToken,
   onChunk?: (chunk: string) => void,
 ): Promise<CommandOutput> {
+  const sanitized = sanitizeCommandForWorkspace(command);
+  const displayCommand = sanitized.skipped ? sanitized.original : sanitized.effective;
+  const normalizedPrefix = sanitized.normalized && sanitized.note
+    ? `[Command normalized] ${sanitized.note}\n\n`
+    : '';
+
+  if (sanitized.skipped) {
+    return Promise.resolve({
+      command: displayCommand,
+      stdout: sanitized.note ?? '[Skipped command]',
+      exitCode: 0,
+    });
+  }
+
   return new Promise((resolve) => {
     try {
       const shell = process.platform === 'win32' ? 'cmd.exe' : '/bin/sh';
       const shellFlag = process.platform === 'win32' ? '/c' : '-c';
-      const child = cp.spawn(shell, [shellFlag, command], {
+      const child = cp.spawn(shell, [shellFlag, sanitized.effective], {
         cwd,
         env: process.env,
       });
@@ -622,7 +637,7 @@ export function execCommand(
           resolved = true;
           child.kill();
           const stdout = chunks.join('') || '(no output)';
-          resolve({ command, stdout: stdout + '\n[Timed out]', exitCode: 1 });
+          resolve({ command: displayCommand, stdout: normalizedPrefix + stdout + '\n[Timed out]', exitCode: 1 });
         }
       }, timeoutMs);
 
@@ -635,7 +650,7 @@ export function execCommand(
         if (totalBytes > EXEC_MAX_OUTPUT) {
           stdout += `\n[... output truncated at ${EXEC_MAX_OUTPUT} bytes ...]`;
         }
-        resolve({ command, stdout, exitCode: code ?? 1 });
+        resolve({ command: displayCommand, stdout: normalizedPrefix + stdout, exitCode: code ?? 1 });
       });
 
       child.on('error', (err) => {
@@ -643,7 +658,7 @@ export function execCommand(
         resolved = true;
         clearTimeout(timeout);
         cancelDisposable?.dispose();
-        resolve({ command, stdout: String(err), exitCode: 1 });
+        resolve({ command: displayCommand, stdout: normalizedPrefix + String(err), exitCode: 1 });
       });
 
       const cancelDisposable = cancellationToken?.onCancellationRequested(() => {
@@ -651,11 +666,11 @@ export function execCommand(
           resolved = true;
           clearTimeout(timeout);
           child.kill();
-          resolve({ command, stdout: chunks.join('') + '\n[Cancelled]', exitCode: 1 });
+          resolve({ command: displayCommand, stdout: normalizedPrefix + chunks.join('') + '\n[Cancelled]', exitCode: 1 });
         }
       });
     } catch (syncErr) {
-      resolve({ command, stdout: String(syncErr), exitCode: 1 });
+      resolve({ command: displayCommand, stdout: normalizedPrefix + String(syncErr), exitCode: 1 });
     }
   });
 }

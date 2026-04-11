@@ -750,6 +750,66 @@ describe('ChatPanel — VERIFY: dialog after Apply', () => {
     );
   });
 
+  it('forwards raw VERIFY command and renders executed command from exec result', async () => {
+    const execSpy = jest.spyOn(RoundOrchestratorModule, 'execCommand')
+      .mockResolvedValue({ command: 'npm test -- --listTests', stdout: 'ok', exitCode: 0 });
+    const model = {
+      sendRequest: jest.fn().mockResolvedValue({
+        stream: (async function* () {
+          yield new vscode.LanguageModelToolCallPart('c1', 'write_file', {
+            path: 'src/out.ts',
+            content: 'export const x = 1;',
+          });
+          yield new vscode.LanguageModelTextPart('Done.\n\nVERIFY: cd /workspace && npm test -- --listTests');
+        })(),
+      }),
+    };
+
+    const { panel } = await setupPanel(makeConfigManager(), model);
+
+    (vscode.workspace.applyEdit as jest.Mock).mockResolvedValue(true);
+    (vscode.workspace.fs.stat as jest.Mock).mockResolvedValue({ size: 10, type: 1 });
+    (vscode.window.showWarningMessage as jest.Mock).mockResolvedValue('Run');
+    (vscode.workspace as { workspaceFolders: unknown }).workspaceFolders = [
+      { uri: vscode.Uri.file('/workspace'), name: 'test', index: 0 },
+    ];
+
+    const handler = (panel as unknown as { _messageHandler: (m: unknown) => void })._messageHandler;
+    panel._sentMessages.length = 0;
+
+    handler({
+      type: 'sendMessage',
+      payload: {
+        userMessage: 'Build something',
+        roundType: RoundType.DEVELOPER,
+        mainAgent: AgentName.CLAUDE,
+        subAgents: [] as string[],
+      },
+    });
+    await new Promise((r) => setTimeout(r, 150));
+
+    handler({
+      type: 'applyChanges',
+      payload: {
+        fileChanges: [
+          { filePath: 'src/out.ts', content: 'export const x = 1;', isNew: true },
+        ],
+      },
+    });
+    await new Promise((r) => setTimeout(r, 180));
+
+    expect(execSpy).toHaveBeenCalledWith(
+      'cd /workspace && npm test -- --listTests',
+      expect.any(String),
+      expect.any(Number),
+      expect.any(Object),
+    );
+    const msgs = panel._sentMessages as Array<{ type: string; payload?: { content?: string } }>;
+    expect(msgs.some((m) => m.type === 'addMessage' && m.payload?.content === 'Running: cd /workspace && npm test -- --listTests')).toBe(true);
+    expect(msgs.some((m) => m.type === 'addMessage' && m.payload?.content === '✓ npm test -- --listTests completed successfully.')).toBe(true);
+    execSpy.mockRestore();
+  });
+
   it('does NOT show VERIFY: dialog when response has no VERIFY: token', async () => {
     const model = {
       sendRequest: jest.fn().mockResolvedValue({

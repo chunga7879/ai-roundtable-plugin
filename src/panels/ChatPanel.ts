@@ -632,7 +632,7 @@ export class ChatPanel implements vscode.Disposable {
     this.cancelRunningCommand();
     const commandCts = new vscode.CancellationTokenSource();
     this.commandCancellationTokenSource = commandCts;
-    const { stdout: output, exitCode } = await execCommand(
+    const { stdout: output, exitCode, command: executedCommand } = await execCommand(
       command,
       workspaceRoot,
       config.runnerTimeoutMs,
@@ -660,16 +660,16 @@ export class ChatPanel implements vscode.Disposable {
       // Show collapsible output bubble so the user can inspect it without it flooding the chat
       this.postMessage({
         type: 'addCollapsibleMessage',
-        payload: { id: crypto.randomUUID(), title: `${command}  ·  exit ${exitCode}`, content: output },
+        payload: { id: crypto.randomUUID(), title: `${executedCommand}  ·  exit ${exitCode}`, content: output },
       });
-      const analysisMessage = `[Execution Output]\nCommand: ${command}\nExit code: ${exitCode}\n\n${output}`;
+      const analysisMessage = `[Execution Output]\nCommand: ${executedCommand}\nExit code: ${exitCode}\n\n${output}`;
       const roundType = this.currentRoundType ?? RoundType.DEVELOPER;
       // suppressUserBubble: the collapsible above already shows the output to the user
       await this.handleSendMessage(analysisMessage, roundType, mainAgent, subAgents, true);
     } else {
       this.postMessage({
         type: 'addMessage',
-        payload: { id: crypto.randomUUID(), role: 'system', content: `✓ ${command} completed successfully.`, timestamp: Date.now() },
+        payload: { id: crypto.randomUUID(), role: 'system', content: `✓ ${executedCommand} completed successfully.`, timestamp: Date.now() },
       });
     }
   }

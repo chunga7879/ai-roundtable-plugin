@@ -20,6 +20,7 @@ export const MAIN_TOOLS_POLICY: readonly string[] = [
   'run_command — Execute a shell command in the workspace root.',
   '- The user will be prompted to approve each command before it runs.',
   '- Use only for commands that operate on the CURRENT on-disk workspace state (for example: dependency/security checks).',
+  '- Do not prefix commands with "cd /workspace" (or any hard-coded absolute workspace path); commands already run at workspace root.',
   '- Do NOT use for validating files you just wrote via write_file (lint, test, build) unless your round-specific instructions explicitly allow it.',
   '  Post-apply verification belongs in VERIFY: (see below).',
   '- Do NOT use for file reads — use read_file instead.',

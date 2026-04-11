@@ -105,8 +105,9 @@ export class AgentRunner {
           }
           onProgress({ type: 'tool_run_command', agentName: mainAgent, command: toolCall.command });
           const output = await onRunCommand(toolCall.command);
-          cachedCommandOutputs.set(toolCall.command, output);
-          onProgress({ type: 'tool_run_command_done', agentName: mainAgent, command: toolCall.command, stdout: output.stdout || '(no output)', exitCode: output.exitCode });
+          const displayCommand = output.command || toolCall.command;
+          cachedCommandOutputs.set(displayCommand, output);
+          onProgress({ type: 'tool_run_command_done', agentName: mainAgent, command: displayCommand, stdout: output.stdout || '(no output)', exitCode: output.exitCode });
           const resultText = `Exit code: ${output.exitCode}\n\nOutput:\n${output.stdout || '(no output)'}`;
           return { id: toolCall.id, content: resultText, isError: output.exitCode !== 0 };
         }

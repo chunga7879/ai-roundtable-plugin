@@ -607,6 +607,21 @@ describe('execCommand', () => {
     expect(result.exitCode).not.toBe(0);
   });
 
+  it('skips bare cd /workspace as a no-op', async () => {
+    const result = await execCommand('cd /workspace', undefined, 10_000);
+    expect(result.exitCode).toBe(0);
+    expect(result.command).toBe('cd /workspace');
+    expect(result.stdout).toContain('Skipped redundant "cd /workspace"');
+  });
+
+  it('normalizes cd /workspace prefix before execution', async () => {
+    const result = await execCommand('cd /workspace && echo hello', undefined, 10_000);
+    expect(result.exitCode).toBe(0);
+    expect(result.command).toBe('echo hello');
+    expect(result.stdout).toContain('[Command normalized]');
+    expect(result.stdout).toContain('hello');
+  });
+
   it('handles errors from invalid cwd gracefully (resolves, not rejects)', async () => {
     // Pass a non-existent cwd — cp.exec may error but should resolve via the callback
     const result = await execCommand('echo test', '/nonexistent/path/xyz', 5_000);
