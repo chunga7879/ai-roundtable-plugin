@@ -8,6 +8,7 @@
  */
 import * as vscode from 'vscode';
 import { AgentName, ProviderMode, RoundType } from '../../src/types';
+import * as RoundOrchestratorModule from '../../src/panels/RoundOrchestrator';
 
 // ── Shared helpers ─────────────────────────────────────────────────────────────
 
@@ -320,6 +321,46 @@ describe('ChatPanel — cancelRequest', () => {
     handler({ type: 'cancelRequest' });
     await waitFor(() => (panel._sentMessages as Array<{ type: string; payload?: { role?: string; content?: string } }>)
       .some((m) => m.type === 'addMessage' && m.payload?.role === 'system' && m.payload?.content === 'Request cancelled.'));
+  });
+
+  it('cancels in-flight post-apply command execution', async () => {
+    const execSpy = jest.spyOn(RoundOrchestratorModule, 'execCommand').mockImplementation(
+      (command: string, _cwd: string | undefined, _timeoutMs: number, cancellationToken?: vscode.CancellationToken) =>
+        new Promise((resolve) => {
+          cancellationToken?.onCancellationRequested(() => {
+            resolve({ command, stdout: '(no output)\n[Cancelled]', exitCode: 1 });
+          });
+        }),
+    );
+
+    const { panel } = await setupPanel(makeConfigManager());
+    (vscode.workspace.applyEdit as jest.Mock).mockResolvedValue(true);
+    (vscode.workspace.fs.stat as jest.Mock).mockResolvedValue({ size: 10, type: 1 });
+    (vscode.workspace as { workspaceFolders: unknown }).workspaceFolders = [
+      { uri: vscode.Uri.file('/workspace'), name: 'test', index: 0 },
+    ];
+    (vscode.window.showWarningMessage as jest.Mock).mockResolvedValue('Run');
+
+    const handler = (panel as unknown as { _messageHandler: (m: unknown) => void })._messageHandler;
+    panel._sentMessages.length = 0;
+
+    handler({
+      type: 'applyChanges',
+      payload: {
+        fileChanges: [
+          { filePath: 'package.json', content: '{"name":"test"}', isNew: false },
+        ],
+      },
+    });
+
+    await waitFor(() => execSpy.mock.calls.length > 0, 1_200);
+    handler({ type: 'cancelRequest' });
+
+    await waitFor(() => (panel._sentMessages as Array<{ type: string; payload?: { role?: string; content?: string } }>)
+      .some((m) => m.type === 'addMessage' && m.payload?.role === 'system' && m.payload?.content === 'Command cancelled.'));
+    const msgs = panel._sentMessages as Array<{ type: string }>;
+    expect(msgs.some((m) => m.type === 'addCollapsibleMessage')).toBe(false);
+    execSpy.mockRestore();
   });
 });
 

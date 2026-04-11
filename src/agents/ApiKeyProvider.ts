@@ -1358,9 +1358,9 @@ export class ApiKeyProvider {
           if (res.statusCode === 429 && retriesLeft > 0) {
             res.resume();
             const delayMs = this.parseRetryAfterMs(res.headers['retry-after']);
-            setTimeout(() => {
-              this.makeHttpsStreamRequest(params, retriesLeft - 1).then(resolve, reject);
-            }, delayMs);
+            this.waitForRetryDelay(delayMs, params.cancellationToken)
+              .then(() => this.makeHttpsStreamRequest(params, retriesLeft - 1))
+              .then(resolve, reject);
             return;
           }
 
@@ -1480,9 +1480,9 @@ export class ApiKeyProvider {
           if (res.statusCode === 429 && retriesLeft > 0) {
             res.resume();
             const delayMs = this.parseRetryAfterMs(res.headers['retry-after']);
-            setTimeout(() => {
-              this.makeHttpsRequest(params, retriesLeft - 1).then(resolve, reject);
-            }, delayMs);
+            this.waitForRetryDelay(delayMs, params.cancellationToken)
+              .then(() => this.makeHttpsRequest(params, retriesLeft - 1))
+              .then(resolve, reject);
             return;
           }
 
@@ -1581,5 +1581,40 @@ export class ApiKeyProvider {
     const val = Array.isArray(retryAfter) ? retryAfter[0] : retryAfter;
     const seconds = Number(val);
     return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : DEFAULT_MS;
+  }
+
+  /**
+   * Waits before retrying a rate-limited request.
+   * The delay is cancellation-aware so Stop can interrupt backoff waits immediately.
+   */
+  private waitForRetryDelay(
+    delayMs: number,
+    cancellationToken?: LLMRequestOptions['cancellationToken'],
+  ): Promise<void> {
+    if (cancellationToken?.isCancellationRequested) {
+      return Promise.reject(new CancellationError());
+    }
+
+    return new Promise((resolve, reject) => {
+      let settled = false;
+
+      const complete = (fn: () => void) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cancelDisposable?.dispose();
+        fn();
+      };
+
+      const timer = setTimeout(() => {
+        complete(resolve);
+      }, delayMs);
+
+      const cancelDisposable = cancellationToken?.onCancellationRequested(() => {
+        clearTimeout(timer);
+        complete(() => reject(new CancellationError()));
+      });
+    });
   }
 }

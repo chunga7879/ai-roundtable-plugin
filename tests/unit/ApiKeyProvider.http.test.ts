@@ -244,6 +244,65 @@ describe('ApiKeyProvider — makeHttpsStreamRequest: 429 rate limit retry', () =
     expect(result.content).toBe('Hello');
     expect(callCount).toBe(2);
   });
+
+  it('cancels immediately during 429 retry backoff (streaming)', async () => {
+    let callCount = 0;
+    (https.request as jest.Mock).mockImplementation(
+      (_o: unknown, cb: (res: MockRes) => void) => {
+        const req = new EventEmitter() as MockReq;
+        req.write = jest.fn();
+        req.end = jest.fn();
+        req.setTimeout = jest.fn();
+        req.destroy = jest.fn();
+
+        const res = new EventEmitter() as MockRes;
+        res.resume = jest.fn();
+        res.headers = { 'retry-after': '60' };
+        res.statusCode = 429;
+
+        callCount++;
+        setImmediate(() => {
+          res.emit('data', Buffer.from('rate limited'));
+          res.emit('end');
+        });
+
+        cb(res);
+        return req;
+      },
+    );
+
+    const cancelCallbacks: Array<() => void> = [];
+    const cancellationToken = {
+      isCancellationRequested: false,
+      onCancellationRequested: jest.fn().mockImplementation((cb: () => void) => {
+        cancelCallbacks.push(cb);
+        return {
+          dispose: () => {
+            const idx = cancelCallbacks.indexOf(cb);
+            if (idx >= 0) {
+              cancelCallbacks.splice(idx, 1);
+            }
+          },
+        };
+      }),
+    };
+
+    const p = new ApiKeyProvider({ openaiApiKey: 'sk-openai-key' });
+    const resultPromise = p.sendRequest(AgentName.GPT, {
+      ...defaultOpts,
+      onChunk: jest.fn(),
+      cancellationToken: cancellationToken as unknown as import('vscode').CancellationToken,
+    });
+
+    await jest.advanceTimersByTimeAsync(0);
+    cancellationToken.isCancellationRequested = true;
+    for (const cb of [...cancelCallbacks]) {
+      cb();
+    }
+
+    await expect(resultPromise).rejects.toMatchObject({ name: 'CancellationError' });
+    expect(callCount).toBe(1);
+  });
 });
 
 // ── makeHttpsStreamRequest: onLine throws on final buffer ────────────────────
@@ -379,6 +438,64 @@ describe('ApiKeyProvider — parseRetryAfterMs', () => {
     const result = await resultPromise;
     expect(result.content).toBe('ok');
     expect(callCount).toBe(2);
+  });
+
+  it('cancels immediately during 429 retry backoff (non-streaming)', async () => {
+    let callCount = 0;
+    (https.request as jest.Mock).mockImplementation(
+      (_o: unknown, cb: (res: MockRes) => void) => {
+        const req = new EventEmitter() as MockReq;
+        req.write = jest.fn();
+        req.end = jest.fn();
+        req.setTimeout = jest.fn();
+        req.destroy = jest.fn();
+
+        const res = new EventEmitter() as MockRes;
+        res.resume = jest.fn();
+        res.headers = {}; // default 60s
+        res.statusCode = 429;
+
+        callCount++;
+        setImmediate(() => {
+          res.emit('data', Buffer.from('rate limited'));
+          res.emit('end');
+        });
+
+        cb(res);
+        return req;
+      },
+    );
+
+    const cancelCallbacks: Array<() => void> = [];
+    const cancellationToken = {
+      isCancellationRequested: false,
+      onCancellationRequested: jest.fn().mockImplementation((cb: () => void) => {
+        cancelCallbacks.push(cb);
+        return {
+          dispose: () => {
+            const idx = cancelCallbacks.indexOf(cb);
+            if (idx >= 0) {
+              cancelCallbacks.splice(idx, 1);
+            }
+          },
+        };
+      }),
+    };
+
+    const p = new ApiKeyProvider({ anthropicApiKey: 'sk-ant-key' });
+    const resultPromise = p.sendRequest(AgentName.CLAUDE, {
+      ...defaultOpts,
+      cancellationToken: cancellationToken as unknown as import('vscode').CancellationToken,
+    });
+
+    await jest.advanceTimersByTimeAsync(0);
+    cancellationToken.isCancellationRequested = true;
+    for (const cb of [...cancelCallbacks]) {
+      cb();
+    }
+
+    await expect(resultPromise).rejects.toMatchObject({ name: 'CancellationError' });
+    expect(callCount).toBe(1);
   });
 });
 

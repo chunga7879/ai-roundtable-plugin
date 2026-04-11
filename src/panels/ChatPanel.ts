@@ -64,6 +64,8 @@ export class ChatPanel implements vscode.Disposable {
   private commandOutputCache: Map<string, CommandOutput> = new Map();
   /** Verification command suggested by the AI — offered to the user after Apply All Changes. */
   private pendingVerifyCommand: string | undefined;
+  /** Cancellation source for local command executions (install/verify after Apply). */
+  private commandCancellationTokenSource: vscode.CancellationTokenSource | undefined;
   private sessionManager: SessionManager | undefined;
   private currentSessionId: string | undefined;
   private readonly orchestrator: RoundOrchestrator;
@@ -241,6 +243,7 @@ export class ChatPanel implements vscode.Disposable {
 
       case 'clearChat':
         this.orchestrator.cancel();
+        this.cancelRunningCommand();
         this.conversationHistory = [];
         this.currentRoundType = undefined;
         this.currentSessionId = undefined;
@@ -290,6 +293,7 @@ export class ChatPanel implements vscode.Disposable {
 
       case 'cancelRequest':
         this.orchestrator.cancel();
+        this.cancelRunningCommand();
         break;
 
       case 'setModelTier': {
@@ -597,9 +601,32 @@ export class ChatPanel implements vscode.Disposable {
 
     const workspaceRoot = resolveWorkspaceRootForCommand({ candidateFilePaths: preferredFilePaths });
     const config = await this.configManager.getConfig();
-    const { stdout: output, exitCode } = await execCommand(command, workspaceRoot, config.runnerTimeoutMs);
+    this.cancelRunningCommand();
+    const commandCts = new vscode.CancellationTokenSource();
+    this.commandCancellationTokenSource = commandCts;
+    const { stdout: output, exitCode } = await execCommand(
+      command,
+      workspaceRoot,
+      config.runnerTimeoutMs,
+      commandCts.token,
+    );
+    const wasCancelled =
+      commandCts.token.isCancellationRequested || output.trimEnd().endsWith('[Cancelled]');
+    if (this.commandCancellationTokenSource === commandCts) {
+      this.commandCancellationTokenSource = undefined;
+    }
+    commandCts.dispose();
 
     this.postMessage({ type: 'setLoading', payload: { loading: false } });
+
+    if (wasCancelled) {
+      this.pendingVerifyCommand = undefined;
+      this.postMessage({
+        type: 'addMessage',
+        payload: { id: crypto.randomUUID(), role: 'system', content: 'Command cancelled.', timestamp: Date.now() },
+      });
+      return;
+    }
 
     if (exitCode !== 0) {
       // Show collapsible output bubble so the user can inspect it without it flooding the chat
@@ -617,6 +644,12 @@ export class ChatPanel implements vscode.Disposable {
         payload: { id: crypto.randomUUID(), role: 'system', content: `✓ ${command} completed successfully.`, timestamp: Date.now() },
       });
     }
+  }
+
+  private cancelRunningCommand(): void {
+    this.commandCancellationTokenSource?.cancel();
+    this.commandCancellationTokenSource?.dispose();
+    this.commandCancellationTokenSource = undefined;
   }
 
   private async handleRequestConfig(): Promise<void> {
@@ -916,6 +949,7 @@ export class ChatPanel implements vscode.Disposable {
     this.isDisposed = true;
 
     this.orchestrator.dispose();
+    this.cancelRunningCommand();
 
     ChatPanel.instance = undefined;
 
