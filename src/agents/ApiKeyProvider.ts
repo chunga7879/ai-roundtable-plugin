@@ -18,6 +18,7 @@ export interface LLMRequestOptions {
   conversationHistory?: ConversationTurn[];
   onChunk?: (chunk: string) => void;
   onToolCall?: (toolCall: ToolCall) => Promise<ToolResult>;
+  enabledTools?: ToolCall['name'][];
   cancellationToken?: { isCancellationRequested: boolean; onCancellationRequested: (cb: () => void) => { dispose: () => void } };
 }
 

@@ -37,6 +37,7 @@ const TOOL_RECOVERY_ROUNDS = new Set<RoundType>([
   RoundType.DEVOPS,
   RoundType.DOCUMENTATION,
 ]);
+const REFLECTION_ENABLED_TOOLS: ToolCall['name'][] = ['write_file', 'delete_file'];
 
 export class AgentRunnerError extends RoundtableError {
   constructor(message: string, cause?: unknown) {
@@ -58,6 +59,7 @@ interface CallAgentOptions {
   conversationHistory?: ConversationTurn[];
   onChunk?: (chunk: string) => void;
   onToolCall?: (toolCall: ToolCall) => Promise<ToolResult>;
+  enabledTools?: ToolCall['name'][];
 }
 
 export class AgentRunner {
@@ -440,6 +442,7 @@ export class AgentRunner {
           userMessage: reflectionUserMessage,
           onChunk: (chunk) => onProgress({ type: 'reflection_chunk', agentName: mainAgent, chunk }),
           onToolCall: makeReflectionToolHandler(),
+          enabledTools: REFLECTION_ENABLED_TOOLS,
         },
         cancellationToken,
       );

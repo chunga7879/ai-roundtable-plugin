@@ -124,6 +124,21 @@ describe('CopilotProvider.sendRequest — success', () => {
     const result = await provider.sendRequest(defaultOptions, AgentName.CLAUDE, makeToken());
     expect(result).toBe('any model response');
   });
+
+  it('includes only enabled tool definitions when enabledTools is provided', async () => {
+    const model = makeModel(['done']);
+    (vscode.lm.selectChatModels as jest.Mock).mockResolvedValue([model]);
+    const provider = new CopilotProvider();
+
+    await provider.sendRequest(
+      { ...defaultOptions, onToolCall: jest.fn(), enabledTools: ['write_file', 'delete_file'] },
+      AgentName.CLAUDE,
+      makeToken(),
+    );
+
+    const toolDefs = (model.sendRequest as jest.Mock).mock.calls[0][1].tools as Array<{ name: string }>;
+    expect(toolDefs.map((t) => t.name)).toEqual(['write_file', 'delete_file']);
+  });
 });
 
 // ── sendRequest — errors ──────────────────────────────────────────────────────
@@ -268,6 +283,31 @@ describe('CopilotProvider.sendRequest — errors', () => {
 
     await expect(Promise.race([runPromise, timeoutPromise]))
       .rejects.toBeInstanceOf(vscode.CancellationError);
+  });
+
+  it('aborts when the same disallowed tool call batch repeats', async () => {
+    const model = {
+      sendRequest: jest.fn().mockResolvedValue({
+        stream: (async function* () {
+          yield new vscode.LanguageModelToolCallPart('cmd1', 'run_command', { command: 'npm test' });
+        })(),
+      }),
+    };
+    (vscode.lm.selectChatModels as jest.Mock).mockResolvedValue([model]);
+
+    const onToolCall = jest.fn().mockResolvedValue({ id: 'cmd1', content: 'ok', isError: false });
+    const provider = new CopilotProvider();
+
+    await expect(
+      provider.sendRequest(
+        { ...defaultOptions, onToolCall, enabledTools: ['write_file', 'delete_file'] },
+        AgentName.CLAUDE,
+        makeToken(),
+      ),
+    ).rejects.toBeInstanceOf(CopilotProviderError);
+
+    expect(onToolCall).not.toHaveBeenCalled();
+    expect(model.sendRequest).toHaveBeenCalledTimes(2);
   });
 
   it('native LanguageModelToolCallPart run_command: dispatches and loops', async () => {

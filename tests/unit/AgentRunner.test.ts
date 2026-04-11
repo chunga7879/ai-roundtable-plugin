@@ -166,6 +166,40 @@ describe('AgentRunner', () => {
       expect(progressEvents).toContain('reflection_start');
       expect(progressEvents).toContain('reflection_done');
     });
+
+    it('passes reflection-only enabledTools to provider in reflection stage', async () => {
+      let callCount = 0;
+      const seenOptions: Array<{ enabledTools?: string[] }> = [];
+      const copilotProvider = {
+        sendRequest: jest.fn().mockImplementation((opts: { enabledTools?: string[] }) => {
+          seenOptions.push({ enabledTools: opts.enabledTools });
+          callCount++;
+          if (callCount === 1) {return Promise.resolve('Main response');}
+          if (callCount === 2) {return Promise.resolve('Verifier feedback');}
+          return Promise.resolve('Reflected response');
+        }),
+        isAvailable: jest.fn().mockResolvedValue(true),
+        invalidateModelCache: jest.fn(),
+      };
+
+      const runner = new AgentRunner({
+        copilotProvider: copilotProvider as never,
+        apiKeyProvider: makeApiKeyProvider() as never,
+        providerMode: ProviderMode.COPILOT,
+        workspaceReader: makeWorkspaceReader() as never,
+      });
+
+      await runner.runRound(
+        makeRoundRequest({ subAgents: [AgentName.GPT] }),
+        makeCancellationToken(),
+        jest.fn(),
+      );
+
+      expect(seenOptions).toHaveLength(3);
+      expect(seenOptions[0].enabledTools).toBeUndefined();
+      expect(seenOptions[1].enabledTools).toBeUndefined();
+      expect(seenOptions[2].enabledTools).toEqual(['write_file', 'delete_file']);
+    });
   });
 
   describe('sub-agent failure tolerance', () => {
