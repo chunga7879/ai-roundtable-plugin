@@ -201,6 +201,75 @@ describe('CopilotProvider.sendRequest — errors', () => {
       .rejects.toBeInstanceOf(vscode.CancellationError);
   });
 
+  it('throws CancellationError when cancelled while waiting for stalled sendRequest', async () => {
+    let cancelled = false;
+    let cancelHandler: (() => void) | undefined;
+    const token = {
+      get isCancellationRequested() {
+        return cancelled;
+      },
+      onCancellationRequested: jest.fn((cb: () => void) => {
+        cancelHandler = cb;
+        return { dispose: jest.fn() };
+      }),
+    } as unknown as vscode.CancellationToken;
+
+    const model = {
+      sendRequest: jest.fn().mockImplementation(() => new Promise(() => {})),
+    };
+    (vscode.lm.selectChatModels as jest.Mock).mockResolvedValue([model]);
+    const provider = new CopilotProvider();
+
+    const runPromise = provider.sendRequest(defaultOptions, AgentName.CLAUDE, token);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    cancelled = true;
+    cancelHandler?.();
+
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('Timed out waiting for cancellation')), 120);
+    });
+
+    await expect(Promise.race([runPromise, timeoutPromise]))
+      .rejects.toBeInstanceOf(vscode.CancellationError);
+  });
+
+  it('throws CancellationError when cancelled while waiting for stalled stream chunk', async () => {
+    let cancelled = false;
+    let cancelHandler: (() => void) | undefined;
+    const token = {
+      get isCancellationRequested() {
+        return cancelled;
+      },
+      onCancellationRequested: jest.fn((cb: () => void) => {
+        cancelHandler = cb;
+        return { dispose: jest.fn() };
+      }),
+    } as unknown as vscode.CancellationToken;
+
+    async function* stalledStream(): AsyncIterable<vscode.LanguageModelTextPart> {
+      yield new vscode.LanguageModelTextPart('first chunk');
+      await new Promise<void>(() => {});
+    }
+
+    const model = {
+      sendRequest: jest.fn().mockResolvedValue({ stream: stalledStream() }),
+    };
+    (vscode.lm.selectChatModels as jest.Mock).mockResolvedValue([model]);
+    const provider = new CopilotProvider();
+
+    const runPromise = provider.sendRequest(defaultOptions, AgentName.CLAUDE, token);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    cancelled = true;
+    cancelHandler?.();
+
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('Timed out waiting for cancellation')), 120);
+    });
+
+    await expect(Promise.race([runPromise, timeoutPromise]))
+      .rejects.toBeInstanceOf(vscode.CancellationError);
+  });
+
   it('native LanguageModelToolCallPart run_command: dispatches and loops', async () => {
     let callCount = 0;
     const model = {

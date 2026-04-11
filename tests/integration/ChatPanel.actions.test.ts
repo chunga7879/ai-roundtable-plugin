@@ -408,6 +408,22 @@ describe('ChatPanel — setModelTier', () => {
 
     expect(configManager.setModelTier).not.toHaveBeenCalled();
   });
+
+  it('does not change tier while panel is busy', async () => {
+    const configManager = makeConfigManager();
+    const { panel, ChatPanel } = await setupPanel(configManager);
+    const handler = (panel as unknown as { _messageHandler: (m: unknown) => void })._messageHandler;
+    panel._sentMessages.length = 0;
+
+    ((ChatPanel as unknown as { instance: { commandCancellationTokenSource: object } }).instance).commandCancellationTokenSource = {};
+    handler({ type: 'setModelTier', payload: { tier: 'light' } });
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(configManager.setModelTier).not.toHaveBeenCalled();
+    const msgs = panel._sentMessages as Array<{ type: string; payload?: { role?: string; content?: string } }>;
+    const systemMsg = msgs.find((m) => m.type === 'addMessage' && m.payload?.role === 'system');
+    expect(systemMsg?.payload?.content).toContain('Cannot change model tier');
+  });
 });
 
 

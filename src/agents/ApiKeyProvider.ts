@@ -53,7 +53,7 @@ const READ_FILE_TOOL_ANTHROPIC = {
 
 const RUN_COMMAND_TOOL_ANTHROPIC = {
   name: 'run_command',
-  description: 'Run a shell command in the workspace root. The user will be prompted to approve before it runs. Use this when you need command output to complete your task (e.g. build verification, dependency audit). For post-response suggestions, use RUN: syntax instead.',
+  description: 'Run a shell command in the workspace root. The user will be prompted to approve before it runs. Use this when you need command output to complete your task (e.g. build verification, dependency audit). For post-response suggestions, use VERIFY: syntax instead.',
   input_schema: {
     type: 'object',
     properties: {
@@ -107,7 +107,7 @@ const RUN_COMMAND_TOOL_OPENAI = {
   type: 'function',
   function: {
     name: 'run_command',
-    description: 'Run a shell command in the workspace root. The user will be prompted to approve before it runs. Use this when you need command output to complete your task (e.g. build verification, dependency audit). For post-response suggestions, use RUN: syntax instead.',
+    description: 'Run a shell command in the workspace root. The user will be prompted to approve before it runs. Use this when you need command output to complete your task (e.g. build verification, dependency audit). For post-response suggestions, use VERIFY: syntax instead.',
     parameters: {
       type: 'object',
       properties: {
@@ -163,7 +163,7 @@ const READ_FILE_TOOL_GEMINI = {
 
 const RUN_COMMAND_TOOL_GEMINI = {
   name: 'run_command',
-  description: 'Run a shell command in the workspace root. The user will be prompted to approve before it runs. Use this when you need command output to complete your task (e.g. build verification, dependency audit). For post-response suggestions, use RUN: syntax instead.',
+  description: 'Run a shell command in the workspace root. The user will be prompted to approve before it runs. Use this when you need command output to complete your task (e.g. build verification, dependency audit). For post-response suggestions, use VERIFY: syntax instead.',
   parameters: {
     type: 'object',
     properties: {

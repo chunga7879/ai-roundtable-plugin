@@ -462,8 +462,13 @@ export class AgentRunner {
     // verification command (e.g. "VERIFY: npm test"). This is stripped from the
     // displayed response and surfaced to ChatPanel to present as an approve/deny
     // dialog after the user clicks Apply All Changes.
+    //
+    // Backwards compatibility: accept legacy "RUN:" lines as fallback only.
+    // If both tokens are present, VERIFY takes precedence.
     const VERIFY_PREFIX = 'VERIFY:';
-    let verifyCommand: string | undefined;
+    const LEGACY_RUN_PREFIX = 'RUN:';
+    let verifyCommandFromVerify: string | undefined;
+    let verifyCommandFromRun: string | undefined;
     const responseLines = reflectedResponse.split('\n');
     const filteredLines: string[] = [];
     let inCodeBlock = false;
@@ -477,12 +482,18 @@ export class AgentRunner {
       if (!inCodeBlock && trimmed.startsWith(VERIFY_PREFIX)) {
         const cmd = trimmed.slice(VERIFY_PREFIX.length).trim();
         if (cmd.length > 0) {
-          verifyCommand = cmd;
+          verifyCommandFromVerify = cmd;
+        }
+      } else if (!inCodeBlock && trimmed.startsWith(LEGACY_RUN_PREFIX)) {
+        const cmd = trimmed.slice(LEGACY_RUN_PREFIX.length).trim();
+        if (cmd.length > 0) {
+          verifyCommandFromRun = cmd;
         }
       } else {
         filteredLines.push(line);
       }
     }
+    const verifyCommand = verifyCommandFromVerify ?? verifyCommandFromRun;
     const displayResponse = verifyCommand
       ? filteredLines.join('\n').trimEnd()
       : reflectedResponse;

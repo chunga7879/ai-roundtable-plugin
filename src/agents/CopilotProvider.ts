@@ -194,7 +194,7 @@ export class CopilotProvider {
           },
           {
             name: 'run_command',
-            description: 'Run a shell command in the workspace root. The user will be prompted to approve before it runs. Use this when you need command output to complete your task (e.g. build verification, dependency audit). For post-response suggestions, use RUN: syntax instead.',
+            description: 'Run a shell command in the workspace root. The user will be prompted to approve before it runs. Use this when you need command output to complete your task (e.g. build verification, dependency audit). For post-response suggestions, use VERIFY: syntax instead.',
             inputSchema: {
               type: 'object',
               properties: {
@@ -239,7 +239,10 @@ export class CopilotProvider {
 
       let response: vscode.LanguageModelChatResponse;
       try {
-        response = await model.sendRequest(messages, { tools }, cancellationToken);
+        response = await this.awaitWithCancellation(
+          model.sendRequest(messages, { tools }, cancellationToken),
+          cancellationToken,
+        );
       } catch (err) {
         if (err instanceof vscode.CancellationError) {throw err;}
         this.invalidateModelCache();
@@ -253,10 +256,13 @@ export class CopilotProvider {
       const toolCallParts: vscode.LanguageModelToolCallPart[] = [];
 
       try {
-        for await (const part of response.stream) {
-          if (cancellationToken.isCancellationRequested) {
-            throw new vscode.CancellationError();
+        const iterator = response.stream[Symbol.asyncIterator]();
+        for (;;) {
+          const next = await this.awaitWithCancellation(iterator.next(), cancellationToken);
+          if (next.done) {
+            break;
           }
+          const part = next.value;
           if (part instanceof vscode.LanguageModelTextPart) {
             textChunks.push(part.value);
             options.onChunk?.(part.value);
@@ -356,6 +362,28 @@ export class CopilotProvider {
     }
 
     return finalText;
+  }
+
+  private async awaitWithCancellation<T>(
+    promise: Promise<T> | Thenable<T>,
+    cancellationToken: vscode.CancellationToken,
+  ): Promise<T> {
+    if (cancellationToken.isCancellationRequested) {
+      throw new vscode.CancellationError();
+    }
+
+    let cancelDisposable: vscode.Disposable | undefined;
+    const cancellationPromise = new Promise<never>((_, reject) => {
+      cancelDisposable = cancellationToken.onCancellationRequested(() => {
+        reject(new vscode.CancellationError());
+      });
+    });
+
+    try {
+      return await Promise.race([Promise.resolve(promise), cancellationPromise]);
+    } finally {
+      cancelDisposable?.dispose();
+    }
   }
 
   private buildMessages(options: LLMRequestOptions): vscode.LanguageModelChatMessage[] {

@@ -1333,6 +1333,9 @@
             checkbox.checked = false;
             checkbox.disabled = true;
             checkbox.closest('.agent-checkbox-item').style.opacity = '0.4';
+          } else if (isLoading) {
+            checkbox.disabled = true;
+            checkbox.closest('.agent-checkbox-item').style.opacity = '0.6';
           } else {
             checkbox.disabled = false;
             checkbox.closest('.agent-checkbox-item').style.opacity = '1';
@@ -2228,6 +2231,19 @@
         historyBtn.disabled = loading;
         historyBtn.style.opacity = loading ? '0.5' : '';
         historyBtn.style.cursor = loading ? 'not-allowed' : 'pointer';
+        roundSelect.disabled = loading;
+        roundSelect.style.opacity = loading ? '0.5' : '';
+        roundSelect.style.cursor = loading ? 'not-allowed' : 'pointer';
+        mainAgentSelect.disabled = loading;
+        mainAgentSelect.style.opacity = loading ? '0.5' : '';
+        mainAgentSelect.style.cursor = loading ? 'not-allowed' : 'pointer';
+        tierHeavyBtn.disabled = loading;
+        tierHeavyBtn.style.opacity = loading ? '0.5' : '';
+        tierHeavyBtn.style.cursor = loading ? 'not-allowed' : '';
+        tierLightBtn.disabled = loading;
+        tierLightBtn.style.opacity = loading ? '0.5' : '';
+        tierLightBtn.style.cursor = loading ? 'not-allowed' : '';
+        updateAgentControls();
 
         if (loading) {
           for (const id of interruptedBubbleIds) {

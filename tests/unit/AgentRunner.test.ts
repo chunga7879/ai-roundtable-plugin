@@ -2180,9 +2180,9 @@ describe('AgentRunner', () => {
     });
   });
 
-  // ── VERIFY: token parsing ─────────────────────────────────────────────────────
+  // ── VERIFY:/RUN: token parsing ────────────────────────────────────────────────
 
-  describe('VERIFY: token parsing', () => {
+  describe('VERIFY:/RUN: token parsing', () => {
     function makeRunner(response: string) {
       const copilotProvider = makeCopilotProvider(response);
       const runner = new AgentRunner({
@@ -2309,6 +2309,43 @@ describe('AgentRunner', () => {
       );
 
       expect(result.verifyCommand).toBeUndefined();
+    });
+
+    it('legacy RUN: token — extracted as fallback and removed from display', async () => {
+      const runner = makeRunner('Done.\nRUN: npm test');
+      const result = await runner.runRound(
+        makeRoundRequest({ subAgents: [] }),
+        makeCancellationToken(),
+        jest.fn(),
+      );
+
+      expect(result.verifyCommand).toBe('npm test');
+      expect(result.reflectedResponse).not.toContain('RUN:');
+      expect(result.reflectedResponse).toContain('Done.');
+    });
+
+    it('legacy RUN: inside a code fence — not extracted (inCodeBlock guard)', async () => {
+      const runner = makeRunner('Here:\n```\nRUN: npm test\n```\nDone.');
+      const result = await runner.runRound(
+        makeRoundRequest({ subAgents: [] }),
+        makeCancellationToken(),
+        jest.fn(),
+      );
+
+      expect(result.verifyCommand).toBeUndefined();
+    });
+
+    it('VERIFY takes precedence over legacy RUN when both are present', async () => {
+      const runner = makeRunner('RUN: npm run lint\nVERIFY: npm test');
+      const result = await runner.runRound(
+        makeRoundRequest({ subAgents: [] }),
+        makeCancellationToken(),
+        jest.fn(),
+      );
+
+      expect(result.verifyCommand).toBe('npm test');
+      expect(result.reflectedResponse).not.toContain('RUN:');
+      expect(result.reflectedResponse).not.toContain('VERIFY:');
     });
   });
 });

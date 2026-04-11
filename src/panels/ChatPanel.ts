@@ -315,6 +315,18 @@ export class ChatPanel implements vscode.Disposable {
       case 'setModelTier': {
         const { tier } = (msg.payload as { tier: string });
         if (tier === 'light' || tier === 'heavy') {
+          if (this.isBusy()) {
+            this.postMessage({
+              type: 'addMessage',
+              payload: {
+                id: crypto.randomUUID(),
+                role: 'system',
+                content: 'Cannot change model tier while a request or command is in progress.',
+                timestamp: Date.now(),
+              },
+            });
+            break;
+          }
           await this.configManager.setModelTier(tier);
           await this.handleRequestConfig();
         }
