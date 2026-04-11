@@ -8,7 +8,7 @@ A VS Code extension that brings a structured multi-agent AI development workflow
 
 ## Prerequisites
 
-- **VS Code** `^1.90.0`
+- **VS Code** `^1.88.0`
 - One of:
   - **GitHub Copilot** subscription (no API key required), or
   - One or more API keys: Anthropic (`sk-ant-...`), OpenAI (`sk-...`), Google (`AIza...`), DeepSeek (`sk-...`)
@@ -131,7 +131,7 @@ Ensure the GitHub Copilot extension is installed, you are signed in, and your su
 Run `AI Roundtable: Configure Provider`, choose API Keys, and enter your Anthropic key. The panel updates automatically — no need to reopen it.
 
 **Extension does not activate**
-Check that VS Code is `^1.90.0`. Run `Developer: Show Running Extensions` to confirm the extension is listed. If compile errors exist, run `npm run compile` and reload.
+Check that VS Code is `^1.88.0`. Run `Developer: Show Running Extensions` to confirm the extension is listed. If compile errors exist, run `npm run compile` and reload.
 
 **File changes not applied after "Apply All Changes"**
 The workspace must be open (not just a single file). Ensure VS Code has write permission to the target files. Check the Output panel (`AI Roundtable`) for error details.

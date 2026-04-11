@@ -85,6 +85,10 @@ export class RoundOrchestrator {
     this.currentCancellationTokenSource = undefined;
   }
 
+  get isRunning(): boolean {
+    return this.currentCancellationTokenSource !== undefined;
+  }
+
   async run(params: OrchestratorRunParams): Promise<OrchestratorResult> {
     const { userMessage, roundType, mainAgent, subAgents, conversationHistory, fileCache, commandOutputCache } = params;
 

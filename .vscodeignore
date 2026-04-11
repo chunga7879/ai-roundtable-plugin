@@ -6,7 +6,7 @@ src/**
 tsconfig.json
 **/*.map
 **/*.ts
-!out/**/*.js
+out/test/**
 node_modules/**
 *.vsix
 .github/**

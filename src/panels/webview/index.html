@@ -1138,6 +1138,7 @@
       const messageInput = /** @type {HTMLTextAreaElement} */ (document.getElementById('message-input'));
       const sendBtn = /** @type {HTMLButtonElement} */ (document.getElementById('send-btn'));
       const stopBtn = /** @type {HTMLButtonElement} */ (document.getElementById('stop-btn'));
+      const historyBtn = /** @type {HTMLButtonElement} */ (document.getElementById('history-btn'));
       const roundSelect = /** @type {HTMLSelectElement} */ (document.getElementById('round-select'));
       const mainAgentSelect = /** @type {HTMLSelectElement} */ (document.getElementById('main-agent-select'));
       const fileChangesPanel = /** @type {HTMLElement} */ (document.getElementById('file-changes-panel'));
@@ -1178,6 +1179,9 @@
 
       // ── Session history ────────────────────────────────────────────────────
       document.getElementById('history-btn').addEventListener('click', function () {
+        if (isLoading) {
+          return;
+        }
         vscode.postMessage({ type: 'requestSessionList' });
       });
 
@@ -1222,6 +1226,9 @@
             item.appendChild(preview);
 
             item.addEventListener('click', function () {
+              if (isLoading) {
+                return;
+              }
               vscode.postMessage({ type: 'restoreSession', payload: { sessionId: session.id } });
             });
 
@@ -2218,6 +2225,9 @@
         messageInput.disabled = loading;
         sendBtn.style.display = loading ? 'none' : '';
         stopBtn.style.display = loading ? '' : 'none';
+        historyBtn.disabled = loading;
+        historyBtn.style.opacity = loading ? '0.5' : '';
+        historyBtn.style.cursor = loading ? 'not-allowed' : 'pointer';
 
         if (loading) {
           for (const id of interruptedBubbleIds) {

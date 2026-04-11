@@ -257,6 +257,36 @@ describe('restoreSession', () => {
     const msg = postedMessages().find((m) => m.type === 'sessionRestored');
     expect(msg).toBeUndefined();
   });
+
+  it('blocks restoreSession while panel is busy', async () => {
+    const session = {
+      id: 'sess-busy',
+      workspaceId: 'x',
+      roundType: RoundType.DEVELOPER,
+      createdAt: 1,
+      updatedAt: 2,
+      turns: [{ role: 'user', content: 'hi' }],
+    };
+    (vscode.workspace.fs.readFile as jest.Mock).mockResolvedValue(
+      Buffer.from(JSON.stringify(session)),
+    );
+
+    const { panel, onMessage, postedMessages } = createPanel();
+    await flushPromises();
+
+    // Simulate busy state via in-flight local command source.
+    (panel as unknown as { commandCancellationTokenSource: object }).commandCancellationTokenSource = {};
+
+    await onMessage?.({ type: 'restoreSession', payload: { sessionId: 'sess-busy' } });
+    await flushPromises();
+
+    expect(postedMessages().some((m) => m.type === 'sessionRestored')).toBe(false);
+    const systemMsg = postedMessages().find((m) => m.type === 'addMessage') as
+      | { type: 'addMessage'; payload?: { role?: string; content?: string } }
+      | undefined;
+    expect(systemMsg?.payload?.role).toBe('system');
+    expect(systemMsg?.payload?.content).toContain('Cannot restore history');
+  });
 });
 
 // ── storage failure does not break chat ───────────────────────────────────────

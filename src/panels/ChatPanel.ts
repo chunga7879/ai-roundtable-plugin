@@ -155,6 +155,10 @@ export class ChatPanel implements vscode.Disposable {
     }
   }
 
+  private isBusy(): boolean {
+    return this.orchestrator.isRunning || this.commandCancellationTokenSource !== undefined;
+  }
+
   private async handleWebviewMessage(message: unknown): Promise<void> {
     // Guard: type-narrow before dispatch
     if (typeof message !== 'object' || message === null || !('type' in message)) {
@@ -265,6 +269,18 @@ export class ChatPanel implements vscode.Disposable {
       }
 
       case 'restoreSession': {
+        if (this.isBusy()) {
+          this.postMessage({
+            type: 'addMessage',
+            payload: {
+              id: crypto.randomUUID(),
+              role: 'system',
+              content: 'Cannot restore history while a request or command is in progress. Cancel the current run first.',
+              timestamp: Date.now(),
+            },
+          });
+          break;
+        }
         const { sessionId } = (msg.payload as { sessionId: string });
         if (this.sessionManager && sessionId) {
           const session = await this.sessionManager.loadSession(sessionId);

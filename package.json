@@ -5,7 +5,7 @@
   "version": "0.1.0",
   "publisher": "chungalee",
   "engines": {
-    "vscode": "^1.90.0"
+    "vscode": "^1.88.0"
   },
   "categories": [
     "AI",
@@ -23,7 +23,7 @@
     "code review",
     "requirements"
   ],
-  "icon": "resources/icon.png",
+  "icon": "resources/ai_roundtable_icon.png",
   "activationEvents": [
     "onStartupFinished"
   ],
@@ -150,7 +150,7 @@
         {
           "id": "aiRoundtable",
           "title": "AI Roundtable",
-          "icon": "resources/icon-activity.svg"
+          "icon": "resources/ai_roundtable_icon.png"
         }
       ]
     },
@@ -160,7 +160,7 @@
           "type": "webview",
           "id": "aiRoundtable.sidebarView",
           "name": "Chat",
-          "icon": "resources/icon-activity.svg",
+          "icon": "resources/ai_roundtable_icon.png",
           "contextualTitle": "AI Roundtable"
         }
       ]
@@ -169,13 +169,14 @@
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
+    "compile:test:vscode": "tsc -p ./tsconfig.test.json",
     "watch": "tsc -watch -p ./",
     "lint": "eslint src --ext ts",
     "lint:fix": "eslint src --ext ts --fix",
     "test": "jest --passWithNoTests",
     "test:coverage": "jest --coverage --runInBand --passWithNoTests",
     "quality:check": "npm run lint && npm run test:coverage",
-    "test:vscode": "node ./out/test/runTest.js",
+    "test:vscode": "npm run compile && npm run compile:test:vscode && node ./out/test/vscode/runTest.js",
     "package": "vsce package",
     "clean": "rm -rf out"
   },
@@ -210,7 +211,7 @@
   "devDependencies": {
     "@types/jest": "^30.0.0",
     "@types/node": "^20.14.0",
-    "@types/vscode": "^1.90.0",
+    "@types/vscode": "^1.88.0",
     "@typescript-eslint/eslint-plugin": "^7.14.0",
     "@typescript-eslint/parser": "^7.14.0",
     "@vscode/test-electron": "^2.4.0",

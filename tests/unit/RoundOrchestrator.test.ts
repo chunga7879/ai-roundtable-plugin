@@ -615,6 +615,57 @@ describe('execCommand', () => {
     expect(result).toBeDefined();
     expect(result.command).toBe('echo test');
   });
+
+  it('returns timed-out output when command exceeds timeout', async () => {
+    const result = await execCommand(
+      'node -e "setTimeout(() => {}, 250)"',
+      undefined,
+      20,
+    );
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout).toContain('[Timed out]');
+  });
+
+  it('returns cancelled output when cancellation token is triggered', async () => {
+    let cancelHandler: (() => void) | undefined;
+    const cancellationToken = {
+      onCancellationRequested: (cb: () => void) => {
+        cancelHandler = cb;
+        return { dispose: jest.fn() };
+      },
+      get isCancellationRequested() {
+        return false;
+      },
+    };
+
+    const promise = execCommand(
+      'node -e "setTimeout(() => console.log(\'done\'), 300)"',
+      undefined,
+      10_000,
+      cancellationToken as unknown as vscode.CancellationToken,
+    );
+    setTimeout(() => cancelHandler?.(), 20);
+    const result = await promise;
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout).toContain('[Cancelled]');
+  });
+
+  it('appends truncation notice when output exceeds max buffer', async () => {
+    const result = await execCommand(
+      'node -e "process.stdout.write(\'x\'.repeat(70000))"',
+      undefined,
+      10_000,
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain('[... output truncated at 50000 bytes ...]');
+  });
+
+  it('returns failure output when command input is invalid at runtime', async () => {
+    const result = await execCommand(null as unknown as string, undefined, 10_000);
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stdout.length).toBeGreaterThan(0);
+  });
 });
 
 // ── orphaned streaming bubble cleanup ─────────────────────────────────────────
@@ -660,5 +711,108 @@ describe('RoundOrchestrator — orphaned streaming bubble cleanup', () => {
     // No removeMessage needed since no bubble was created (CancellationError was thrown before main_agent_start)
     // Just verify second run completes
     expect(emitted.some((m) => m.type === 'setLoading')).toBe(true);
+  });
+});
+
+describe('RoundOrchestrator helper parsing paths', () => {
+  it('builds consensus summary with normalized duplicate issue titles', () => {
+    const orchestrator = new RoundOrchestrator(
+      makeConfigManager() as never,
+      makeWorkspaceReader() as never,
+      jest.fn(),
+    );
+
+    const summary = (orchestrator as unknown as {
+      buildVerificationSummary: (
+        verifications: Array<{ feedback: string }>,
+        configuredSubAgents: number,
+      ) => {
+        configuredSubAgents: number;
+        invokedSubAgents: number;
+        validSubAgents: number;
+        unavailableSubAgents: number;
+        verifierIssuesTotal: number;
+        consensusIssueCount: number;
+        reflectionUsed: boolean;
+      };
+    }).buildVerificationSummary(
+      [
+        { feedback: 'ISSUES:\n- Null Pointer\n- Null pointer\n- Race condition' },
+        { feedback: '{"issues":[{"title":"null-pointer"},"race condition"]}' },
+      ],
+      2,
+    );
+
+    expect(summary.configuredSubAgents).toBe(2);
+    expect(summary.invokedSubAgents).toBe(2);
+    expect(summary.validSubAgents).toBe(2);
+    expect(summary.consensusIssueCount).toBe(1);
+    expect(summary.reflectionUsed).toBe(true);
+  });
+
+  it('parses issue titles from fenced JSON and ignores malformed candidates', () => {
+    const orchestrator = new RoundOrchestrator(
+      makeConfigManager() as never,
+      makeWorkspaceReader() as never,
+      jest.fn(),
+    );
+
+    const titles = (orchestrator as unknown as {
+      extractIssueTitles: (feedback: string) => string[];
+    }).extractIssueTitles(
+      [
+        'not json {',
+        '```json',
+        '{"issues":[{"title":"Missing test coverage"},{"title":"Missing test coverage"},"N/A"]}',
+        '```',
+      ].join('\n'),
+    );
+
+    expect(titles).toEqual(['Missing test coverage']);
+  });
+
+  it('falls back to markdown bullet parsing when JSON is unavailable', () => {
+    const orchestrator = new RoundOrchestrator(
+      makeConfigManager() as never,
+      makeWorkspaceReader() as never,
+      jest.fn(),
+    );
+
+    const titles = (orchestrator as unknown as {
+      extractIssueTitles: (feedback: string) => string[];
+    }).extractIssueTitles(
+      'ISSUES:\n1. Missing retry logic\n- none\n* Handle timeout',
+    );
+
+    expect(titles).toEqual(['Missing retry logic', 'Handle timeout']);
+  });
+
+  it('extracts enclosing JSON object around "issues" token', () => {
+    const orchestrator = new RoundOrchestrator(
+      makeConfigManager() as never,
+      makeWorkspaceReader() as never,
+      jest.fn(),
+    );
+    const extracted = (orchestrator as unknown as {
+      extractEnclosingJsonObject: (text: string, requiredToken: string) => string | null;
+    }).extractEnclosingJsonObject(
+      'prefix {"meta":1,"issues":[{"title":"A"}]} suffix',
+      '"issues"',
+    );
+    expect(extracted).toBe('{"meta":1,"issues":[{"title":"A"}]}');
+  });
+
+  it('handles non-object parsed JSON and string "issues: none"', () => {
+    const orchestrator = new RoundOrchestrator(
+      makeConfigManager() as never,
+      makeWorkspaceReader() as never,
+      jest.fn(),
+    );
+    const parse = (orchestrator as unknown as {
+      extractIssueTitlesFromParsedJson: (parsed: unknown) => string[] | null;
+    }).extractIssueTitlesFromParsedJson;
+
+    expect(parse(['not-object'])).toBeNull();
+    expect(parse({ issues: 'none' })).toEqual([]);
   });
 });
