@@ -42,6 +42,15 @@ export type OrchestratorResult =
       streamingBubbleId: string | undefined;
       /** Command the AI suggested to run after Apply to verify its changes (e.g. "npm test"). */
       verifyCommand?: string;
+      verificationSummary: {
+        configuredSubAgents: number;
+        invokedSubAgents: number;
+        validSubAgents: number;
+        unavailableSubAgents: number;
+        verifierIssuesTotal: number;
+        consensusIssueCount: number;
+        reflectionUsed: boolean;
+      };
     }
   | { status: 'cancelled' }
   | { status: 'error'; error: unknown };
@@ -135,6 +144,7 @@ export class RoundOrchestrator {
         tokenUsage: result.tokenUsage,
         streamingBubbleId: this.streamingMsgId,
         verifyCommand: result.verifyCommand,
+        verificationSummary: this.buildVerificationSummary(result.subAgentVerifications, subAgents.length),
       };
     } catch (err) {
       if (err instanceof vscode.CancellationError) {
@@ -361,6 +371,211 @@ export class RoundOrchestrator {
       providerMode: config.providerMode,
       workspaceReader: this.workspaceReader,
     });
+  }
+
+  private buildVerificationSummary(
+    verifications: Array<{ feedback: string }>,
+    configuredSubAgents: number,
+  ): {
+    configuredSubAgents: number;
+    invokedSubAgents: number;
+    validSubAgents: number;
+    unavailableSubAgents: number;
+    verifierIssuesTotal: number;
+    consensusIssueCount: number;
+    reflectionUsed: boolean;
+  } {
+    const unavailableSubAgents = verifications.filter((v) => v.feedback.startsWith('[Verification unavailable')).length;
+    const validFeedbacks = verifications
+      .map((v) => v.feedback)
+      .filter((feedback) => !feedback.startsWith('[Verification unavailable'));
+    const parsedIssuesByVerifier = validFeedbacks.map((feedback) => this.extractIssueTitles(feedback));
+    const verifierIssuesTotal = parsedIssuesByVerifier.reduce((acc, items) => acc + items.length, 0);
+
+    const counts = new Map<string, number>();
+    for (const issues of parsedIssuesByVerifier) {
+      const unique = new Set<string>();
+      for (const issue of issues) {
+        const key = this.normalizeIssueTitle(issue);
+        if (!key || unique.has(key)) {
+          continue;
+        }
+        unique.add(key);
+      }
+      for (const key of unique) {
+        counts.set(key, (counts.get(key) ?? 0) + 1);
+      }
+    }
+
+    const validSubAgents = parsedIssuesByVerifier.length;
+    const consensusIssueCount = validSubAgents > 0
+      ? Array.from(counts.values()).filter((count) => count === validSubAgents).length
+      : 0;
+
+    return {
+      configuredSubAgents,
+      invokedSubAgents: verifications.length,
+      validSubAgents,
+      unavailableSubAgents,
+      verifierIssuesTotal,
+      consensusIssueCount,
+      reflectionUsed: validSubAgents > 0,
+    };
+  }
+
+  private extractIssueTitles(feedback: string): string[] {
+    const jsonIssues = this.extractIssueTitlesFromJson(feedback);
+    if (jsonIssues !== null) {
+      return jsonIssues;
+    }
+
+    const issuesSection = feedback.match(/ISSUES:\s*([\s\S]*?)(?:\nDETAILS:|$)/i)?.[1] ?? feedback;
+    return Array.from(new Set(
+      issuesSection
+        .split('\n')
+        .map((line) => line.trim())
+        .filter((line) => /^([-*]|\d+\.)\s+/.test(line))
+        .map((line) => line.replace(/^([-*]|\d+\.)\s+/, '').trim())
+        .filter((line) => line.length > 0 && !/^(none|n\/a)$/i.test(line)),
+    ));
+  }
+
+  private extractIssueTitlesFromJson(feedback: string): string[] | null {
+    const candidates = this.extractJsonCandidates(feedback);
+    for (const candidate of candidates) {
+      try {
+        const parsed = JSON.parse(candidate) as unknown;
+        const titles = this.extractIssueTitlesFromParsedJson(parsed);
+        if (titles !== null) {
+          return titles;
+        }
+      } catch {
+        // Ignore malformed JSON candidate and continue.
+      }
+    }
+    return null;
+  }
+
+  private extractJsonCandidates(feedback: string): string[] {
+    const candidates: string[] = [];
+    const pushUnique = (value: string): void => {
+      const trimmed = value.trim();
+      if (trimmed.length === 0 || candidates.includes(trimmed)) {
+        return;
+      }
+      candidates.push(trimmed);
+    };
+
+    const fenced = feedback.match(/```(?:json)?\s*([\s\S]*?)```/gi) ?? [];
+    for (const block of fenced) {
+      const inner = block.replace(/^```(?:json)?\s*/i, '').replace(/```$/i, '').trim();
+      pushUnique(inner);
+    }
+
+    const whole = feedback.trim();
+    if (whole.length === 0) {
+      return candidates;
+    }
+    const extractedObject = this.extractEnclosingJsonObject(whole, '"issues"');
+    if (extractedObject) {
+      pushUnique(extractedObject);
+    }
+    pushUnique(whole);
+    return candidates;
+  }
+
+  private extractEnclosingJsonObject(text: string, requiredToken: string): string | null {
+    const tokenIndex = text.indexOf(requiredToken);
+    if (tokenIndex === -1) {
+      return null;
+    }
+
+    const objectStart = text.lastIndexOf('{', tokenIndex);
+    if (objectStart === -1) {
+      return null;
+    }
+
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+
+    for (let i = objectStart; i < text.length; i++) {
+      const ch = text[i];
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+          continue;
+        }
+        if (ch === '\\') {
+          escaped = true;
+          continue;
+        }
+        if (ch === '"') {
+          inString = false;
+        }
+        continue;
+      }
+      if (ch === '"') {
+        inString = true;
+        continue;
+      }
+      if (ch === '{') {
+        depth += 1;
+        continue;
+      }
+      if (ch === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          return text.slice(objectStart, i + 1);
+        }
+      }
+    }
+    return null;
+  }
+
+  private extractIssueTitlesFromParsedJson(parsed: unknown): string[] | null {
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return null;
+    }
+    const payload = parsed as Record<string, unknown>;
+    if (!Object.prototype.hasOwnProperty.call(payload, 'issues')) {
+      return null;
+    }
+
+    const issues = payload.issues;
+    if (Array.isArray(issues)) {
+      return Array.from(new Set(
+        issues
+          .map((item) => {
+            if (typeof item === 'string') {
+              return item.trim();
+            }
+            if (item && typeof item === 'object') {
+              const title = (item as Record<string, unknown>).title;
+              if (typeof title === 'string') {
+                return title.trim();
+              }
+            }
+            return '';
+          })
+          .filter((title) => title.length > 0 && !/^(none|n\/a)$/i.test(title)),
+      ));
+    }
+
+    if (typeof issues === 'string' && /^(none|n\/a)$/i.test(issues.trim())) {
+      return [];
+    }
+
+    return [];
+  }
+
+  private normalizeIssueTitle(issue: string): string {
+    return issue
+      .toLowerCase()
+      .replace(/[`"'()[\]{}]/g, '')
+      .replace(/[^a-z0-9\s_-]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
   }
 }
 

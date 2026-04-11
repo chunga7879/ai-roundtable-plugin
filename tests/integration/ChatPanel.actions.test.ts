@@ -85,6 +85,21 @@ async function setupPanel(configManager: ReturnType<typeof makeConfigManager>, f
   return { panel, ChatPanel };
 }
 
+async function waitFor(
+  predicate: () => boolean,
+  timeoutMs = 600,
+  stepMs = 10,
+): Promise<void> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if (predicate()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, stepMs));
+  }
+  throw new Error('Timed out waiting for condition');
+}
+
 const validSendMessage = {
   type: 'sendMessage',
   payload: {
@@ -192,6 +207,119 @@ describe('ChatPanel — cancelRequest', () => {
     const handler = (panel as unknown as { _messageHandler: (m: unknown) => void })._messageHandler;
 
     expect(() => handler({ type: 'cancelRequest' })).not.toThrow();
+  });
+
+  it('cancels during main-agent stage', async () => {
+    const slowMainModel = {
+      sendRequest: jest.fn().mockResolvedValue({
+        stream: (async function* () {
+          yield new vscode.LanguageModelTextPart('chunk 1');
+          await new Promise((resolve) => setTimeout(resolve, 180));
+          yield new vscode.LanguageModelTextPart('chunk 2');
+        })(),
+      }),
+    };
+
+    const { panel } = await setupPanel(makeConfigManager(), slowMainModel);
+    const handler = (panel as unknown as { _messageHandler: (m: unknown) => void })._messageHandler;
+
+    handler(validSendMessage);
+    await waitFor(() => (panel._sentMessages as Array<{ type: string; payload?: { stage?: string } }>)
+      .some((m) => m.type === 'pipelineProgress' && m.payload?.stage === 'thinking'));
+    handler({ type: 'cancelRequest' });
+    await waitFor(() => (panel._sentMessages as Array<{ type: string; payload?: { role?: string; content?: string } }>)
+      .some((m) => m.type === 'addMessage' && m.payload?.role === 'system' && m.payload?.content === 'Request cancelled.'));
+  });
+
+  it('cancels when sub-agent verification is in-flight', async () => {
+    let callCount = 0;
+    const verifyingModel = {
+      sendRequest: jest.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          return Promise.resolve({
+            stream: (async function* () {
+              yield new vscode.LanguageModelTextPart('main response');
+            })(),
+          });
+        }
+        // Verifier call: intentionally hangs long enough for cancel path
+        return Promise.resolve({
+          stream: (async function* () {
+            await new Promise((resolve) => setTimeout(resolve, 1_000));
+            yield new vscode.LanguageModelTextPart('late verifier feedback');
+          })(),
+        });
+      }),
+    };
+
+    const { panel } = await setupPanel(makeConfigManager(), verifyingModel);
+    const handler = (panel as unknown as { _messageHandler: (m: unknown) => void })._messageHandler;
+
+    handler({
+      type: 'sendMessage',
+      payload: {
+        userMessage: 'Build this',
+        roundType: RoundType.DEVELOPER,
+        mainAgent: AgentName.CLAUDE,
+        subAgents: [AgentName.GPT],
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    handler({ type: 'cancelRequest' });
+    await waitFor(() => (panel._sentMessages as Array<{ type: string; payload?: { role?: string; content?: string } }>)
+      .some((m) => m.type === 'addMessage' && m.payload?.role === 'system' && m.payload?.content === 'Request cancelled.'));
+  });
+
+  it('cancels during reflection stage', async () => {
+    let callCount = 0;
+    const reflectionModel = {
+      sendRequest: jest.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          return Promise.resolve({
+            stream: (async function* () {
+              yield new vscode.LanguageModelTextPart('main response');
+            })(),
+          });
+        }
+        if (callCount === 2) {
+          return Promise.resolve({
+            stream: (async function* () {
+              yield new vscode.LanguageModelTextPart(JSON.stringify({
+                issues: [{ title: 'Fix X', detail: 'Need improvement' }],
+              }));
+            })(),
+          });
+        }
+        return Promise.resolve({
+          stream: (async function* () {
+            yield new vscode.LanguageModelTextPart('reflection chunk 1');
+            await new Promise((resolve) => setTimeout(resolve, 180));
+            yield new vscode.LanguageModelTextPart('reflection chunk 2');
+          })(),
+        });
+      }),
+    };
+
+    const { panel } = await setupPanel(makeConfigManager(), reflectionModel);
+    const handler = (panel as unknown as { _messageHandler: (m: unknown) => void })._messageHandler;
+
+    handler({
+      type: 'sendMessage',
+      payload: {
+        userMessage: 'Improve code quality',
+        roundType: RoundType.DEVELOPER,
+        mainAgent: AgentName.CLAUDE,
+        subAgents: [AgentName.GPT],
+      },
+    });
+
+    await waitFor(() => callCount >= 3, 1_500);
+    handler({ type: 'cancelRequest' });
+    await waitFor(() => (panel._sentMessages as Array<{ type: string; payload?: { role?: string; content?: string } }>)
+      .some((m) => m.type === 'addMessage' && m.payload?.role === 'system' && m.payload?.content === 'Request cancelled.'));
   });
 });
 

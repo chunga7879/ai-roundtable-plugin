@@ -30,12 +30,27 @@ export class CancellationError extends Error {
 }
 
 export class CancellationTokenSource {
+  private cancellationListeners: Array<() => void> = [];
   readonly token: { isCancellationRequested: boolean; onCancellationRequested: jest.Mock } = {
     isCancellationRequested: false,
-    onCancellationRequested: jest.fn(),
+    onCancellationRequested: jest.fn((cb: () => void) => {
+      this.cancellationListeners.push(cb);
+      return {
+        dispose: () => {
+          this.cancellationListeners = this.cancellationListeners.filter((listener) => listener !== cb);
+        },
+      };
+    }),
   };
   cancel(): void {
     this.token.isCancellationRequested = true;
+    for (const listener of this.cancellationListeners) {
+      try {
+        listener();
+      } catch {
+        // Ignore listener errors in mock event dispatch.
+      }
+    }
   }
   dispose(): void {}
 }
@@ -168,6 +183,7 @@ export const workspace = {
   onDidChangeWorkspaceFolders: jest.fn(),
   createFileSystemWatcher: jest.fn().mockReturnValue(mockWatcher),
   registerTextDocumentContentProvider: jest.fn().mockReturnValue({ dispose: jest.fn() }),
+  openTextDocument: jest.fn().mockResolvedValue({ uri: Uri.parse('untitled:ab-report.md') }),
 };
 
 // ── window namespace ─────────────────────────────────────────────────────────
@@ -195,6 +211,7 @@ export const window = {
     sendText: jest.fn(),
     dispose: jest.fn(),
   }),
+  showTextDocument: jest.fn().mockResolvedValue(undefined),
 };
 
 // ── lm namespace ─────────────────────────────────────────────────────────────

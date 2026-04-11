@@ -23,6 +23,8 @@ import { getWorkspaceFolderPrefix, resolveWorkspacePath as resolveWorkspacePathW
 import type { ConfigManager } from '../extension';
 import { ValidationError } from '../errors';
 import { RoundOrchestrator, execCommand } from './RoundOrchestrator';
+import { RoundMetricsLogger } from '../metrics/RoundMetricsLogger';
+import type { RoundRunMetricRecord } from '../metrics/RoundMetricsLogger';
 
 const VIEW_TYPE = 'aiRoundtable.chatPanel';
 const PANEL_TITLE = 'AI Roundtable';
@@ -65,6 +67,7 @@ export class ChatPanel implements vscode.Disposable {
   private sessionManager: SessionManager | undefined;
   private currentSessionId: string | undefined;
   private readonly orchestrator: RoundOrchestrator;
+  private readonly metricsLogger: RoundMetricsLogger | undefined;
 
   private constructor(
     panel: vscode.WebviewPanel,
@@ -83,7 +86,7 @@ export class ChatPanel implements vscode.Disposable {
     );
     if (context) {
       this.sessionManager = new SessionManager(context.globalStorageUri);
-      void this.startNewSession();
+      this.metricsLogger = new RoundMetricsLogger(context.globalStorageUri);
     }
 
     this.panel.webview.html = this.buildHtml();
@@ -139,7 +142,7 @@ export class ChatPanel implements vscode.Disposable {
   }
 
   private async startNewSession(): Promise<void> {
-    if (!this.sessionManager) {
+    if (!this.sessionManager || this.currentSessionId) {
       return;
     }
     try {
@@ -240,6 +243,7 @@ export class ChatPanel implements vscode.Disposable {
         this.orchestrator.cancel();
         this.conversationHistory = [];
         this.currentRoundType = undefined;
+        this.currentSessionId = undefined;
         this.lastSendMessage = undefined;
         this.fileCache.clear();
         this.commandOutputCache.clear();
@@ -247,7 +251,6 @@ export class ChatPanel implements vscode.Disposable {
         this.pendingVerifyCommand = undefined;
         this.postMessage({ type: 'clearMessages' });
         this.postMessage({ type: 'clearFileChanges' });
-        void this.startNewSession();
         break;
 
       case 'requestSessionList': {
@@ -270,6 +273,8 @@ export class ChatPanel implements vscode.Disposable {
             this.commandOutputCache.clear();
             this.pendingVerifyCommand = undefined;
             this.currentSessionId = session.id;
+            this.postMessage({ type: 'clearFileChanges' });
+            this.postMessage({ type: 'clearContextFiles' });
             this.postMessage({ type: 'sessionRestored', payload: { turns: session.turns, roundType: session.roundType } });
           }
         }
@@ -325,11 +330,11 @@ export class ChatPanel implements vscode.Disposable {
     } else if (roundType !== previousRoundType) {
       // Reset history and file cache when round type changes
       this.conversationHistory = [];
+      this.currentSessionId = undefined;
       this.fileCache.clear();
       this.pendingVerifyCommand = undefined;
       this.postMessage({ type: 'roundChanged', payload: { roundType } });
       this.currentRoundType = roundType;
-      void this.startNewSession();
     }
 
     // Self-heal cache before each turn:
@@ -347,6 +352,17 @@ export class ChatPanel implements vscode.Disposable {
       });
     }
 
+    const runStartedAt = Date.now();
+    const runConfigPromise: Promise<
+      { providerMode: ProviderMode; modelTier: 'light' | 'heavy'; enableMetrics: boolean } | undefined
+    > = this.configManager.getConfig()
+      .then((config): { providerMode: ProviderMode; modelTier: 'light' | 'heavy'; enableMetrics: boolean } => ({
+        providerMode: config.providerMode,
+        modelTier: config.modelTier,
+        enableMetrics: config.enableMetrics === true,
+      }))
+      .catch((): undefined => undefined);
+
     const result = await this.orchestrator.run({
       userMessage,
       roundType,
@@ -356,6 +372,7 @@ export class ChatPanel implements vscode.Disposable {
       fileCache: this.fileCache,
       commandOutputCache: this.commandOutputCache,
     });
+    const runConfig = await runConfigPromise;
 
     switch (result.status) {
       case 'cancelled':
@@ -364,6 +381,17 @@ export class ChatPanel implements vscode.Disposable {
           type: 'addMessage',
           payload: { id: crypto.randomUUID(), role: 'system', content: 'Request cancelled.', timestamp: Date.now() },
         });
+        if (runConfig?.enableMetrics) {
+          void this.logRoundMetric({
+            roundType,
+            mainAgent,
+            subAgentsConfigured: subAgents.length,
+            status: 'cancelled',
+            durationMs: Date.now() - runStartedAt,
+            providerMode: runConfig.providerMode,
+            modelTier: runConfig.modelTier,
+          });
+        }
         break;
 
       case 'error':
@@ -371,6 +399,18 @@ export class ChatPanel implements vscode.Disposable {
         this.conversationHistory.push({ role: 'user', content: userMessage });
         this.pendingVerifyCommand = undefined;
         this.postErrorMessage(this.toSafeUserMessage(result.error), true);
+        if (runConfig?.enableMetrics) {
+          void this.logRoundMetric({
+            roundType,
+            mainAgent,
+            subAgentsConfigured: subAgents.length,
+            status: 'error',
+            durationMs: Date.now() - runStartedAt,
+            providerMode: runConfig.providerMode,
+            modelTier: runConfig.modelTier,
+            errorName: result.error instanceof Error ? result.error.name : undefined,
+          });
+        }
         break;
 
       case 'success': {
@@ -380,6 +420,9 @@ export class ChatPanel implements vscode.Disposable {
         this.conversationHistory.push(result.assistantTurn);
 
         // Persist turns (best-effort, non-blocking)
+        if (this.sessionManager) {
+          await this.startNewSession();
+        }
         if (this.sessionManager && this.currentSessionId) {
           if (result.newUserTurn) {
             void this.sessionManager.appendTurn(this.currentSessionId, result.newUserTurn);
@@ -415,6 +458,26 @@ export class ChatPanel implements vscode.Disposable {
         } else {
           this.clearDraftFileChanges();
           this.pendingVerifyCommand = undefined;
+        }
+        if (runConfig?.enableMetrics) {
+          void this.logRoundMetric({
+            roundType,
+            mainAgent,
+            subAgentsConfigured: subAgents.length,
+            status: 'success',
+            durationMs: Date.now() - runStartedAt,
+            providerMode: runConfig.providerMode,
+            modelTier: runConfig.modelTier,
+            inputTokens: result.tokenUsage?.inputTokens,
+            outputTokens: result.tokenUsage?.outputTokens,
+            fileChangeCount: result.fileChanges.length,
+            verifyCommandSuggested: Boolean(result.verifyCommand),
+            reflectionUsed: result.verificationSummary.reflectionUsed,
+            validSubAgentCount: result.verificationSummary.validSubAgents,
+            unavailableSubAgentCount: result.verificationSummary.unavailableSubAgents,
+            verifierIssuesTotal: result.verificationSummary.verifierIssuesTotal,
+            consensusIssueCount: result.verificationSummary.consensusIssueCount,
+          });
         }
         break;
       }
@@ -724,6 +787,15 @@ export class ChatPanel implements vscode.Disposable {
       return err.message;
     }
     return 'An unexpected error occurred.';
+  }
+
+  private async logRoundMetric(
+    record: Omit<RoundRunMetricRecord, 'version' | 'timestamp' | 'workspaceId'>,
+  ): Promise<void> {
+    if (!this.metricsLogger) {
+      return;
+    }
+    await this.metricsLogger.append(record);
   }
 
   private buildHtml(): string {

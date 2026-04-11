@@ -47,6 +47,18 @@
         "title": "Clear API Keys",
         "category": "AI Roundtable",
         "icon": "$(trash)"
+      },
+      {
+        "command": "aiRoundtable.showAbReport",
+        "title": "Show A/B Report",
+        "category": "AI Roundtable",
+        "icon": "$(graph)"
+      },
+      {
+        "command": "aiRoundtable.clearMetrics",
+        "title": "Clear Metrics",
+        "category": "AI Roundtable",
+        "icon": "$(trash)"
       }
     ],
     "menus": {
@@ -59,6 +71,12 @@
         },
         {
           "command": "aiRoundtable.clearApiKeys"
+        },
+        {
+          "command": "aiRoundtable.showAbReport"
+        },
+        {
+          "command": "aiRoundtable.clearMetrics"
         }
       ],
       "editor/title": [
@@ -119,6 +137,11 @@
           ],
           "default": "heavy",
           "description": "Model tier to use across all providers. Switch to Light for quick tests or free-tier usage."
+        },
+        "aiRoundtable.enableMetrics": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable local run-metrics logging for A/B comparison (single-agent vs with verifiers). Stored only in local extension storage."
         }
       }
     },

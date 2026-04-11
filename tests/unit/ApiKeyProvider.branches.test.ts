@@ -438,6 +438,88 @@ describe('ApiKeyProvider — Gemini', () => {
     });
     expect(result.content).toBe('Gemini response');
   });
+
+  it('falls back to next Gemini model when first model returns 404', async () => {
+    const paths: string[] = [];
+
+    (https.request as jest.Mock).mockImplementation(
+      (
+        options: { path?: string },
+        callback: (res: EventEmitter & { statusCode?: number; headers: Record<string, string>; resume: jest.Mock }) => void,
+      ) => {
+        const path = options.path ?? '';
+        paths.push(path);
+
+        const mockReq = new EventEmitter() as EventEmitter & {
+          write: jest.Mock;
+          end: jest.Mock;
+          setTimeout: jest.Mock;
+          destroy: jest.Mock;
+        };
+        mockReq.write = jest.fn();
+        mockReq.end = jest.fn();
+        mockReq.setTimeout = jest.fn();
+        mockReq.destroy = jest.fn().mockImplementation((err?: Error) => {
+          if (err) {
+            setImmediate(() => mockReq.emit('error', err));
+          }
+        });
+
+        const mockRes = new EventEmitter() as EventEmitter & { statusCode?: number; headers: Record<string, string>; resume: jest.Mock };
+        mockRes.resume = jest.fn();
+        mockRes.headers = {};
+
+        let statusCode = 200;
+        let body = geminiBody();
+        if (path === '/v1beta/models') {
+          body = JSON.stringify({
+            models: [
+              { name: 'models/gemini-test-a', supportedGenerationMethods: ['generateContent'] },
+              { name: 'models/gemini-test-b', supportedGenerationMethods: ['generateContent'] },
+            ],
+          });
+        } else if (path.includes('gemini-test-a:generateContent')) {
+          statusCode = 404;
+          body = JSON.stringify({
+            error: {
+              code: 404,
+              message: 'models/gemini-test-a is not found for API version v1beta, or is not supported for generateContent.',
+            },
+          });
+        } else if (path.includes('gemini-test-b:generateContent')) {
+          body = geminiBody({
+            candidates: [{ content: { parts: [{ text: 'Gemini fallback success' }] }, finishReason: 'STOP' }],
+          });
+          statusCode = 200;
+        } else if (path.includes(':generateContent')) {
+          statusCode = 404;
+          body = JSON.stringify({
+            error: {
+              code: 404,
+              message: 'model not found',
+            },
+          });
+        }
+        mockRes.statusCode = statusCode;
+
+        setImmediate(() => {
+          mockRes.emit('data', Buffer.from(body));
+          mockRes.emit('end');
+        });
+
+        callback(mockRes);
+        return mockReq;
+      },
+    );
+
+    const p = new ApiKeyProvider({ googleApiKey: 'goog-key' });
+    const result = await p.sendRequest(AgentName.GEMINI, defaultOpts);
+
+    expect(result.content).toBe('Gemini fallback success');
+    expect(paths).toContain('/v1beta/models');
+    expect(paths).toContain('/v1beta/models/gemini-test-a:generateContent');
+    expect(paths).toContain('/v1beta/models/gemini-test-b:generateContent');
+  });
 });
 
 // ── DeepSeek — happy path ─────────────────────────────────────────────────────

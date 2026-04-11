@@ -200,23 +200,26 @@ const DELETE_FILE_TOOL_GEMINI = {
 
 // ── Models ────────────────────────────────────────────────────────────────────
 
-const MODELS: Record<ModelTier, Record<'claude' | 'openai' | 'gemini' | 'deepseek', string>> = {
+const MODELS: Record<ModelTier, Record<'claude' | 'openai' | 'deepseek', string>> = {
   heavy: {
     claude: 'claude-sonnet-4-6',
     openai: 'gpt-4o',
-    gemini: 'gemini-1.5-pro',
     deepseek: 'deepseek-coder',
   },
   light: {
     claude: 'claude-haiku-4-5-20251001',
     openai: 'gpt-4o-mini',
-    gemini: 'gemini-1.5-flash',
     deepseek: 'deepseek-chat',
   },
 };
 
 const REQUEST_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_TOKENS = 16_384;
+const GEMINI_MODEL_CACHE_TTL_MS = 15 * 60 * 1000;
+const GEMINI_MODEL_CANDIDATES: Record<ModelTier, string[]> = {
+  heavy: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-pro'],
+  light: ['gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.0-flash-lite', 'gemini-2.0-flash', 'gemini-1.5-flash'],
+};
 
 /** Maximum response body size to read (10 MB). Prevents OOM from runaway responses. */
 const MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
@@ -249,12 +252,28 @@ interface GeminiResponseBody {
   usageMetadata?: { promptTokenCount: number; candidatesTokenCount: number };
 }
 
+interface GeminiModelListResponse {
+  models?: Array<{
+    name?: string;
+    supportedGenerationMethods?: string[];
+  }>;
+}
+
+interface GeminiModelDescriptor {
+  name: string;
+  methods: string[];
+}
+
 export interface ApiKeyResponse {
   content: string;
   usage?: TokenUsage;
 }
 
 export class ApiKeyProvider {
+  private geminiModelCache:
+    | { expiresAt: number; models: GeminiModelDescriptor[] }
+    | undefined;
+
   constructor(private readonly options: ApiKeyProviderOptions) {}
 
   private get models() {
@@ -535,6 +554,8 @@ export class ApiKeyProvider {
         'Google API key is not configured. Please run "AI Roundtable: Configure Provider".',
       );
     }
+    const modelCandidates = this.getStaticGeminiModelCandidates();
+    let modelIndex = 0;
 
     const history = options.conversationHistory ?? [];
     const contents: Array<Record<string, unknown>> = [
@@ -559,19 +580,15 @@ export class ApiKeyProvider {
         ...(tools ? { tools } : {}),
       });
 
-      const responseText = await this.makeHttpsRequest({
-        hostname: 'generativelanguage.googleapis.com',
-        path: `/v1beta/models/${this.models.gemini}:generateContent`,
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-goog-api-key': apiKey,
-          'Content-Length': Buffer.byteLength(body).toString(),
-        },
+      const request = await this.makeGeminiRequestWithFallback({
+        apiKey,
+        modelCandidates,
+        startModelIndex: modelIndex,
         body,
-        agentLabel: AgentName.GEMINI,
         cancellationToken: options.cancellationToken,
       });
+      modelIndex = request.modelIndex;
+      const responseText = request.responseText;
 
       let parsed: GeminiResponseBody;
       try {
@@ -944,6 +961,8 @@ export class ApiKeyProvider {
         'Google API key is not configured. Please run "AI Roundtable: Configure Provider".',
       );
     }
+    const modelCandidates = this.getStaticGeminiModelCandidates();
+    let modelIndex = 0;
 
     const tools = options.onToolCall ? [{ functionDeclarations: [READ_FILE_TOOL_GEMINI, RUN_COMMAND_TOOL_GEMINI, WRITE_FILE_TOOL_GEMINI, DELETE_FILE_TOOL_GEMINI] }] : undefined;
     const history = options.conversationHistory ?? [];
@@ -970,17 +989,11 @@ export class ApiKeyProvider {
       const contentChunks: string[] = [];
       const functionCallParts: Array<Record<string, unknown>> = [];
 
-      await this.makeHttpsStreamRequest({
-        hostname: 'generativelanguage.googleapis.com',
-        path: `/v1beta/models/${this.models.gemini}:streamGenerateContent?alt=sse`,
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-goog-api-key': apiKey,
-          'Content-Length': Buffer.byteLength(body).toString(),
-        },
+      const request = await this.makeGeminiStreamRequestWithFallback({
+        apiKey,
+        modelCandidates,
+        startModelIndex: modelIndex,
         body,
-        agentLabel: AgentName.GEMINI,
         cancellationToken: options.cancellationToken,
         onLine: (line) => {
           if (!line.startsWith('data: ')) {return;}
@@ -1019,6 +1032,7 @@ export class ApiKeyProvider {
           }
         },
       });
+      modelIndex = request.modelIndex;
 
       const text = contentChunks.join('');
       finalText += text;
@@ -1060,6 +1074,262 @@ export class ApiKeyProvider {
       content: finalText,
       usage: inputTokens || outputTokens ? { inputTokens, outputTokens } : undefined,
     };
+  }
+
+  private getStaticGeminiModelCandidates(): string[] {
+    const tier = this.options.modelTier ?? 'heavy';
+    const fallbackTier: ModelTier = tier === 'heavy' ? 'light' : 'heavy';
+    return this.uniqueStrings([
+      ...GEMINI_MODEL_CANDIDATES[tier],
+      ...GEMINI_MODEL_CANDIDATES[fallbackTier],
+    ]);
+  }
+
+  private async resolveGeminiModelCandidates(
+    apiKey: string,
+    requiredMethod: 'generateContent' | 'streamGenerateContent',
+    includeDynamicModels = false,
+  ): Promise<string[]> {
+    const staticCandidates = this.getStaticGeminiModelCandidates();
+    if (!includeDynamicModels) {
+      return staticCandidates;
+    }
+
+    try {
+      const availableModels = await this.listGeminiModels(apiKey);
+      const availableForMethod = availableModels
+        .filter((m) => m.methods.includes(requiredMethod))
+        .map((m) => m.name);
+
+      if (availableForMethod.length === 0) {
+        return staticCandidates;
+      }
+
+      const availableSet = new Set(availableForMethod);
+      const known = staticCandidates.filter((model) => availableSet.has(model));
+      const unknown = availableForMethod.filter((model) => !staticCandidates.includes(model));
+      return this.uniqueStrings([...known, ...unknown, ...staticCandidates]);
+    } catch {
+      // Non-fatal: if ListModels fails, fall back to static candidates.
+      return staticCandidates;
+    }
+  }
+
+  private async listGeminiModels(apiKey: string): Promise<GeminiModelDescriptor[]> {
+    const now = Date.now();
+    if (this.geminiModelCache && this.geminiModelCache.expiresAt > now) {
+      return this.geminiModelCache.models;
+    }
+
+    const responseText = await this.makeHttpsRequest({
+      hostname: 'generativelanguage.googleapis.com',
+      path: '/v1beta/models',
+      method: 'GET',
+      headers: {
+        'x-goog-api-key': apiKey,
+      },
+      body: '',
+      agentLabel: AgentName.GEMINI,
+    });
+
+    let parsed: GeminiModelListResponse;
+    try {
+      parsed = JSON.parse(responseText) as GeminiModelListResponse;
+    } catch {
+      throw new ApiKeyProviderError(`Google Gemini ListModels returned non-JSON response (${responseText.length} bytes).`);
+    }
+
+    const models = (parsed.models ?? [])
+      .map((raw) => {
+        const name = this.normalizeGeminiModelName(raw.name);
+        const methods = Array.isArray(raw.supportedGenerationMethods)
+          ? raw.supportedGenerationMethods.filter((m): m is string => typeof m === 'string')
+          : [];
+        if (!name || methods.length === 0) {
+          return null;
+        }
+        return { name, methods };
+      })
+      .filter((m): m is GeminiModelDescriptor => m !== null);
+
+    this.geminiModelCache = {
+      expiresAt: now + GEMINI_MODEL_CACHE_TTL_MS,
+      models,
+    };
+    return models;
+  }
+
+  private normalizeGeminiModelName(raw: string | undefined): string | null {
+    if (typeof raw !== 'string' || raw.length === 0) {
+      return null;
+    }
+    const normalized = raw.startsWith('models/') ? raw.slice('models/'.length) : raw;
+    return normalized.startsWith('gemini-') ? normalized : null;
+  }
+
+  private async makeGeminiRequestWithFallback(params: {
+    apiKey: string;
+    modelCandidates: string[];
+    startModelIndex: number;
+    body: string;
+    cancellationToken?: LLMRequestOptions['cancellationToken'];
+    attemptDynamicFallback?: boolean;
+  }): Promise<{ responseText: string; modelIndex: number }> {
+    let lastError: unknown;
+    for (let modelIndex = params.startModelIndex; modelIndex < params.modelCandidates.length; modelIndex++) {
+      const model = params.modelCandidates[modelIndex];
+      try {
+        const responseText = await this.makeHttpsRequest({
+          hostname: 'generativelanguage.googleapis.com',
+          path: `/v1beta/models/${model}:generateContent`,
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': params.apiKey,
+            'Content-Length': Buffer.byteLength(params.body).toString(),
+          },
+          body: params.body,
+          agentLabel: AgentName.GEMINI,
+          cancellationToken: params.cancellationToken,
+        });
+        return { responseText, modelIndex };
+      } catch (err) {
+        if (this.isGeminiModelUnavailableError(err)) {
+          lastError = err;
+          this.invalidateGeminiModelCache();
+          if (modelIndex + 1 < params.modelCandidates.length) {
+            continue;
+          }
+          break;
+        }
+        throw err;
+      }
+    }
+
+    if (params.attemptDynamicFallback !== false) {
+      const dynamicCandidates = await this.resolveGeminiModelCandidates(
+        params.apiKey,
+        'generateContent',
+        true,
+      );
+      if (!this.sameStringArray(dynamicCandidates, params.modelCandidates)) {
+        return this.makeGeminiRequestWithFallback({
+          ...params,
+          modelCandidates: dynamicCandidates,
+          startModelIndex: 0,
+          attemptDynamicFallback: false,
+        });
+      }
+    }
+
+    throw lastError instanceof Error
+      ? lastError
+      : new ApiKeyProviderError('Google Gemini API request failed for all candidate models.');
+  }
+
+  private async makeGeminiStreamRequestWithFallback(params: {
+    apiKey: string;
+    modelCandidates: string[];
+    startModelIndex: number;
+    body: string;
+    onLine: (line: string) => void;
+    cancellationToken?: LLMRequestOptions['cancellationToken'];
+    attemptDynamicFallback?: boolean;
+  }): Promise<{ modelIndex: number }> {
+    let lastError: unknown;
+    for (let modelIndex = params.startModelIndex; modelIndex < params.modelCandidates.length; modelIndex++) {
+      const model = params.modelCandidates[modelIndex];
+      try {
+        await this.makeHttpsStreamRequest({
+          hostname: 'generativelanguage.googleapis.com',
+          path: `/v1beta/models/${model}:streamGenerateContent?alt=sse`,
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': params.apiKey,
+            'Content-Length': Buffer.byteLength(params.body).toString(),
+          },
+          body: params.body,
+          agentLabel: AgentName.GEMINI,
+          cancellationToken: params.cancellationToken,
+          onLine: params.onLine,
+        });
+        return { modelIndex };
+      } catch (err) {
+        if (this.isGeminiModelUnavailableError(err)) {
+          lastError = err;
+          this.invalidateGeminiModelCache();
+          if (modelIndex + 1 < params.modelCandidates.length) {
+            continue;
+          }
+          break;
+        }
+        throw err;
+      }
+    }
+
+    if (params.attemptDynamicFallback !== false) {
+      const dynamicCandidates = await this.resolveGeminiModelCandidates(
+        params.apiKey,
+        'streamGenerateContent',
+        true,
+      );
+      if (!this.sameStringArray(dynamicCandidates, params.modelCandidates)) {
+        return this.makeGeminiStreamRequestWithFallback({
+          ...params,
+          modelCandidates: dynamicCandidates,
+          startModelIndex: 0,
+          attemptDynamicFallback: false,
+        });
+      }
+    }
+
+    throw lastError instanceof Error
+      ? lastError
+      : new ApiKeyProviderError('Google Gemini streaming request failed for all candidate models.');
+  }
+
+  private isGeminiModelUnavailableError(err: unknown): boolean {
+    if (!(err instanceof ApiKeyProviderError)) {
+      return false;
+    }
+    if (err.statusCode === 404) {
+      return true;
+    }
+    const msg = err.message.toLowerCase();
+    return msg.includes('google gemini api error (not_found)')
+      || msg.includes('is not found for api version')
+      || msg.includes('not supported for generatecontent')
+      || msg.includes('not supported for streamgeneratecontent');
+  }
+
+  private invalidateGeminiModelCache(): void {
+    this.geminiModelCache = undefined;
+  }
+
+  private uniqueStrings(values: string[]): string[] {
+    const seen = new Set<string>();
+    const result: string[] = [];
+    for (const value of values) {
+      if (!value || seen.has(value)) {
+        continue;
+      }
+      seen.add(value);
+      result.push(value);
+    }
+    return result;
+  }
+
+  private sameStringArray(a: string[], b: string[]): boolean {
+    if (a.length !== b.length) {
+      return false;
+    }
+    for (let i = 0; i < a.length; i++) {
+      if (a[i] !== b[i]) {
+        return false;
+      }
+    }
+    return true;
   }
 
   private makeHttpsStreamRequest(

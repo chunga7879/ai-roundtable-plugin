@@ -12,7 +12,7 @@ import type {
   ToolResult,
   TokenUsage,
 } from '../types';
-import { ProviderMode } from '../types';
+import { ProviderMode, RoundType } from '../types';
 import {
   buildReflectionPrompt,
   buildReflectionSystemPrompt,
@@ -28,6 +28,15 @@ import { normalizePath } from '../workspace/WorkspaceWriter';
 import type { WorkspaceReader } from '../workspace/WorkspaceReader';
 import { MAX_TOOL_CALLS } from '../workspace/WorkspaceReader';
 import { RoundtableError } from '../errors';
+
+const TOOL_RECOVERY_ROUNDS = new Set<RoundType>([
+  RoundType.REQUIREMENTS,
+  RoundType.ARCHITECT,
+  RoundType.DEVELOPER,
+  RoundType.QA,
+  RoundType.DEVOPS,
+  RoundType.DOCUMENTATION,
+]);
 
 export class AgentRunnerError extends RoundtableError {
   constructor(message: string, cause?: unknown) {
@@ -261,6 +270,25 @@ export class AgentRunner {
       throw new vscode.CancellationError();
     }
 
+    // Recovery pass: if the model produced code-like text but staged no writes,
+    // ask it once to re-emit using write_file/delete_file tool calls.
+    if (allFileChanges.length === 0 && this.shouldRetryMissingToolWrites(roundType, mainAgentResponse)) {
+      const { usage: recoveryUsage } = await this.callAgent(
+        mainAgent,
+        {
+          systemPrompt,
+          userMessage: this.buildMissingToolWriteRecoveryPrompt(userMessage, mainAgentResponse),
+          conversationHistory,
+          onToolCall: makeToolHandler(),
+        },
+        cancellationToken,
+      );
+      addUsage(recoveryUsage);
+      if (cancellationToken.isCancellationRequested) {
+        throw new vscode.CancellationError();
+      }
+    }
+
     onProgress({ type: 'main_agent_done', agentName: mainAgent });
 
     // Snapshot files written during the main agent turn — used to build reflection context.
@@ -348,7 +376,10 @@ export class AgentRunner {
         }
       });
 
-      subAgentVerifications = await Promise.all(verificationPromises);
+      subAgentVerifications = await this.awaitWithCancellation(
+        Promise.all(verificationPromises),
+        cancellationToken,
+      );
 
       if (cancellationToken.isCancellationRequested) {
         throw new vscode.CancellationError();
@@ -516,6 +547,59 @@ export class AgentRunner {
         err,
       );
     }
+  }
+
+  private async awaitWithCancellation<T>(
+    promise: Promise<T>,
+    cancellationToken: vscode.CancellationToken,
+  ): Promise<T> {
+    if (cancellationToken.isCancellationRequested) {
+      throw new vscode.CancellationError();
+    }
+
+    let cancelDisposable: vscode.Disposable | undefined;
+    const cancellationPromise = new Promise<never>((_, reject) => {
+      cancelDisposable = cancellationToken.onCancellationRequested(() => {
+        reject(new vscode.CancellationError());
+      });
+    });
+
+    try {
+      return await Promise.race([promise, cancellationPromise]);
+    } finally {
+      cancelDisposable?.dispose();
+    }
+  }
+
+  private shouldRetryMissingToolWrites(roundType: RoundType, response: string): boolean {
+    if (!TOOL_RECOVERY_ROUNDS.has(roundType)) {
+      return false;
+    }
+    const trimmed = response.trim();
+    if (!trimmed) {
+      return false;
+    }
+    return trimmed.includes('```') || /^\s*FILE\s*:/im.test(trimmed);
+  }
+
+  private buildMissingToolWriteRecoveryPrompt(userMessage: string, mainAgentResponse: string): string {
+    return [
+      'Your previous response appears to include code/file changes, but no write_file/delete_file tool calls were made.',
+      'Re-emit those changes NOW using tool calls only.',
+      '',
+      'MANDATORY:',
+      '- Use write_file for each created/modified file and delete_file for deletions.',
+      '- Do not output markdown fences or file content in prose.',
+      '- If truly no file changes are needed, output exactly: NO_FILE_CHANGES_NEEDED',
+      '',
+      '[ORIGINAL USER REQUEST]',
+      userMessage,
+      '[END ORIGINAL USER REQUEST]',
+      '',
+      '[YOUR PREVIOUS RESPONSE]',
+      mainAgentResponse,
+      '[END YOUR PREVIOUS RESPONSE]',
+    ].join('\n');
   }
 
   /**

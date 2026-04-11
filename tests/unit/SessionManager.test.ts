@@ -189,6 +189,52 @@ describe('appendTurn', () => {
     const lastIndex = JSON.parse(Buffer.from(indexWrites[indexWrites.length - 1][1] as Uint8Array).toString());
     expect(lastIndex[0].turnCount).toBe(2);
   });
+
+  it('serializes concurrent appends to prevent turn loss', async () => {
+    let session = {
+      id: 'sess-1',
+      workspaceId: 'abc',
+      roundType: RoundType.DEVELOPER,
+      createdAt: 1,
+      updatedAt: 1,
+      turns: [] as { role: 'user' | 'assistant'; content: string }[],
+    };
+    let index = [{ id: 'sess-1', workspaceId: 'abc', roundType: RoundType.DEVELOPER, createdAt: 1, updatedAt: 1, turnCount: 0, preview: '' }];
+
+    mockFs.readFile.mockImplementation((uri: Uri) => {
+      if (uri.fsPath.includes('sess-1')) {
+        return Promise.resolve(encodeJson(session));
+      }
+      if (uri.fsPath.endsWith('index.json')) {
+        return Promise.resolve(encodeJson(index));
+      }
+      return Promise.reject(new Error('not found'));
+    });
+
+    mockFs.writeFile.mockImplementation(async (uri: Uri, bytes: Uint8Array) => {
+      const parsed = JSON.parse(Buffer.from(bytes).toString('utf-8'));
+      if (uri.fsPath.includes('sess-1')) {
+        // Simulate I/O latency to maximize overlap pressure.
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        session = parsed;
+        return;
+      }
+      if (uri.fsPath.endsWith('index.json')) {
+        index = parsed;
+      }
+    });
+
+    const manager = makeManager();
+    await Promise.all([
+      manager.appendTurn('sess-1', { role: 'user', content: 'first' }),
+      manager.appendTurn('sess-1', { role: 'assistant', content: 'second' }),
+    ]);
+
+    expect(session.turns).toHaveLength(2);
+    expect(session.turns[0].content).toBe('first');
+    expect(session.turns[1].content).toBe('second');
+    expect(index[0].turnCount).toBe(2);
+  });
 });
 
 // ── updateSessionRoundType ────────────────────────────────────────────────────

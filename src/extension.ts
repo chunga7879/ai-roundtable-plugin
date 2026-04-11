@@ -3,6 +3,7 @@ import type { ExtensionConfig, ModelTier } from './types';
 import { ProviderMode } from './types';
 import { ChatPanel } from './panels/ChatPanel';
 import { ConfigurationError } from './errors';
+import { RoundMetricsLogger } from './metrics/RoundMetricsLogger';
 
 const CONFIG_SECTION = 'aiRoundtable';
 const SECRET_ANTHROPIC_KEY = 'aiRoundtable.anthropicApiKey';
@@ -14,6 +15,8 @@ const COMMANDS = {
   OPEN_PANEL: 'aiRoundtable.openPanel',
   CONFIGURE_PROVIDER: 'aiRoundtable.configureProvider',
   CLEAR_API_KEYS: 'aiRoundtable.clearApiKeys',
+  SHOW_AB_REPORT: 'aiRoundtable.showAbReport',
+  CLEAR_METRICS: 'aiRoundtable.clearMetrics',
 } as const;
 
 /** Minimum plausible length for any API key. */
@@ -36,6 +39,7 @@ export class ConfigManager {
 
     const rawTimeout = vsConfig.get<number>('runnerTimeout') ?? 60;
     const runnerTimeoutMs = Math.min(Math.max(rawTimeout, 10), 600) * 1000;
+    const enableMetrics = vsConfig.get<boolean>('enableMetrics') === true;
 
     let anthropicApiKey: string | undefined;
     let openaiApiKey: string | undefined;
@@ -65,6 +69,7 @@ export class ConfigManager {
       copilotModelFamily,
       modelTier,
       runnerTimeoutMs,
+      enableMetrics,
     };
   }
 
@@ -291,6 +296,54 @@ export async function activate(
               `AI Roundtable: Failed to clear API keys. ${err instanceof Error ? err.message : 'Unknown error.'}`,
             );
           }
+        }
+      })();
+    }),
+
+    vscode.commands.registerCommand(COMMANDS.SHOW_AB_REPORT, () => {
+      void (async () => {
+        try {
+          const config = await configManager.getConfig();
+          if (!config.enableMetrics) {
+            void vscode.window.showInformationMessage(
+              'AI Roundtable: Metrics collection is disabled. Enable "AI Roundtable › Enable Metrics" in Settings, run a few turns, then try again.',
+            );
+            return;
+          }
+
+          const logger = new RoundMetricsLogger(context.globalStorageUri);
+          const { markdown, summary } = await logger.buildMarkdownReport();
+          if (summary.totalRuns === 0) {
+            void vscode.window.showInformationMessage(
+              'AI Roundtable: No round metrics recorded yet. Run a few turns first.',
+            );
+            return;
+          }
+          const doc = await vscode.workspace.openTextDocument({
+            content: markdown,
+            language: 'markdown',
+          });
+          await vscode.window.showTextDocument(doc, { preview: false });
+        } catch (err) {
+          void vscode.window.showErrorMessage(
+            `AI Roundtable: Failed to build A/B report. ${err instanceof Error ? err.message : 'Unknown error.'}`,
+          );
+        }
+      })();
+    }),
+
+    vscode.commands.registerCommand(COMMANDS.CLEAR_METRICS, () => {
+      void (async () => {
+        try {
+          const logger = new RoundMetricsLogger(context.globalStorageUri);
+          await logger.clear();
+          void vscode.window.showInformationMessage(
+            'AI Roundtable: Metrics for this workspace were cleared.',
+          );
+        } catch (err) {
+          void vscode.window.showErrorMessage(
+            `AI Roundtable: Failed to clear metrics. ${err instanceof Error ? err.message : 'Unknown error.'}`,
+          );
         }
       })();
     }),

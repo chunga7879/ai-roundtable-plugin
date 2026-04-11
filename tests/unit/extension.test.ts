@@ -29,6 +29,7 @@ function makeContext(secrets?: vscode.SecretStorage): vscode.ExtensionContext {
   return {
     secrets: secrets ?? makeSecretStorage(),
     subscriptions: { push: jest.fn() },
+    globalStorageUri: vscode.Uri.file('/tmp/ai-roundtable-test-storage'),
   } as unknown as vscode.ExtensionContext;
 }
 
@@ -59,6 +60,7 @@ describe('ConfigManager.getConfig', () => {
     expect(config.copilotModelFamily).toBeUndefined(); // 'auto' → undefined
     expect(config.modelTier).toBe('heavy');
     expect(config.runnerTimeoutMs).toBe(60_000);
+    expect(config.enableMetrics).toBe(false);
   });
 
   it('returns API_KEYS mode when set', async () => {
@@ -89,6 +91,20 @@ describe('ConfigManager.getConfig', () => {
     const manager = new ConfigManager(makeSecretStorage());
     const config = await manager.getConfig();
     expect(config.modelTier).toBe('light');
+  });
+
+  it('enables metrics when explicitly configured', async () => {
+    const cfg = mockWs.getConfiguration as jest.Mock;
+    cfg.mockReturnValue({
+      get: jest.fn((key: string) => {
+        if (key === 'enableMetrics') return true;
+        if (key === 'runnerTimeout') return 60;
+        return undefined;
+      }),
+    });
+    const manager = new ConfigManager(makeSecretStorage());
+    const config = await manager.getConfig();
+    expect(config.enableMetrics).toBe(true);
   });
 
   it('preserves explicit copilotModelFamily', async () => {
@@ -371,7 +387,7 @@ describe('activate()', () => {
     mockLm.selectChatModels.mockResolvedValue([{ id: 'copilot-model' }] as unknown as vscode.LanguageModelChat[]);
   });
 
-  it('registers 3 commands and 1 document provider', async () => {
+  it('registers commands and 1 document provider', async () => {
     const secrets = makeSecretStorage();
     const context = makeContext(secrets);
     await activate(context);
@@ -383,6 +399,8 @@ describe('activate()', () => {
     expect(mockCmds.registerCommand).toHaveBeenCalledWith('aiRoundtable.openPanel', expect.any(Function));
     expect(mockCmds.registerCommand).toHaveBeenCalledWith('aiRoundtable.configureProvider', expect.any(Function));
     expect(mockCmds.registerCommand).toHaveBeenCalledWith('aiRoundtable.clearApiKeys', expect.any(Function));
+    expect(mockCmds.registerCommand).toHaveBeenCalledWith('aiRoundtable.showAbReport', expect.any(Function));
+    expect(mockCmds.registerCommand).toHaveBeenCalledWith('aiRoundtable.clearMetrics', expect.any(Function));
     expect((context.subscriptions as unknown as { push: jest.Mock }).push).toHaveBeenCalled();
   });
 
@@ -403,6 +421,54 @@ describe('activate()', () => {
     const [, provider] = (mockWs.registerTextDocumentContentProvider as jest.Mock).mock.calls[0];
     const content = provider.provideTextDocumentContent(vscode.Uri.file('/unknown/path.ts'));
     expect(content).toBe('');
+  });
+});
+
+describe('activate() — metrics commands', () => {
+  beforeEach(() => {
+    (mockWs.getConfiguration as jest.Mock).mockReturnValue({
+      get: jest.fn((key: string) => {
+        if (key === 'providerMode') return ProviderMode.API_KEYS;
+        if (key === 'enableMetrics') return false;
+        if (key === 'runnerTimeout') return 60;
+        return undefined;
+      }),
+      update: jest.fn().mockResolvedValue(undefined),
+    });
+    mockLm.selectChatModels.mockResolvedValue([{ id: 'copilot-model' }] as unknown as vscode.LanguageModelChat[]);
+  });
+
+  function getCommandHandler(commandId: string): (() => void) | undefined {
+    const calls = (mockCmds.registerCommand as jest.Mock).mock.calls as Array<[string, () => void]>;
+    const hit = calls.find(([id]) => id === commandId);
+    return hit?.[1];
+  }
+
+  it('shows guidance when A/B report is requested while metrics are disabled', async () => {
+    const context = makeContext(makeSecretStorage());
+    await activate(context);
+    const handler = getCommandHandler('aiRoundtable.showAbReport');
+
+    handler?.();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(mockWin.showInformationMessage).toHaveBeenCalledWith(
+      expect.stringContaining('Metrics collection is disabled'),
+    );
+  });
+
+  it('clears metrics for the current workspace', async () => {
+    const context = makeContext(makeSecretStorage());
+    await activate(context);
+    const handler = getCommandHandler('aiRoundtable.clearMetrics');
+
+    expect(handler).toBeDefined();
+    handler?.();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(mockWin.showInformationMessage).toHaveBeenCalledWith(
+      expect.stringContaining('Metrics for this workspace were cleared'),
+    );
   });
 });
 

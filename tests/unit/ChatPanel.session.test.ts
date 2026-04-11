@@ -1,8 +1,8 @@
 /**
  * Session persistence integration tests for ChatPanel:
- *  - clearChat triggers new session
+ *  - panel open/clearChat do not create empty sessions
  *  - sendMessage completion appends turns
- *  - round type change triggers new session
+ *  - first successful send lazily creates a session
  *  - requestSessionList posts sessionListLoaded
  *  - restoreSession loads and restores state
  *  - storage failures do not break the chat
@@ -84,26 +84,25 @@ afterEach(() => {
   (ChatPanel as unknown as { instance: undefined }).instance = undefined;
 });
 
-// ── startNewSession on panel open ─────────────────────────────────────────────
+// ── panel open (lazy session creation) ────────────────────────────────────────
 
 describe('panel open', () => {
-  it('calls createDirectory and writes a session file on creation', async () => {
+  it('does not create a session file on panel creation', async () => {
     createPanel();
     await flushPromises();
 
-    expect(vscode.workspace.fs.createDirectory).toHaveBeenCalled();
-    const writes = (vscode.workspace.fs.writeFile as jest.Mock).mock.calls;
-    const sessionWrite = writes.find((c) =>
-      !(c[0] as vscode.Uri).fsPath.endsWith('index.json'),
+    expect(vscode.workspace.fs.createDirectory).not.toHaveBeenCalled();
+    const sessionWrites = (vscode.workspace.fs.writeFile as jest.Mock).mock.calls.filter(
+      (c) => (c[0] as vscode.Uri).fsPath.endsWith('.json') && !(c[0] as vscode.Uri).fsPath.endsWith('index.json'),
     );
-    expect(sessionWrite).toBeDefined();
+    expect(sessionWrites).toHaveLength(0);
   });
 });
 
-// ── clearChat triggers new session ────────────────────────────────────────────
+// ── clearChat (still lazy) ────────────────────────────────────────────────────
 
 describe('clearChat', () => {
-  it('starts a new session after clearing', async () => {
+  it('does not create a new session after clearing', async () => {
     const { onMessage } = createPanel();
     await flushPromises();
 
@@ -113,10 +112,19 @@ describe('clearChat', () => {
     await flushPromises();
 
     const writesAfter = (vscode.workspace.fs.writeFile as jest.Mock).mock.calls.length;
-    expect(writesAfter).toBeGreaterThan(writesBefore);
+    expect(writesAfter).toBe(writesBefore);
   });
 
-  it('does not create an extra session file when first message uses non-default round', async () => {
+  it('creates first session lazily on first successful send (non-default round)', async () => {
+    const fakeModel = {
+      sendRequest: jest.fn().mockResolvedValue({
+        stream: (async function* () {
+          yield new vscode.LanguageModelTextPart('done');
+        })(),
+      }),
+    };
+    (vscode.lm.selectChatModels as jest.Mock).mockResolvedValue([fakeModel]);
+
     const configManager = {
       ...makeConfigManager(),
       getConfig: jest.fn().mockResolvedValue({
@@ -148,6 +156,7 @@ describe('clearChat', () => {
         subAgents: [],
       },
     });
+    await new Promise((resolve) => setTimeout(resolve, 50));
     await flushPromises();
 
     const writesAfter = (vscode.workspace.fs.writeFile as jest.Mock).mock.calls;
@@ -157,7 +166,8 @@ describe('clearChat', () => {
         .filter((p) => p.endsWith('.json') && !p.endsWith('index.json')),
     );
 
-    expect(sessionPathsAfter.size).toBe(sessionPathsBefore.size);
+    expect(sessionPathsBefore.size).toBe(0);
+    expect(sessionPathsAfter.size).toBe(1);
   });
 });
 
@@ -229,6 +239,10 @@ describe('restoreSession', () => {
     const payload = msg?.payload as { turns: unknown[]; roundType: string };
     expect(payload.turns).toHaveLength(2);
     expect(payload.roundType).toBe(RoundType.QA);
+
+    const msgs = postedMessages();
+    expect(msgs.some((m) => m.type === 'clearFileChanges')).toBe(true);
+    expect(msgs.some((m) => m.type === 'clearContextFiles')).toBe(true);
   });
 
   it('does not post sessionRestored if session file not found', async () => {

@@ -289,6 +289,58 @@ describe('AgentRunner', () => {
         ),
       ).rejects.toThrow(CancellationError);
     });
+
+    it('cancels promptly during sub-agent verification even if a verifier hangs', async () => {
+      let cancelHandler: (() => void) | undefined;
+      let cancelled = false;
+      const cancellationToken = {
+        get isCancellationRequested() {
+          return cancelled;
+        },
+        onCancellationRequested: jest.fn((cb: () => void) => {
+          cancelHandler = cb;
+          return { dispose: jest.fn() };
+        }),
+      };
+
+      let callCount = 0;
+      const copilotProvider = {
+        sendRequest: jest.fn().mockImplementation(() => {
+          callCount++;
+          if (callCount === 1) {
+            return Promise.resolve('Main response');
+          }
+          // Simulate verifier provider that never returns and ignores cancellation.
+          return new Promise<string>(() => {});
+        }),
+        isAvailable: jest.fn().mockResolvedValue(true),
+        invalidateModelCache: jest.fn(),
+      };
+
+      const runner = new AgentRunner({
+        copilotProvider: copilotProvider as never,
+        apiKeyProvider: makeApiKeyProvider() as never,
+        providerMode: ProviderMode.COPILOT,
+        workspaceReader: makeWorkspaceReader() as never,
+      });
+
+      const runPromise = runner.runRound(
+        makeRoundRequest({ subAgents: [AgentName.GPT] }),
+        cancellationToken as never,
+        jest.fn(),
+      );
+
+      // Let the run reach verification stage.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      cancelled = true;
+      cancelHandler?.();
+
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error('Timed out waiting for cancellation')), 120);
+      });
+
+      await expect(Promise.race([runPromise, timeoutPromise])).rejects.toThrow(CancellationError);
+    });
   });
 
   describe('API key mode', () => {
@@ -2060,6 +2112,49 @@ describe('AgentRunner', () => {
       // Only the write_file tool result appears — FILE: block in text is not parsed
       expect(result.fileChanges).toHaveLength(1);
       expect(result.fileChanges[0].content).toBe('tool content');
+    });
+
+    it('retries once when response includes code blocks but no write_file tool call', async () => {
+      let callCount = 0;
+      const copilotProvider = {
+        sendRequest: jest.fn().mockImplementation(async (opts: { onToolCall?: (tc: ToolCall) => Promise<ToolResult> }) => {
+          callCount++;
+          if (callCount === 1) {
+            return 'Here is the fix:\n```ts\nexport const fixed = true;\n```';
+          }
+          if (opts.onToolCall) {
+            await opts.onToolCall({
+              id: 'w1',
+              name: 'write_file',
+              filePath: 'src/fix.ts',
+              content: 'export const fixed = true;',
+            });
+          }
+          return 'Applied via write_file.';
+        }),
+        isAvailable: jest.fn().mockResolvedValue(true),
+        invalidateModelCache: jest.fn(),
+      };
+
+      const runner = new AgentRunner({
+        copilotProvider: copilotProvider as never,
+        apiKeyProvider: makeApiKeyProvider() as never,
+        providerMode: ProviderMode.COPILOT,
+        workspaceReader: makeWorkspaceReader() as never,
+      });
+
+      const result = await runner.runRound(
+        makeRoundRequest({ subAgents: [] }),
+        makeCancellationToken(),
+        jest.fn(),
+      );
+
+      expect(copilotProvider.sendRequest).toHaveBeenCalledTimes(2);
+      expect(result.fileChanges).toHaveLength(1);
+      expect(result.fileChanges[0]).toMatchObject({
+        filePath: 'src/fix.ts',
+        content: 'export const fixed = true;',
+      });
     });
 
     it('re-throws CancellationError from ApiKeyProvider thrown by name (line 349)', async () => {

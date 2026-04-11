@@ -93,6 +93,7 @@ export interface ExtensionConfig {
   copilotModelFamily?: string;
   modelTier: ModelTier;
   runnerTimeoutMs: number;
+  enableMetrics?: boolean;
 }
 
 export interface SubAgentVerification {

@@ -7,6 +7,7 @@ const PREVIEW_LENGTH = 80;
 
 export class SessionManager {
   private workspaceHash: string | undefined;
+  private appendQueues = new Map<string, Promise<void>>();
 
   constructor(private readonly storageUri: vscode.Uri) {}
 
@@ -44,21 +45,34 @@ export class SessionManager {
   }
 
   async appendTurn(sessionId: string, turn: ConversationTurn): Promise<void> {
-    try {
-      const session = await this.loadSession(sessionId);
-      if (!session) {
-        return;
-      }
-      session.turns.push(turn);
-      session.updatedAt = Date.now();
-      await this.writeSession(session);
-      await this.updateIndexEntry(sessionId, {
-        updatedAt: session.updatedAt,
-        turnCount: session.turns.length,
-        preview: this.extractPreview(session.turns),
+    const previous = this.appendQueues.get(sessionId) ?? Promise.resolve();
+    const next = previous
+      .catch(() => {
+        // Keep queue alive even if an earlier append failed.
+      })
+      .then(async () => {
+        try {
+          const session = await this.loadSession(sessionId);
+          if (!session) {
+            return;
+          }
+          session.turns.push(turn);
+          session.updatedAt = Date.now();
+          await this.writeSession(session);
+          await this.updateIndexEntry(sessionId, {
+            updatedAt: session.updatedAt,
+            turnCount: session.turns.length,
+            preview: this.extractPreview(session.turns),
+          });
+        } catch {
+          // Non-fatal — session saving must never break the chat
+        }
       });
-    } catch {
-      // Non-fatal — session saving must never break the chat
+
+    this.appendQueues.set(sessionId, next);
+    await next;
+    if (this.appendQueues.get(sessionId) === next) {
+      this.appendQueues.delete(sessionId);
     }
   }
 
