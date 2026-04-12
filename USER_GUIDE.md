@@ -286,13 +286,17 @@ Default Copilot role-first chains (when no overrides are set):
 
 You can record local run metrics and compare single-agent vs verifier-enabled runs.
 
-1. Enable `aiRoundtable.enableMetrics` in VS Code settings.
-2. Run your normal rounds (metrics are stored in extension local storage only).
-3. Open Command Palette and run:
-   - `AI Roundtable: Show A/B Report`
-   - `AI Roundtable: Clear Metrics` (to reset local metrics)
+1. Run `AI Roundtable: Show A/B Report` from Command Palette.
+2. If metrics are disabled, choose one of:
+   - `Enable Metrics` (writes `aiRoundtable.enableMetrics=true` to Workspace settings by default)
+   - `Open Settings` (opens the settings UI filtered to `aiRoundtable.enableMetrics`)
+3. Run normal rounds, then run `AI Roundtable: Show A/B Report` again.
+4. Optionally run `AI Roundtable: Clear Metrics` to reset local metrics for the current workspace.
 
 The report includes run counts, average duration, token usage, reflection rate, and verifier issue/consensus signals.
+The report opens as a Markdown tab in VS Code. Raw metrics are stored in:
+`globalStorage/.../metrics/<workspaceHash>/round-runs.jsonl`.
+It also includes breakdown tables by `roundType`, `modelTier`, and `mainAgent` so you can see where verifier cost/benefit is strongest.
 
 ---
 

@@ -146,10 +146,21 @@ For Developer and QA rounds, the AI outputs a `VERIFY:` token at the end of its 
 
 ### Metrics commands (optional)
 
-If `aiRoundtable.enableMetrics` is enabled in settings, you can use:
+Run `AI Roundtable: Show A/B Report` from the Command Palette.
 
-- `AI Roundtable: Show A/B Report`
-- `AI Roundtable: Clear Metrics`
+- If metrics are disabled, the toast offers:
+  - `Enable Metrics` (saved to workspace settings by default)
+  - `Open Settings` (opens `aiRoundtable.enableMetrics`)
+- If metrics are already enabled, the report opens immediately.
+
+You can also run `AI Roundtable: Clear Metrics` to reset local metrics for the current workspace.
+
+Metrics outputs:
+- Report: opens as a Markdown editor tab in VS Code.
+- Raw data: `globalStorage/.../metrics/<workspaceHash>/round-runs.jsonl`.
+- Report includes:
+  - Overall A/B summary (`single` vs `with verifiers`)
+  - Breakdown tables by `roundType`, `modelTier`, and `mainAgent` for tuning decisions
 
 ---
 

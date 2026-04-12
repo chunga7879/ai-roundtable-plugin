@@ -20,6 +20,7 @@ describe('RoundMetricsLogger.buildSummary', () => {
         subAgentsConfigured: 0,
         status: 'success',
         durationMs: 1000,
+        modelTier: 'light',
         inputTokens: 100,
         outputTokens: 50,
         fileChangeCount: 2,
@@ -36,6 +37,7 @@ describe('RoundMetricsLogger.buildSummary', () => {
         subAgentsConfigured: 1,
         status: 'success',
         durationMs: 2200,
+        modelTier: 'heavy',
         inputTokens: 180,
         outputTokens: 90,
         fileChangeCount: 3,
@@ -54,6 +56,7 @@ describe('RoundMetricsLogger.buildSummary', () => {
         subAgentsConfigured: 2,
         status: 'cancelled',
         durationMs: 1800,
+        modelTier: 'heavy',
       },
     ];
 
@@ -67,6 +70,13 @@ describe('RoundMetricsLogger.buildSummary', () => {
     expect(summary.withVerifiers.reflectionRatePct).toBe(100);
     expect(summary.durationRatioWithVerifiersVsSingle).toBeGreaterThan(1);
     expect(summary.tokenRatioWithVerifiersVsSingle).toBeGreaterThan(1);
+    expect(summary.byRoundType.map((bucket) => bucket.key)).toEqual(['developer', 'reviewer']);
+    expect(summary.byModelTier.map((bucket) => bucket.key)).toEqual(['light', 'heavy']);
+    expect(summary.byMainAgent.map((bucket) => bucket.key)).toEqual(['claude', 'gpt']);
+
+    const developerBucket = summary.byRoundType.find((bucket) => bucket.key === 'developer');
+    expect(developerBucket?.aggregate.runs).toBe(2);
+    expect(developerBucket?.durationRatioWithVerifiersVsSingle).toBeUndefined();
   });
 });
 
@@ -77,6 +87,9 @@ describe('RoundMetricsLogger.formatSummaryMarkdown', () => {
     expect(markdown).toContain('# AI Roundtable A/B Summary');
     expect(markdown).toContain('## Group Metrics');
     expect(markdown).toContain('## Cost Multipliers');
+    expect(markdown).toContain('## Breakdown by Round Type');
+    expect(markdown).toContain('## Breakdown by Model Tier');
+    expect(markdown).toContain('## Breakdown by Main Agent');
     expect(markdown).toContain('Single agent (0 sub)');
     expect(markdown).toContain('With verifiers (>=1 sub)');
   });
@@ -226,6 +239,7 @@ describe('RoundMetricsLogger persistence', () => {
     expect(report.summary.totalRuns).toBe(2);
     expect(report.markdown).toContain('Total runs analyzed: 2');
     expect(report.markdown).toContain('Single agent (0 sub)');
+    expect(report.markdown).toContain('## Breakdown by Round Type');
   });
 
   it('removes metrics file when prune leaves no valid records', async () => {

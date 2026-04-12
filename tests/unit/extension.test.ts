@@ -9,6 +9,7 @@ import * as vscode from 'vscode';
 import { ConfigManager, activate, deactivate, DIFF_SCHEME, diffContentStore } from '../../src/extension';
 import { ProviderMode } from '../../src/types';
 import { ConfigurationError } from '../../src/errors';
+import { RoundMetricsLogger } from '../../src/metrics/RoundMetricsLogger';
 
 const mockWs = vscode.workspace as jest.Mocked<typeof vscode.workspace>;
 const mockWin = vscode.window as jest.Mocked<typeof vscode.window>;
@@ -31,6 +32,16 @@ function makeContext(secrets?: vscode.SecretStorage): vscode.ExtensionContext {
     subscriptions: { push: jest.fn() },
     globalStorageUri: vscode.Uri.file('/tmp/ai-roundtable-test-storage'),
   } as unknown as vscode.ExtensionContext;
+}
+
+function setWorkspaceFolders(
+  folders: Array<{ uri: vscode.Uri; name: string; index: number }> | undefined,
+): void {
+  Object.defineProperty(mockWs, 'workspaceFolders', {
+    value: folders,
+    writable: true,
+    configurable: true,
+  });
 }
 
 afterEach(() => {
@@ -246,6 +257,33 @@ describe('ConfigManager.setProviderMode', () => {
     const manager = new ConfigManager(makeSecretStorage());
     await manager.setProviderMode(ProviderMode.API_KEYS);
     expect(updateMock).toHaveBeenCalledWith('providerMode', ProviderMode.API_KEYS, vscode.ConfigurationTarget.Global);
+  });
+});
+
+describe('ConfigManager.setEnableMetrics', () => {
+  it('stores to workspace settings when workspace is open', async () => {
+    const updateMock = jest.fn().mockResolvedValue(undefined);
+    (mockWs.getConfiguration as jest.Mock).mockReturnValue({ update: updateMock });
+    setWorkspaceFolders([{ uri: vscode.Uri.file('/repo'), name: 'repo', index: 0 }]);
+    const manager = new ConfigManager(makeSecretStorage());
+
+    await manager.setEnableMetrics(true);
+
+    expect(updateMock).toHaveBeenCalledWith('enableMetrics', true, vscode.ConfigurationTarget.Workspace);
+  });
+
+  it('falls back to user settings when no workspace is open', async () => {
+    const updateMock = jest.fn().mockResolvedValue(undefined);
+    (mockWs.getConfiguration as jest.Mock).mockReturnValue({ update: updateMock });
+    setWorkspaceFolders(undefined);
+    const manager = new ConfigManager(makeSecretStorage());
+
+    await manager.setEnableMetrics(true);
+
+    expect(updateMock).toHaveBeenCalledWith('enableMetrics', true, vscode.ConfigurationTarget.Global);
+    expect(mockWin.showInformationMessage).toHaveBeenCalledWith(
+      expect.stringContaining('saved to User settings'),
+    );
   });
 });
 
@@ -474,7 +512,10 @@ describe('activate()', () => {
 });
 
 describe('activate() — metrics commands', () => {
+  let buildMarkdownReportSpy: jest.SpyInstance;
+
   beforeEach(() => {
+    setWorkspaceFolders([{ uri: vscode.Uri.file('/repo'), name: 'repo', index: 0 }]);
     (mockWs.getConfiguration as jest.Mock).mockReturnValue({
       get: jest.fn((key: string) => {
         if (key === 'providerMode') return ProviderMode.API_KEYS;
@@ -485,6 +526,26 @@ describe('activate() — metrics commands', () => {
       update: jest.fn().mockResolvedValue(undefined),
     });
     mockLm.selectChatModels.mockResolvedValue([{ id: 'copilot-model' }] as unknown as vscode.LanguageModelChat[]);
+    buildMarkdownReportSpy = jest.spyOn(RoundMetricsLogger.prototype, 'buildMarkdownReport');
+    buildMarkdownReportSpy.mockResolvedValue({
+      markdown: '# A/B Report',
+      summary: {
+        totalRuns: 1,
+        bySubAgent: { withoutSubAgent: 1, withSubAgent: 0 },
+        avgDurationMs: { withoutSubAgent: 1200, withSubAgent: 0 },
+        avgPromptTokens: { withoutSubAgent: 100, withSubAgent: 0 },
+        avgCompletionTokens: { withoutSubAgent: 200, withSubAgent: 0 },
+        avgTotalTokens: { withoutSubAgent: 300, withSubAgent: 0 },
+        reflectionRate: { withoutSubAgent: 0.5, withSubAgent: 0 },
+        verifierIssueRate: { withoutSubAgent: 0, withSubAgent: 0 },
+        verifierConsensusRate: { withoutSubAgent: 0, withSubAgent: 0 },
+      },
+      records: [],
+    });
+  });
+
+  afterEach(() => {
+    buildMarkdownReportSpy.mockRestore();
   });
 
   function getCommandHandler(commandId: string): (() => void) | undefined {
@@ -493,7 +554,8 @@ describe('activate() — metrics commands', () => {
     return hit?.[1];
   }
 
-  it('shows guidance when A/B report is requested while metrics are disabled', async () => {
+  it('enables metrics in workspace and continues report flow when user clicks Enable Metrics', async () => {
+    mockWin.showInformationMessage.mockResolvedValueOnce('Enable Metrics' as unknown as vscode.MessageItem);
     const context = makeContext(makeSecretStorage());
     await activate(context);
     const handler = getCommandHandler('aiRoundtable.showAbReport');
@@ -503,7 +565,113 @@ describe('activate() — metrics commands', () => {
 
     expect(mockWin.showInformationMessage).toHaveBeenCalledWith(
       expect.stringContaining('Metrics collection is disabled'),
+      'Enable Metrics',
+      'Open Settings',
     );
+    expect((mockWs.getConfiguration as jest.Mock).mock.results[0].value.update).toHaveBeenCalledWith(
+      'enableMetrics',
+      true,
+      vscode.ConfigurationTarget.Workspace,
+    );
+    expect(buildMarkdownReportSpy).toHaveBeenCalledTimes(1);
+    expect(mockWs.openTextDocument).toHaveBeenCalledWith(
+      expect.objectContaining({ language: 'markdown', content: '# A/B Report' }),
+    );
+    expect(mockWin.showTextDocument).toHaveBeenCalled();
+  });
+
+  it('opens settings and does not build report when user clicks Open Settings', async () => {
+    mockWin.showInformationMessage.mockResolvedValueOnce('Open Settings' as unknown as vscode.MessageItem);
+    const context = makeContext(makeSecretStorage());
+    await activate(context);
+    const handler = getCommandHandler('aiRoundtable.showAbReport');
+
+    handler?.();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(mockCmds.executeCommand).toHaveBeenCalledWith(
+      'workbench.action.openSettings',
+      'aiRoundtable.enableMetrics',
+    );
+    expect(buildMarkdownReportSpy).not.toHaveBeenCalled();
+    expect(mockWs.openTextDocument).not.toHaveBeenCalled();
+  });
+
+  it('stops when metrics are disabled and user dismisses the prompt', async () => {
+    mockWin.showInformationMessage.mockResolvedValueOnce(undefined);
+    const context = makeContext(makeSecretStorage());
+    await activate(context);
+    const handler = getCommandHandler('aiRoundtable.showAbReport');
+
+    handler?.();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(buildMarkdownReportSpy).not.toHaveBeenCalled();
+    expect(mockWs.openTextDocument).not.toHaveBeenCalled();
+  });
+
+  it('builds report immediately when metrics are already enabled', async () => {
+    (mockWs.getConfiguration as jest.Mock).mockReturnValue({
+      get: jest.fn((key: string) => {
+        if (key === 'providerMode') return ProviderMode.API_KEYS;
+        if (key === 'enableMetrics') return true;
+        if (key === 'runnerTimeout') return 60;
+        return undefined;
+      }),
+      update: jest.fn().mockResolvedValue(undefined),
+    });
+    const context = makeContext(makeSecretStorage());
+    await activate(context);
+    const handler = getCommandHandler('aiRoundtable.showAbReport');
+
+    handler?.();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(mockWin.showInformationMessage).not.toHaveBeenCalledWith(
+      expect.stringContaining('Metrics collection is disabled'),
+      expect.anything(),
+      expect.anything(),
+    );
+    expect(buildMarkdownReportSpy).toHaveBeenCalledTimes(1);
+    expect(mockWs.openTextDocument).toHaveBeenCalled();
+  });
+
+  it('shows no-data message when report has zero runs', async () => {
+    buildMarkdownReportSpy.mockResolvedValueOnce({
+      markdown: '# Empty',
+      summary: {
+        totalRuns: 0,
+        bySubAgent: { withoutSubAgent: 0, withSubAgent: 0 },
+        avgDurationMs: { withoutSubAgent: 0, withSubAgent: 0 },
+        avgPromptTokens: { withoutSubAgent: 0, withSubAgent: 0 },
+        avgCompletionTokens: { withoutSubAgent: 0, withSubAgent: 0 },
+        avgTotalTokens: { withoutSubAgent: 0, withSubAgent: 0 },
+        reflectionRate: { withoutSubAgent: 0, withSubAgent: 0 },
+        verifierIssueRate: { withoutSubAgent: 0, withSubAgent: 0 },
+        verifierConsensusRate: { withoutSubAgent: 0, withSubAgent: 0 },
+      },
+      records: [],
+    });
+    (mockWs.getConfiguration as jest.Mock).mockReturnValue({
+      get: jest.fn((key: string) => {
+        if (key === 'providerMode') return ProviderMode.API_KEYS;
+        if (key === 'enableMetrics') return true;
+        if (key === 'runnerTimeout') return 60;
+        return undefined;
+      }),
+      update: jest.fn().mockResolvedValue(undefined),
+    });
+    const context = makeContext(makeSecretStorage());
+    await activate(context);
+    const handler = getCommandHandler('aiRoundtable.showAbReport');
+
+    handler?.();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(mockWin.showInformationMessage).toHaveBeenCalledWith(
+      expect.stringContaining('No round metrics recorded yet'),
+    );
+    expect(mockWs.openTextDocument).not.toHaveBeenCalled();
   });
 
   it('clears metrics for the current workspace', async () => {

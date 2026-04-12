@@ -130,6 +130,8 @@ export class ChatPanel implements vscode.Disposable {
 
     if (ChatPanel.instance) {
       ChatPanel.instance.panel.reveal(column);
+      ChatPanel.instance.syncLoadingStateWithBackend();
+      void ChatPanel.instance.handleRequestConfig();
       return ChatPanel.instance;
     }
 
@@ -223,6 +225,7 @@ export class ChatPanel implements vscode.Disposable {
       case 'cancelRequest':
         this.orchestrator.cancel();
         this.cancelRunningCommand();
+        this.syncLoadingStateWithBackend();
         break;
 
       case 'setModelTier':
@@ -302,6 +305,7 @@ export class ChatPanel implements vscode.Disposable {
     this.commandOutputCache.clear();
     this.clearDraftFileChanges(true);
     this.pendingVerifyCommand = undefined;
+    this.syncLoadingStateWithBackend();
     this.postMessage({ type: 'clearMessages' });
     this.postMessage({ type: 'clearFileChanges' });
   }
@@ -736,7 +740,13 @@ export class ChatPanel implements vscode.Disposable {
           modelTier: 'heavy',
         },
       });
+    } finally {
+      this.syncLoadingStateWithBackend();
     }
+  }
+
+  private syncLoadingStateWithBackend(): void {
+    this.postMessage({ type: 'setLoading', payload: { loading: this.isBusy() } });
   }
 
   private resolveAvailableAgents(config: {

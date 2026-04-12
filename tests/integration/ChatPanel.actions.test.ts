@@ -210,6 +210,18 @@ describe('ChatPanel — cancelRequest', () => {
     expect(() => handler({ type: 'cancelRequest' })).not.toThrow();
   });
 
+  it('forces loading-state sync when cancelRequest is sent while idle', async () => {
+    const { panel } = await setupPanel(makeConfigManager());
+    const handler = (panel as unknown as { _messageHandler: (m: unknown) => void })._messageHandler;
+    panel._sentMessages.length = 0;
+
+    handler({ type: 'cancelRequest' });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const msgs = panel._sentMessages as Array<{ type: string; payload?: { loading?: boolean } }>;
+    expect(msgs.some((m) => m.type === 'setLoading' && m.payload?.loading === false)).toBe(true);
+  });
+
   it('cancels during main-agent stage', async () => {
     const slowMainModel = {
       sendRequest: jest.fn().mockResolvedValue({

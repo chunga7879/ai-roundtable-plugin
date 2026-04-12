@@ -156,6 +156,26 @@ export class ConfigManager {
     );
   }
 
+  async setEnableMetrics(
+    enabled: boolean,
+    target: vscode.ConfigurationTarget = vscode.ConfigurationTarget.Workspace,
+  ): Promise<void> {
+    const vsConfig = vscode.workspace.getConfiguration(CONFIG_SECTION);
+    let resolvedTarget = target;
+
+    if (
+      target === vscode.ConfigurationTarget.Workspace
+      && (!vscode.workspace.workspaceFolders || vscode.workspace.workspaceFolders.length === 0)
+    ) {
+      resolvedTarget = vscode.ConfigurationTarget.Global;
+      void vscode.window.showInformationMessage(
+        'AI Roundtable: No workspace folder is open, so metrics setting was saved to User settings.',
+      );
+    }
+
+    await vsConfig.update('enableMetrics', enabled, resolvedTarget);
+  }
+
   async storeApiKey(
     provider: 'anthropic' | 'openai' | 'google' | 'deepseek',
     key: string,
@@ -321,6 +341,23 @@ export async function activate(
 ): Promise<void> {
   const configManager = new ConfigManager(context.secrets);
 
+  const openAbReport = async (): Promise<void> => {
+    const logger = new RoundMetricsLogger(context.globalStorageUri);
+    const { markdown, summary } = await logger.buildMarkdownReport();
+    if (summary.totalRuns === 0) {
+      void vscode.window.showInformationMessage(
+        'AI Roundtable: No round metrics recorded yet. Run a few turns first.',
+      );
+      return;
+    }
+
+    const doc = await vscode.workspace.openTextDocument({
+      content: markdown,
+      language: 'markdown',
+    });
+    await vscode.window.showTextDocument(doc, { preview: false });
+  };
+
   // Register virtual document provider for diff previews
   context.subscriptions.push(
     vscode.workspace.registerTextDocumentContentProvider(DIFF_SCHEME, {
@@ -374,25 +411,26 @@ export async function activate(
         try {
           const config = await configManager.getConfig();
           if (!config.enableMetrics) {
-            void vscode.window.showInformationMessage(
-              'AI Roundtable: Metrics collection is disabled. Enable "AI Roundtable › Enable Metrics" in Settings, run a few turns, then try again.',
+            const choice = await vscode.window.showInformationMessage(
+              'AI Roundtable: Metrics collection is disabled.',
+              'Enable Metrics',
+              'Open Settings',
             );
-            return;
+
+            if (choice === 'Enable Metrics') {
+              await configManager.setEnableMetrics(true, vscode.ConfigurationTarget.Workspace);
+            } else if (choice === 'Open Settings') {
+              await vscode.commands.executeCommand(
+                'workbench.action.openSettings',
+                `${CONFIG_SECTION}.enableMetrics`,
+              );
+              return;
+            } else {
+              return;
+            }
           }
 
-          const logger = new RoundMetricsLogger(context.globalStorageUri);
-          const { markdown, summary } = await logger.buildMarkdownReport();
-          if (summary.totalRuns === 0) {
-            void vscode.window.showInformationMessage(
-              'AI Roundtable: No round metrics recorded yet. Run a few turns first.',
-            );
-            return;
-          }
-          const doc = await vscode.workspace.openTextDocument({
-            content: markdown,
-            language: 'markdown',
-          });
-          await vscode.window.showTextDocument(doc, { preview: false });
+          await openAbReport();
         } catch (err) {
           void vscode.window.showErrorMessage(
             `AI Roundtable: Failed to build A/B report. ${err instanceof Error ? err.message : 'Unknown error.'}`,

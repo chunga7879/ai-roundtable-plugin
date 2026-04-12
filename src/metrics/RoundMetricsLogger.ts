@@ -6,6 +6,50 @@ import type { AgentName, ProviderMode, RoundType } from '../types';
 
 const MAX_STORED_RECORDS = 2000;
 const MAX_RECORD_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+const MIN_RUNS_PER_BUCKET_FOR_MULTIPLIER = 3;
+const UNKNOWN_BUCKET = 'unknown';
+const ROUND_TYPE_DISPLAY_ORDER = [
+  'requirements',
+  'architect',
+  'developer',
+  'reviewer',
+  'qa',
+  'devops',
+  'documentation',
+  UNKNOWN_BUCKET,
+] as const;
+const MODEL_TIER_DISPLAY_ORDER = ['light', 'heavy', UNKNOWN_BUCKET] as const;
+const MAIN_AGENT_DISPLAY_ORDER = [
+  'claude',
+  'gpt',
+  'gemini',
+  'deepseek',
+  'copilot',
+  UNKNOWN_BUCKET,
+] as const;
+const ROUND_TYPE_LABELS: Record<string, string> = {
+  requirements: 'Requirements',
+  architect: 'Architect',
+  developer: 'Developer',
+  reviewer: 'Reviewer',
+  qa: 'QA',
+  devops: 'DevOps',
+  documentation: 'Documentation',
+  [UNKNOWN_BUCKET]: 'Unknown',
+};
+const MODEL_TIER_LABELS: Record<string, string> = {
+  light: 'Light',
+  heavy: 'Heavy',
+  [UNKNOWN_BUCKET]: 'Unknown',
+};
+const MAIN_AGENT_LABELS: Record<string, string> = {
+  claude: 'Claude',
+  gpt: 'GPT',
+  gemini: 'Gemini',
+  deepseek: 'DeepSeek',
+  copilot: 'Copilot',
+  [UNKNOWN_BUCKET]: 'Unknown',
+};
 
 export interface RoundRunMetricRecord {
   version: 1;
@@ -45,6 +89,15 @@ interface GroupStats {
   consensusHitRatePct: number;
 }
 
+interface BreakdownStats {
+  key: string;
+  label: string;
+  aggregate: GroupStats;
+  successRatePct: number;
+  durationRatioWithVerifiersVsSingle?: number;
+  tokenRatioWithVerifiersVsSingle?: number;
+}
+
 export interface AbSummary {
   totalRuns: number;
   singleAgent: GroupStats;
@@ -53,6 +106,9 @@ export interface AbSummary {
   twoPlusVerifiers: GroupStats;
   durationRatioWithVerifiersVsSingle: number;
   tokenRatioWithVerifiersVsSingle: number;
+  byRoundType: BreakdownStats[];
+  byModelTier: BreakdownStats[];
+  byMainAgent: BreakdownStats[];
 }
 
 export class RoundMetricsLogger {
@@ -117,6 +173,24 @@ export class RoundMetricsLogger {
     const withVerifiers = computeGroupStats(records.filter((r) => r.subAgentsConfigured > 0));
     const oneVerifier = computeGroupStats(records.filter((r) => r.subAgentsConfigured === 1));
     const twoPlusVerifiers = computeGroupStats(records.filter((r) => r.subAgentsConfigured >= 2));
+    const byRoundType = computeBreakdownStats(
+      records,
+      (record) => normalizeBucketKey(record.roundType),
+      ROUND_TYPE_LABELS,
+      ROUND_TYPE_DISPLAY_ORDER,
+    );
+    const byModelTier = computeBreakdownStats(
+      records,
+      (record) => normalizeModelTierKey(record.modelTier),
+      MODEL_TIER_LABELS,
+      MODEL_TIER_DISPLAY_ORDER,
+    );
+    const byMainAgent = computeBreakdownStats(
+      records,
+      (record) => normalizeBucketKey(record.mainAgent),
+      MAIN_AGENT_LABELS,
+      MAIN_AGENT_DISPLAY_ORDER,
+    );
 
     return {
       totalRuns: records.length,
@@ -126,6 +200,9 @@ export class RoundMetricsLogger {
       twoPlusVerifiers,
       durationRatioWithVerifiersVsSingle: ratio(withVerifiers.avgDurationMs, singleAgent.avgDurationMs),
       tokenRatioWithVerifiersVsSingle: ratio(withVerifiers.avgTotalTokens, singleAgent.avgTotalTokens),
+      byRoundType,
+      byModelTier,
+      byMainAgent,
     };
   }
 
@@ -133,6 +210,7 @@ export class RoundMetricsLogger {
     const formatPct = (value: number): string => `${value.toFixed(1)}%`;
     const formatNum = (value: number): string => value.toFixed(1);
     const formatRatio = (value: number): string => (value > 0 ? `${value.toFixed(2)}x` : 'n/a');
+    const formatOptionalRatio = (value?: number): string => (value && value > 0 ? `${value.toFixed(2)}x` : 'n/a');
 
     const rows = [
       ['Single agent (0 sub)', summary.singleAgent],
@@ -144,6 +222,26 @@ export class RoundMetricsLogger {
     const tableLines = rows.map(([label, s]) => {
       return `| ${label} | ${s.runs} | ${s.success} | ${s.cancelled} | ${s.error} | ${formatNum(s.avgDurationMs)} | ${formatNum(s.avgTotalTokens)} | ${formatPct(s.reflectionRatePct)} | ${formatNum(s.avgVerifierIssues)} | ${formatPct(s.consensusHitRatePct)} |`;
     }).join('\n');
+
+    const breakdownSection = (title: string, buckets: BreakdownStats[]): string[] => {
+      if (buckets.length === 0) {
+        return [title, '', 'No runs in this dataset.', ''];
+      }
+
+      const lines = buckets.map((bucket) => {
+        const s = bucket.aggregate;
+        return `| ${bucket.label} | ${s.runs} | ${formatPct(bucket.successRatePct)} | ${formatNum(s.avgDurationMs)} | ${formatNum(s.avgTotalTokens)} | ${formatPct(s.reflectionRatePct)} | ${formatNum(s.avgVerifierIssues)} | ${formatPct(s.consensusHitRatePct)} | ${formatOptionalRatio(bucket.durationRatioWithVerifiersVsSingle)} | ${formatOptionalRatio(bucket.tokenRatioWithVerifiersVsSingle)} |`;
+      });
+
+      return [
+        title,
+        '',
+        '| Segment | Runs | Success Rate | Avg Duration (ms) | Avg Total Tokens | Reflection Rate | Avg Verifier Issues | Consensus Hit Rate | Duration x (verifiers/single) | Tokens x (verifiers/single) |',
+        '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|',
+        ...lines,
+        '',
+      ];
+    };
 
     const now = new Date().toISOString();
 
@@ -164,11 +262,15 @@ export class RoundMetricsLogger {
       `- Duration multiplier (with verifiers vs single): **${formatRatio(summary.durationRatioWithVerifiersVsSingle)}**`,
       `- Token multiplier (with verifiers vs single): **${formatRatio(summary.tokenRatioWithVerifiersVsSingle)}**`,
       '',
+      ...breakdownSection('## Breakdown by Round Type', summary.byRoundType),
+      ...breakdownSection('## Breakdown by Model Tier', summary.byModelTier),
+      ...breakdownSection('## Breakdown by Main Agent', summary.byMainAgent),
       '## Interpretation Guide',
       '',
       '- Reflection Rate: percentage of successful runs where verifier feedback triggered reflection.',
       '- Avg Verifier Issues: average number of issues surfaced by verifiers in successful runs.',
       '- Consensus Hit Rate: percentage of successful runs with at least one issue flagged by all valid verifiers.',
+      '- Per-segment multipliers show verifier vs single-agent cost inside each segment; shown as n/a when either side has fewer than 3 runs.',
     ].join('\n');
   }
 
@@ -291,4 +393,113 @@ function ratio(numerator: number, denominator: number): number {
     return 0;
   }
   return numerator / denominator;
+}
+
+function computeBreakdownStats(
+  records: RoundRunMetricRecord[],
+  bucketSelector: (record: RoundRunMetricRecord) => string,
+  labels: Record<string, string>,
+  displayOrder: readonly string[],
+): BreakdownStats[] {
+  const grouped = new Map<string, RoundRunMetricRecord[]>();
+  for (const record of records) {
+    const key = bucketSelector(record);
+    const bucket = grouped.get(key);
+    if (bucket) {
+      bucket.push(record);
+    } else {
+      grouped.set(key, [record]);
+    }
+  }
+
+  const orderedIndex = new Map<string, number>(
+    displayOrder.map((key, index) => [key, index]),
+  );
+
+  const buckets = Array.from(grouped.entries()).map(([key, bucketRecords]) => {
+    const aggregate = computeGroupStats(bucketRecords);
+    const singleAgent = computeGroupStats(bucketRecords.filter((r) => r.subAgentsConfigured === 0));
+    const withVerifiers = computeGroupStats(bucketRecords.filter((r) => r.subAgentsConfigured > 0));
+    const successRatePct = percent(aggregate.success, aggregate.runs);
+
+    const durationRatioWithVerifiersVsSingle = computeBucketRatio(
+      withVerifiers.avgDurationMs,
+      singleAgent.avgDurationMs,
+      withVerifiers.runs,
+      singleAgent.runs,
+    );
+    const tokenRatioWithVerifiersVsSingle = computeBucketRatio(
+      withVerifiers.avgTotalTokens,
+      singleAgent.avgTotalTokens,
+      withVerifiers.runs,
+      singleAgent.runs,
+    );
+
+    return {
+      key,
+      label: labels[key] ?? humanizeLabel(key),
+      aggregate,
+      successRatePct,
+      durationRatioWithVerifiersVsSingle,
+      tokenRatioWithVerifiersVsSingle,
+    };
+  });
+
+  buckets.sort((a, b) => {
+    const aOrder = orderedIndex.get(a.key);
+    const bOrder = orderedIndex.get(b.key);
+    if (aOrder !== undefined || bOrder !== undefined) {
+      if (aOrder === undefined) {
+        return 1;
+      }
+      if (bOrder === undefined) {
+        return -1;
+      }
+      if (aOrder !== bOrder) {
+        return aOrder - bOrder;
+      }
+    }
+    if (a.aggregate.runs !== b.aggregate.runs) {
+      return b.aggregate.runs - a.aggregate.runs;
+    }
+    return a.label.localeCompare(b.label);
+  });
+
+  return buckets;
+}
+
+function computeBucketRatio(
+  numerator: number,
+  denominator: number,
+  numeratorRuns: number,
+  denominatorRuns: number,
+): number | undefined {
+  if (
+    numeratorRuns < MIN_RUNS_PER_BUCKET_FOR_MULTIPLIER
+    || denominatorRuns < MIN_RUNS_PER_BUCKET_FOR_MULTIPLIER
+    || denominator <= 0
+  ) {
+    return undefined;
+  }
+  return ratio(numerator, denominator);
+}
+
+function normalizeBucketKey(value: string | undefined): string {
+  const normalized = (value ?? '').trim().toLowerCase();
+  return normalized.length > 0 ? normalized : UNKNOWN_BUCKET;
+}
+
+function normalizeModelTierKey(tier: RoundRunMetricRecord['modelTier']): string {
+  if (tier === 'light' || tier === 'heavy') {
+    return tier;
+  }
+  return UNKNOWN_BUCKET;
+}
+
+function humanizeLabel(value: string): string {
+  return value
+    .split(/[_\-\s]+/g)
+    .filter((part) => part.length > 0)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ') || 'Unknown';
 }
