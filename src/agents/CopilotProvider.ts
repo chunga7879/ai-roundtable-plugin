@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
+import { AgentName } from '../types';
 import type {
-  AgentName,
+  CopilotAgentName,
   ConversationTurn,
   CopilotAgentFamilyOverrides,
   CopilotAgentTierOverrides,
@@ -59,8 +60,22 @@ function extractXmlToolCalls(text: string): Array<{ name: 'read_file'; path: str
   return calls;
 }
 
-const COPILOT_HEAVY_FAMILIES: readonly string[] = ['gpt-4o', 'gpt-4', 'claude', 'gemini'];
-const COPILOT_LIGHT_FAMILIES: readonly string[] = ['gpt-4o-mini', 'gpt-4o', 'claude', 'gemini'];
+const COPILOT_FALLBACK_FAMILIES: Record<ModelTier, readonly string[]> = {
+  heavy: ['gpt-4o', 'gpt-4', 'claude', 'gemini'],
+  light: ['gpt-4o-mini', 'gpt-4o', 'claude', 'gemini'],
+};
+const COPILOT_ROLE_FAMILY_CHAINS: Record<ModelTier, Record<CopilotAgentName, readonly string[]>> = {
+  heavy: {
+    claude: ['claude'],
+    gpt: ['gpt-4o', 'gpt-4'],
+    gemini: ['gemini'],
+  },
+  light: {
+    claude: ['claude'],
+    gpt: ['gpt-4o-mini', 'gpt-4o'],
+    gemini: ['gemini'],
+  },
+};
 
 /** How long (ms) to wait for Copilot model selection before giving up. */
 const MODEL_SELECTION_TIMEOUT_MS = 30_000;
@@ -117,9 +132,10 @@ export class CopilotProvider {
   }
 
   configureRouting(config: CopilotRoutingConfig): void {
+    const defaultTier: ModelTier = config.defaultTier === 'light' ? 'light' : 'heavy';
     this.routing = {
       defaultFamily: this.normalizeFamily(config.defaultFamily),
-      defaultTier: config.defaultTier,
+      defaultTier,
       familyByAgent: this.normalizeFamilyOverrides(config.familyByAgent),
       tierByAgent: this.normalizeTierOverrides(config.tierByAgent),
       strictFamilyMatch: config.strictFamilyMatch === true,
@@ -175,12 +191,11 @@ export class CopilotProvider {
 
   private isRoutedAgentName(
     agentName: AgentName,
-  ): agentName is keyof CopilotAgentFamilyOverrides & keyof CopilotAgentTierOverrides {
+  ): agentName is CopilotAgentName {
     return (
-      agentName === 'claude'
-      || agentName === 'gpt'
-      || agentName === 'gemini'
-      || agentName === 'deepseek'
+      agentName === AgentName.CLAUDE
+      || agentName === AgentName.GPT
+      || agentName === AgentName.GEMINI
     );
   }
 
@@ -200,8 +215,9 @@ export class CopilotProvider {
     const modelTier = routedAgent
       ? this.routing.tierByAgent?.[routedAgent] ?? this.routing.defaultTier
       : this.routing.defaultTier;
+    const effectiveTier: ModelTier = modelTier === 'light' ? 'light' : 'heavy';
     const strictFamilyMatch = this.routing.strictFamilyMatch === true;
-    const cacheKey = `${agentName}|${preferredFamily ?? 'auto'}|${modelTier}|${strictFamilyMatch ? 'strict' : 'relaxed'}`;
+    const cacheKey = `${agentName}|${preferredFamily ?? 'auto'}|${effectiveTier}|${strictFamilyMatch ? 'strict' : 'relaxed'}`;
     const cachedModel = this.cachedModels.get(cacheKey);
     if (cachedModel) {
       return cachedModel;
@@ -251,10 +267,18 @@ export class CopilotProvider {
       }
     }
 
-    // Auto selection: try preferred model families in order
-    const familyList = modelTier === 'light' ? COPILOT_LIGHT_FAMILIES : COPILOT_HEAVY_FAMILIES;
-    for (const family of familyList) {
-      if (preferredFamily && family === preferredFamily) {
+    const roleFamilyChain = routedAgent
+      ? COPILOT_ROLE_FAMILY_CHAINS[effectiveTier][routedAgent]
+      : COPILOT_FALLBACK_FAMILIES[effectiveTier];
+    const familyCandidates = strictFamilyMatch
+      ? this.dedupeFamilies(roleFamilyChain)
+      : this.dedupeFamilies([
+          ...roleFamilyChain,
+          ...COPILOT_FALLBACK_FAMILIES[effectiveTier],
+        ]);
+
+    for (const family of familyCandidates) {
+      if (family === preferredFamily) {
         continue;
       }
       let models: vscode.LanguageModelChat[];
@@ -275,7 +299,17 @@ export class CopilotProvider {
       }
     }
 
-    // Fallback: any copilot model
+    if (strictFamilyMatch) {
+      const attempted = familyCandidates.length > 0
+        ? familyCandidates.join(', ')
+        : '(none)';
+      throw new CopilotProviderError(
+        `No Copilot model available for strict family chain [${attempted}] (agent: ${agentName}, tier: ${effectiveTier}). ` +
+        'Either adjust aiRoundtable.copilotAgentFamilies / aiRoundtable.modelTier, or disable aiRoundtable.copilotStrictAgentFamily.',
+      );
+    }
+
+    // Relaxed fallback: any copilot model.
     let anyModels: vscode.LanguageModelChat[];
     try {
       anyModels = await selectWithTimeout(
@@ -298,6 +332,20 @@ export class CopilotProvider {
     const selected = anyModels[0];
     this.cachedModels.set(cacheKey, selected);
     return selected;
+  }
+
+  private dedupeFamilies(families: readonly string[]): string[] {
+    const seen = new Set<string>();
+    const result: string[] = [];
+    for (const family of families) {
+      const normalized = this.normalizeFamily(family);
+      if (!normalized || seen.has(normalized)) {
+        continue;
+      }
+      seen.add(normalized);
+      result.push(normalized);
+    }
+    return result;
   }
 
   async sendRequest(

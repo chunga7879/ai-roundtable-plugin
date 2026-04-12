@@ -83,7 +83,7 @@ export interface WorkspaceFile {
 }
 
 export type ModelTier = 'light' | 'heavy';
-export type CopilotAgentName = AgentName.CLAUDE | AgentName.GPT | AgentName.GEMINI | AgentName.DEEPSEEK;
+export type CopilotAgentName = AgentName.CLAUDE | AgentName.GPT | AgentName.GEMINI;
 export type CopilotAgentFamilyOverrides = Partial<Record<CopilotAgentName, string>>;
 export type CopilotAgentTierOverrides = Partial<Record<CopilotAgentName, ModelTier>>;
 

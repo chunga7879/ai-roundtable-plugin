@@ -270,8 +270,15 @@ Toggle the tier using the **Light / Heavy** selector in the panel. The current t
 
 If you use Copilot mode, you can optionally override tier/family per agent in Settings:
 - `aiRoundtable.copilotAgentFamilies` (`claude`, `gpt`, `gemini`)
-- `aiRoundtable.copilotAgentTiers` (`heavy` / `light`, with global fallback)
-- `aiRoundtable.copilotStrictAgentFamily` (fail when configured family is unavailable)
+- `aiRoundtable.copilotAgentTiers` (`heavy` / `light`)
+- `aiRoundtable.copilotStrictAgentFamily` (strict mode: fail instead of family fallback)
+
+Default Copilot role-first chains (when no overrides are set):
+- `claude` heavy/light: `claude`
+- `gpt` heavy: `gpt-4o -> gpt-4`
+- `gpt` light: `gpt-4o-mini -> gpt-4o`
+- `gemini` heavy/light: `gemini`
+- With `copilotStrictAgentFamily=false` (default), unavailable families can fall back to other available Copilot families.
 
 ---
 

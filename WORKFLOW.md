@@ -54,8 +54,12 @@ VS Code Extension Host
 - Uses `vscode.lm` API — no API keys needed
 - Requires an active GitHub Copilot subscription
 - Supported role agents in this mode: `claude`, `gpt`, `gemini` (`deepseek` is API-keys-only)
-- Auto family order (heavy): `gpt-4o → gpt-4 → claude → gemini`
-- Auto family order (light): `gpt-4o-mini → gpt-4o → claude → gemini`
+- Default role-first family chains:
+  - `claude` (heavy/light): `claude`
+  - `gpt` heavy: `gpt-4o → gpt-4`
+  - `gpt` light: `gpt-4o-mini → gpt-4o`
+  - `gemini` (heavy/light): `gemini`
+- With `aiRoundtable.copilotStrictAgentFamily=false` (default), unavailable role chains can fall back to other available Copilot families.
 - Optional per-agent routing settings:
   - `aiRoundtable.copilotAgentFamilies` (per-role family override)
   - `aiRoundtable.copilotAgentTiers` (per-role light/heavy override)

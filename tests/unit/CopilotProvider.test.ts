@@ -756,19 +756,28 @@ describe('CopilotProvider — Bug fix: cancellation between tool-call iterations
 describe('CopilotProvider — model tier', () => {
   beforeEach(() => jest.clearAllMocks());
 
-  it('heavy tier (default) — queries gpt-4o family first', async () => {
+  it('heavy tier (default) — claude agent queries claude family first', async () => {
     (vscode.lm.selectChatModels as jest.Mock).mockResolvedValue([makeModel(['response'])]);
     const provider = new CopilotProvider();
     await provider.sendRequest(defaultOptions, AgentName.CLAUDE, makeToken());
     const firstCall = (vscode.lm.selectChatModels as jest.Mock).mock.calls[0][0];
-    expect(firstCall.family).toBe('gpt-4o');
+    expect(firstCall.family).toBe('claude');
   });
 
-  it('light tier — queries gpt-4o-mini family first', async () => {
+  it('light tier — claude agent still queries claude family first', async () => {
     (vscode.lm.selectChatModels as jest.Mock).mockResolvedValue([makeModel(['response'])]);
     const provider = new CopilotProvider();
     provider.setModelTier('light');
     await provider.sendRequest(defaultOptions, AgentName.CLAUDE, makeToken());
+    const firstCall = (vscode.lm.selectChatModels as jest.Mock).mock.calls[0][0];
+    expect(firstCall.family).toBe('claude');
+  });
+
+  it('gpt agent in light tier queries gpt-4o-mini family first', async () => {
+    (vscode.lm.selectChatModels as jest.Mock).mockResolvedValue([makeModel(['response'])]);
+    const provider = new CopilotProvider();
+    provider.setModelTier('light');
+    await provider.sendRequest(defaultOptions, AgentName.GPT, makeToken());
     const firstCall = (vscode.lm.selectChatModels as jest.Mock).mock.calls[0][0];
     expect(firstCall.family).toBe('gpt-4o-mini');
   });
@@ -786,7 +795,7 @@ describe('CopilotProvider — model tier', () => {
     await provider.sendRequest(defaultOptions, AgentName.CLAUDE, makeToken());
     expect(vscode.lm.selectChatModels).toHaveBeenCalledTimes(2);
     const secondCall = (vscode.lm.selectChatModels as jest.Mock).mock.calls[1][0];
-    expect(secondCall.family).toBe('gpt-4o-mini');
+    expect(secondCall.family).toBe('claude');
   });
 
   it('setting same tier twice does not invalidate cache', async () => {
@@ -802,16 +811,17 @@ describe('CopilotProvider — model tier', () => {
     expect(vscode.lm.selectChatModels).toHaveBeenCalledTimes(1);
   });
 
-  it('light tier falls back to gpt-4o when gpt-4o-mini unavailable', async () => {
+  it('light tier claude chain falls back to gpt-4o-mini then gpt-4o when claude unavailable', async () => {
     (vscode.lm.selectChatModels as jest.Mock)
+      .mockResolvedValueOnce([]) // claude — empty
       .mockResolvedValueOnce([]) // gpt-4o-mini — empty
       .mockResolvedValue([makeModel(['fallback'])]); // gpt-4o and beyond
     const provider = new CopilotProvider();
     provider.setModelTier('light');
     const result = await provider.sendRequest(defaultOptions, AgentName.CLAUDE, makeToken());
     expect(result).toBe('fallback');
-    // First call was gpt-4o-mini, second was gpt-4o
-    expect((vscode.lm.selectChatModels as jest.Mock).mock.calls[0][0].family).toBe('gpt-4o-mini');
-    expect((vscode.lm.selectChatModels as jest.Mock).mock.calls[1][0].family).toBe('gpt-4o');
+    expect((vscode.lm.selectChatModels as jest.Mock).mock.calls[0][0].family).toBe('claude');
+    expect((vscode.lm.selectChatModels as jest.Mock).mock.calls[1][0].family).toBe('gpt-4o-mini');
+    expect((vscode.lm.selectChatModels as jest.Mock).mock.calls[2][0].family).toBe('gpt-4o');
   });
 });

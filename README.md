@@ -59,7 +59,15 @@ Choose **GitHub Copilot** (default) or **API Keys**. If you choose API Keys, you
 
 ### Copilot per-agent routing (optional)
 
-By default, Copilot mode uses one global family/tier preference. You can override this per agent in VS Code settings:
+By default, Copilot mode uses role-first family chains by tier, then relaxed fallback when needed:
+
+- `claude` (heavy/light): `claude`
+- `gpt` heavy: `gpt-4o -> gpt-4`
+- `gpt` light: `gpt-4o-mini -> gpt-4o`
+- `gemini` (heavy/light): `gemini`
+- If none are available and strict mode is off, it falls back to other available Copilot families.
+
+You can still override this per agent in VS Code settings:
 
 ```json
 {
@@ -79,7 +87,7 @@ By default, Copilot mode uses one global family/tier preference. You can overrid
 
 - `copilotAgentFamilies`: override requested family per role agent (`claude`, `gpt`, `gemini`)
 - `copilotAgentTiers`: override light/heavy per role agent
-- `copilotStrictAgentFamily=true`: fail fast if configured family is unavailable (no fallback)
+- `copilotStrictAgentFamily=true`: strict mode; do not fall back to other families (fail fast if strict chain is unavailable)
 - In Copilot mode, selectable role agents are currently `claude`, `gpt`, and `gemini` (DeepSeek is API-key mode only).
 
 ---

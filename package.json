@@ -133,7 +133,7 @@
         "aiRoundtable.copilotAgentFamilies": {
           "type": "object",
           "default": {},
-          "description": "Optional per-agent Copilot model family overrides. Keys: claude, gpt, gemini, deepseek. Values: auto | gpt-4o-mini | gpt-4o | gpt-4 | claude | gemini.",
+          "description": "Optional per-agent Copilot model family overrides. Keys: claude, gpt, gemini. Values: auto | gpt-4o-mini | gpt-4o | gpt-4 | claude | gemini.",
           "additionalProperties": false,
           "properties": {
             "claude": {
@@ -147,11 +147,6 @@
               "default": "auto"
             },
             "gemini": {
-              "type": "string",
-              "enum": ["auto", "gpt-4o-mini", "gpt-4o", "gpt-4", "claude", "gemini"],
-              "default": "auto"
-            },
-            "deepseek": {
               "type": "string",
               "enum": ["auto", "gpt-4o-mini", "gpt-4o", "gpt-4", "claude", "gemini"],
               "default": "auto"
@@ -161,7 +156,7 @@
         "aiRoundtable.copilotAgentTiers": {
           "type": "object",
           "default": {},
-          "description": "Optional per-agent tier overrides for Copilot mode. Keys: claude, gpt, gemini, deepseek. Values: inherit | heavy | light. If omitted/inherit, global aiRoundtable.modelTier is used.",
+          "description": "Optional per-agent tier overrides for Copilot mode. Keys: claude, gpt, gemini. Values: inherit | heavy | light. If omitted/inherit, global aiRoundtable.modelTier is used.",
           "additionalProperties": false,
           "properties": {
             "claude": {
@@ -178,18 +173,13 @@
               "type": "string",
               "enum": ["inherit", "heavy", "light"],
               "default": "inherit"
-            },
-            "deepseek": {
-              "type": "string",
-              "enum": ["inherit", "heavy", "light"],
-              "default": "inherit"
             }
           }
         },
         "aiRoundtable.copilotStrictAgentFamily": {
           "type": "boolean",
           "default": false,
-          "description": "When true, fail the request if a configured per-agent Copilot family is unavailable instead of falling back to another family."
+          "description": "When true, disable relaxed Copilot family fallback and fail if the strict selected chain is unavailable."
         },
         "aiRoundtable.modelTier": {
           "type": "string",

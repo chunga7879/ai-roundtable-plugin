@@ -31,7 +31,6 @@ const COPILOT_AGENT_NAMES: readonly CopilotAgentName[] = [
   AgentName.CLAUDE,
   AgentName.GPT,
   AgentName.GEMINI,
-  AgentName.DEEPSEEK,
 ];
 const COPILOT_MODEL_FAMILY_SET = new Set([
   'gpt-4o-mini',
