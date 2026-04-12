@@ -158,6 +158,12 @@ The UI shows the pipeline as it runs:
 - **Verifying** — sub-agents are reviewing (if selected)
 - **Reflecting** — main agent is incorporating feedback (if sub-agents provided valid feedback)
 
+Execution examples:
+- **Main only**: main stage only. Verifying/reflecting are skipped.
+- **Copilot: main=claude, sub=gpt+gemini**: `claude` (main) → `gpt` + `gemini` (verifiers in parallel) → `claude` (reflection).
+- **Copilot: main=gpt, sub=claude**: `gpt` (main) → `claude` (verifier) → `gpt` (reflection).
+- Reflection runs only when at least one verifier returns valid feedback.
+
 You can **cancel** a request at any time using the Cancel button that appears while the pipeline is running.
 
 ### What to write in your request
@@ -196,6 +202,12 @@ Switching to a different round clears the history for that round and starts fres
 ## Reviewing and Applying File Changes
 
 When the AI writes files (via the `write_file` tool), a **Proposed Changes** panel appears at the bottom of the chat.
+
+File write rules:
+- `write_file` is the only supported write path for agent-generated file updates.
+- Every `write_file` call must include complete file content.
+- If a file is updated again in the same turn, the full file must be sent again.
+- `FILE:` blocks in plain response text are not used by apply flow.
 
 ### Reviewing changes
 
@@ -257,7 +269,7 @@ The **model tier** lets you trade response quality for speed and cost:
 Toggle the tier using the **Light / Heavy** selector in the panel. The current tier applies to all agents for the current session.
 
 If you use Copilot mode, you can optionally override tier/family per agent in Settings:
-- `aiRoundtable.copilotAgentFamilies` (`claude`, `gpt`, `gemini`, `deepseek`)
+- `aiRoundtable.copilotAgentFamilies` (`claude`, `gpt`, `gemini`)
 - `aiRoundtable.copilotAgentTiers` (`heavy` / `light`, with global fallback)
 - `aiRoundtable.copilotStrictAgentFamily` (fail when configured family is unavailable)
 

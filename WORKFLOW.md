@@ -53,6 +53,7 @@ VS Code Extension Host
 ### GitHub Copilot mode
 - Uses `vscode.lm` API — no API keys needed
 - Requires an active GitHub Copilot subscription
+- Supported role agents in this mode: `claude`, `gpt`, `gemini` (`deepseek` is API-keys-only)
 - Auto family order (heavy): `gpt-4o → gpt-4 → claude → gemini`
 - Auto family order (light): `gpt-4o-mini → gpt-4o → claude → gemini`
 - Optional per-agent routing settings:
@@ -77,6 +78,13 @@ Agents without a configured key are automatically disabled in the UI.
 
 ## The 3-Step Pipeline
 
+### Execution matrix (examples)
+
+- **Main only**: Main stage runs, then pipeline finishes (no verifier/reflection).
+- **Copilot `main=claude`, `sub=[gpt, gemini]`**: `claude` main → `gpt/gemini` verifiers (parallel) → `claude` reflection.
+- **Copilot `main=gpt`, `sub=[claude]`**: `gpt` main → `claude` verifier → `gpt` reflection.
+- Reflection is skipped when there is no valid verifier feedback.
+
 ### Step 1 — Main Agent
 
 **Input:**
@@ -88,6 +96,8 @@ Agents without a configured key are automatically disabled in the UI.
 **What happens:**
 - Agent calls `read_file` for files it needs (up to the tool call limit)
 - Agent produces prose response and/or calls `write_file` for each file it creates or modifies
+- `write_file` is the only file-write path (no plain-text `FILE:` block writes)
+- Each `write_file` call must contain the full file content
 - Agent may call `run_command` only for checks against current on-disk workspace state (for example dependency/security checks)
 - Validation of newly written files belongs in `VERIFY:` post-apply commands, not `run_command`
 

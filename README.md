@@ -77,9 +77,10 @@ By default, Copilot mode uses one global family/tier preference. You can overrid
 }
 ```
 
-- `copilotAgentFamilies`: override requested family per role agent (`claude`, `gpt`, `gemini`, `deepseek`)
+- `copilotAgentFamilies`: override requested family per role agent (`claude`, `gpt`, `gemini`)
 - `copilotAgentTiers`: override light/heavy per role agent
 - `copilotStrictAgentFamily=true`: fail fast if configured family is unavailable (no fallback)
+- In Copilot mode, selectable role agents are currently `claude`, `gpt`, and `gemini` (DeepSeek is API-key mode only).
 
 ---
 
@@ -100,6 +101,20 @@ By default, Copilot mode uses one global family/tier preference. You can overrid
 6. Click a file to preview the diff, then **Apply All Changes** or **Discard**
 7. If dependency files changed (e.g. `package.json`), an approve/deny dialog offers to run the install command automatically
 8. If the AI suggested a verification command (e.g. `npm test`), a second approve/deny dialog follows — approving runs the command and feeds any failure back to the AI for analysis
+
+### Pipeline behavior by selection
+
+- **Main agent only**: runs Main stage only. Verifier and reflection stages are skipped.
+- **Copilot: main=claude, sub=gpt+gemini**: `claude` (main) → `gpt` + `gemini` (verifiers in parallel) → `claude` (reflection).
+- **Copilot: main=gpt, sub=claude**: `gpt` (main) → `claude` (verifier) → `gpt` (reflection).
+- Reflection runs only when at least one valid verifier feedback exists. If all verifiers are unavailable, final output remains the main-agent response.
+
+### File write contract
+
+- `write_file` is the only supported way for agents to create or overwrite files.
+- Each `write_file` call must include the complete file content (no partial patch/diff payloads).
+- If the same file is revised again in the same turn, send `write_file` again with full content.
+- Do not use `FILE:` blocks in plain response text for writes; apply logic uses tool outputs only (`write_file` / `delete_file`).
 
 ### File deletions
 
