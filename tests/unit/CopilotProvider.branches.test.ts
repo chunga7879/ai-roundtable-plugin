@@ -120,6 +120,79 @@ describe('CopilotProvider.setModelTier', () => {
   });
 });
 
+// ── configureRouting — per-agent family/tier ────────────────────────────────
+
+describe('CopilotProvider.configureRouting', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('routes each agent to its configured family override', async () => {
+    (vscode.lm.selectChatModels as jest.Mock).mockImplementation(({ family }: { family?: string }) => {
+      if (family === 'claude') return Promise.resolve([makeModel(['claude-family'])]);
+      if (family === 'gpt-4o') return Promise.resolve([makeModel(['default-family'])]);
+      return Promise.resolve([]);
+    });
+
+    const provider = new CopilotProvider();
+    provider.configureRouting({
+      defaultFamily: 'gpt-4o',
+      defaultTier: 'heavy',
+      familyByAgent: { claude: 'claude' },
+    });
+
+    const claudeResult = await provider.sendRequest(defaultOpts, AgentName.CLAUDE, makeToken());
+    const gptResult = await provider.sendRequest(defaultOpts, AgentName.GPT, makeToken());
+
+    expect(claudeResult).toBe('claude-family');
+    expect(gptResult).toBe('default-family');
+    expect(vscode.lm.selectChatModels).toHaveBeenCalledWith(
+      expect.objectContaining({ family: 'claude' }),
+    );
+    expect(vscode.lm.selectChatModels).toHaveBeenCalledWith(
+      expect.objectContaining({ family: 'gpt-4o' }),
+    );
+  });
+
+  it('honors per-agent tier override (light) over default heavy tier', async () => {
+    (vscode.lm.selectChatModels as jest.Mock).mockImplementation(({ family }: { family?: string }) => {
+      if (family === 'gpt-4o-mini') return Promise.resolve([makeModel(['light-tier'])]);
+      if (family === 'gpt-4o') return Promise.resolve([makeModel(['heavy-tier'])]);
+      return Promise.resolve([]);
+    });
+
+    const provider = new CopilotProvider();
+    provider.configureRouting({
+      defaultTier: 'heavy',
+      tierByAgent: { claude: 'light' },
+    });
+
+    const claudeResult = await provider.sendRequest(defaultOpts, AgentName.CLAUDE, makeToken());
+    const gptResult = await provider.sendRequest(defaultOpts, AgentName.GPT, makeToken());
+
+    expect(claudeResult).toBe('light-tier');
+    expect(gptResult).toBe('heavy-tier');
+    expect(vscode.lm.selectChatModels).toHaveBeenCalledWith(
+      expect.objectContaining({ family: 'gpt-4o-mini' }),
+    );
+  });
+
+  it('fails fast in strict mode when configured family is unavailable', async () => {
+    (vscode.lm.selectChatModels as jest.Mock).mockImplementation(({ family }: { family?: string }) => {
+      if (family === 'gpt-4') return Promise.resolve([]);
+      return Promise.resolve([makeModel(['fallback'])]);
+    });
+
+    const provider = new CopilotProvider();
+    provider.configureRouting({
+      defaultTier: 'heavy',
+      familyByAgent: { claude: 'gpt-4' },
+      strictFamilyMatch: true,
+    });
+
+    await expect(provider.sendRequest(defaultOpts, AgentName.CLAUDE, makeToken()))
+      .rejects.toBeInstanceOf(CopilotProviderError);
+  });
+});
+
 // ── selectModel — preferredFamily found ───────────────────────────────────────
 
 describe('CopilotProvider.selectModel — preferredFamily', () => {

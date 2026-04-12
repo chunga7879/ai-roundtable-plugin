@@ -44,6 +44,11 @@ const CONTEXT_LIMIT_TOKENS: Record<string, number> = {
 
 /** Rough chars-to-tokens ratio (4 chars ≈ 1 token). */
 const CHARS_PER_TOKEN = 4;
+const COPILOT_AVAILABLE_AGENTS: AgentName[] = [
+  AgentName.CLAUDE,
+  AgentName.GPT,
+  AgentName.GEMINI,
+];
 
 export class ChatPanel implements vscode.Disposable {
   private static instance: ChatPanel | undefined;
@@ -715,15 +720,7 @@ export class ChatPanel implements vscode.Disposable {
           config.deepseekApiKey,
       );
 
-      const availableAgents: AgentName[] =
-        config.providerMode === ProviderMode.COPILOT
-          ? [AgentName.CLAUDE, AgentName.GPT, AgentName.GEMINI, AgentName.DEEPSEEK]
-          : ([
-              config.anthropicApiKey ? AgentName.CLAUDE : null,
-              config.openaiApiKey ? AgentName.GPT : null,
-              config.googleApiKey ? AgentName.GEMINI : null,
-              config.deepseekApiKey ? AgentName.DEEPSEEK : null,
-            ].filter((a): a is AgentName => a !== null));
+      const availableAgents = this.resolveAvailableAgents(config);
 
       this.postMessage({
         type: 'configLoaded',
@@ -735,11 +732,29 @@ export class ChatPanel implements vscode.Disposable {
         payload: {
           providerMode: ProviderMode.COPILOT,
           hasApiKeys: false,
-          availableAgents: [AgentName.CLAUDE, AgentName.GPT, AgentName.GEMINI, AgentName.DEEPSEEK],
+          availableAgents: [...COPILOT_AVAILABLE_AGENTS],
           modelTier: 'heavy',
         },
       });
     }
+  }
+
+  private resolveAvailableAgents(config: {
+    providerMode: ProviderMode;
+    anthropicApiKey?: string;
+    openaiApiKey?: string;
+    googleApiKey?: string;
+    deepseekApiKey?: string;
+  }): AgentName[] {
+    if (config.providerMode === ProviderMode.COPILOT) {
+      return [...COPILOT_AVAILABLE_AGENTS];
+    }
+    return [
+      config.anthropicApiKey ? AgentName.CLAUDE : null,
+      config.openaiApiKey ? AgentName.GPT : null,
+      config.googleApiKey ? AgentName.GEMINI : null,
+      config.deepseekApiKey ? AgentName.DEEPSEEK : null,
+    ].filter((a): a is AgentName => a !== null);
   }
 
   private async enrichFileChanges(

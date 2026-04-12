@@ -121,6 +121,55 @@ describe('ConfigManager.getConfig', () => {
     expect(config.copilotModelFamily).toBe('gpt-4o');
   });
 
+  it('parses copilotAgentFamilies and ignores unsupported entries', async () => {
+    const cfg = mockWs.getConfiguration as jest.Mock;
+    cfg.mockReturnValue({
+      get: jest.fn((key: string) => {
+        if (key === 'copilotAgentFamilies') {
+          return {
+            claude: 'gpt-4o',
+            gpt: 'claude',
+            gemini: 'AUTO',
+            deepseek: 'invalid-model',
+            unknown: 'gpt-4o-mini',
+          };
+        }
+        return undefined;
+      }),
+    });
+    const manager = new ConfigManager(makeSecretStorage());
+    const config = await manager.getConfig();
+    expect(config.copilotAgentFamilies).toEqual({
+      claude: 'gpt-4o',
+      gpt: 'claude',
+    });
+  });
+
+  it('parses copilotAgentTiers and strict-family toggle', async () => {
+    const cfg = mockWs.getConfiguration as jest.Mock;
+    cfg.mockReturnValue({
+      get: jest.fn((key: string) => {
+        if (key === 'copilotAgentTiers') {
+          return {
+            claude: 'light',
+            gpt: 'heavy',
+            gemini: 'inherit',
+            deepseek: 'invalid',
+          };
+        }
+        if (key === 'copilotStrictAgentFamily') return true;
+        return undefined;
+      }),
+    });
+    const manager = new ConfigManager(makeSecretStorage());
+    const config = await manager.getConfig();
+    expect(config.copilotAgentTiers).toEqual({
+      claude: 'light',
+      gpt: 'heavy',
+    });
+    expect(config.copilotStrictAgentFamily).toBe(true);
+  });
+
   it('clamps runnerTimeout to min 10s', async () => {
     const cfg = mockWs.getConfiguration as jest.Mock;
     cfg.mockReturnValue({
@@ -464,7 +513,25 @@ describe('activate() — metrics commands', () => {
 
     expect(handler).toBeDefined();
     handler?.();
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await new Promise<void>((resolve, reject) => {
+      const timeoutAt = Date.now() + 500;
+      const poll = () => {
+        const called = (mockWin.showInformationMessage as jest.Mock).mock.calls.some(
+          (args) => typeof args[0] === 'string'
+            && args[0].includes('Metrics for this workspace were cleared'),
+        );
+        if (called) {
+          resolve();
+          return;
+        }
+        if (Date.now() >= timeoutAt) {
+          reject(new Error('Timed out waiting for clear-metrics confirmation message'));
+          return;
+        }
+        setTimeout(poll, 10);
+      };
+      poll();
+    });
 
     expect(mockWin.showInformationMessage).toHaveBeenCalledWith(
       expect.stringContaining('Metrics for this workspace were cleared'),

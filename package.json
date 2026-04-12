@@ -113,6 +113,7 @@
           "type": "string",
           "enum": [
             "auto",
+            "gpt-4o-mini",
             "gpt-4o",
             "gpt-4",
             "claude",
@@ -120,6 +121,7 @@
           ],
           "enumDescriptions": [
             "Automatically select the best available Copilot model (gpt-4o preferred)",
+            "GPT-4o mini (OpenAI) — fastest/lightweight option",
             "GPT-4o (OpenAI) — most capable, uses premium requests",
             "GPT-4 (OpenAI) — slightly older, uses premium requests",
             "Claude (Anthropic) — only available if your Copilot plan includes it",
@@ -127,6 +129,67 @@
           ],
           "default": "auto",
           "description": "Which model family to request when using GitHub Copilot. Only applies when Provider Mode is 'copilot'. Note: selecting Claude or Gemini here does NOT use your Anthropic/Google API keys — it requests that model through your Copilot subscription."
+        },
+        "aiRoundtable.copilotAgentFamilies": {
+          "type": "object",
+          "default": {},
+          "description": "Optional per-agent Copilot model family overrides. Keys: claude, gpt, gemini, deepseek. Values: auto | gpt-4o-mini | gpt-4o | gpt-4 | claude | gemini.",
+          "additionalProperties": false,
+          "properties": {
+            "claude": {
+              "type": "string",
+              "enum": ["auto", "gpt-4o-mini", "gpt-4o", "gpt-4", "claude", "gemini"],
+              "default": "auto"
+            },
+            "gpt": {
+              "type": "string",
+              "enum": ["auto", "gpt-4o-mini", "gpt-4o", "gpt-4", "claude", "gemini"],
+              "default": "auto"
+            },
+            "gemini": {
+              "type": "string",
+              "enum": ["auto", "gpt-4o-mini", "gpt-4o", "gpt-4", "claude", "gemini"],
+              "default": "auto"
+            },
+            "deepseek": {
+              "type": "string",
+              "enum": ["auto", "gpt-4o-mini", "gpt-4o", "gpt-4", "claude", "gemini"],
+              "default": "auto"
+            }
+          }
+        },
+        "aiRoundtable.copilotAgentTiers": {
+          "type": "object",
+          "default": {},
+          "description": "Optional per-agent tier overrides for Copilot mode. Keys: claude, gpt, gemini, deepseek. Values: inherit | heavy | light. If omitted/inherit, global aiRoundtable.modelTier is used.",
+          "additionalProperties": false,
+          "properties": {
+            "claude": {
+              "type": "string",
+              "enum": ["inherit", "heavy", "light"],
+              "default": "inherit"
+            },
+            "gpt": {
+              "type": "string",
+              "enum": ["inherit", "heavy", "light"],
+              "default": "inherit"
+            },
+            "gemini": {
+              "type": "string",
+              "enum": ["inherit", "heavy", "light"],
+              "default": "inherit"
+            },
+            "deepseek": {
+              "type": "string",
+              "enum": ["inherit", "heavy", "light"],
+              "default": "inherit"
+            }
+          }
+        },
+        "aiRoundtable.copilotStrictAgentFamily": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, fail the request if a configured per-agent Copilot family is unavailable instead of falling back to another family."
         },
         "aiRoundtable.modelTier": {
           "type": "string",

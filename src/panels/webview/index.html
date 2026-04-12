@@ -1129,7 +1129,7 @@
       /** @type {Array<{filePath: string, content: string, isNew: boolean}>} */
       let pendingFileChanges = [];
       /** @type {Set<string>} */
-      let availableAgentSet = new Set(['claude', 'gpt', 'gemini', 'deepseek']);
+      let availableAgentSet = new Set(['claude', 'gpt', 'gemini']);
 
       // ── DOM refs ───────────────────────────────────────────────────────────
       const configBanner = /** @type {HTMLElement} */ (document.getElementById('config-banner'));
@@ -2526,7 +2526,7 @@
             } else {
               configBanner.classList.remove('visible');
             }
-            availableAgentSet = new Set(message.payload.availableAgents || ['claude', 'gpt', 'gemini', 'deepseek']);
+            availableAgentSet = new Set(message.payload.availableAgents || ['claude', 'gpt', 'gemini']);
             updateAgentControls();
             setTierUI(message.payload.modelTier || 'heavy');
             break;

@@ -83,6 +83,9 @@ export interface WorkspaceFile {
 }
 
 export type ModelTier = 'light' | 'heavy';
+export type CopilotAgentName = AgentName.CLAUDE | AgentName.GPT | AgentName.GEMINI | AgentName.DEEPSEEK;
+export type CopilotAgentFamilyOverrides = Partial<Record<CopilotAgentName, string>>;
+export type CopilotAgentTierOverrides = Partial<Record<CopilotAgentName, ModelTier>>;
 
 export interface ExtensionConfig {
   providerMode: ProviderMode;
@@ -91,6 +94,9 @@ export interface ExtensionConfig {
   googleApiKey?: string;
   deepseekApiKey?: string;
   copilotModelFamily?: string;
+  copilotAgentFamilies?: CopilotAgentFamilyOverrides;
+  copilotAgentTiers?: CopilotAgentTierOverrides;
+  copilotStrictAgentFamily?: boolean;
   modelTier: ModelTier;
   runnerTimeoutMs: number;
   enableMetrics?: boolean;

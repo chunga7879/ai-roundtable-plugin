@@ -55,6 +55,10 @@ VS Code Extension Host
 - Requires an active GitHub Copilot subscription
 - Auto family order (heavy): `gpt-4o → gpt-4 → claude → gemini`
 - Auto family order (light): `gpt-4o-mini → gpt-4o → claude → gemini`
+- Optional per-agent routing settings:
+  - `aiRoundtable.copilotAgentFamilies` (per-role family override)
+  - `aiRoundtable.copilotAgentTiers` (per-role light/heavy override)
+  - `aiRoundtable.copilotStrictAgentFamily` (strict fail vs fallback)
 
 ### API Keys mode
 - Keys stored in `vscode.SecretStorage` (OS keychain — never in settings or logs)

@@ -2,7 +2,6 @@ import * as vscode from 'vscode';
 import * as cp from 'child_process';
 import * as crypto from 'crypto';
 import type {
-  AgentName,
   CommandOutput,
   ConversationTurn,
   ExtensionToWebviewMessage,
@@ -10,6 +9,7 @@ import type {
   RoundRequest,
   TokenUsage,
 } from '../types';
+import { AgentName, ProviderMode } from '../types';
 import type { RoundType } from '../types';
 import type { ProgressEvent } from '../agents/AgentRunner';
 import { AgentRunner } from '../agents/AgentRunner';
@@ -63,6 +63,7 @@ export type OrchestratorResult =
   | { status: 'error'; error: unknown };
 
 const EXEC_MAX_OUTPUT = 50_000;
+const COPILOT_AVAILABLE_AGENTS: AgentName[] = [AgentName.CLAUDE, AgentName.GPT, AgentName.GEMINI];
 
 /**
  * Owns all round-execution concerns: streaming state, cancellation,
@@ -118,6 +119,7 @@ export class RoundOrchestrator {
     let succeeded = false;
     try {
       const config = await this.configManager.getConfig();
+      this.assertAgentSelectionSupported(config, mainAgent, subAgents);
       const runner = this.buildAgentRunner(config);
       const workspaceContext = await this.workspaceReader.buildContext();
 
@@ -366,8 +368,13 @@ export class RoundOrchestrator {
 
   private buildAgentRunner(config: ExtensionConfig): AgentRunner {
     const copilotProvider = new CopilotProvider();
-    copilotProvider.setPreferredFamily(config.copilotModelFamily);
-    copilotProvider.setModelTier(config.modelTier);
+    copilotProvider.configureRouting({
+      defaultFamily: config.copilotModelFamily,
+      defaultTier: config.modelTier,
+      familyByAgent: config.copilotAgentFamilies,
+      tierByAgent: config.copilotAgentTiers,
+      strictFamilyMatch: config.copilotStrictAgentFamily === true,
+    });
     const apiKeyProvider = new ApiKeyProvider({
       anthropicApiKey: config.anthropicApiKey,
       openaiApiKey: config.openaiApiKey,
@@ -382,6 +389,29 @@ export class RoundOrchestrator {
       providerMode: config.providerMode,
       workspaceReader: this.workspaceReader,
     });
+  }
+
+  private assertAgentSelectionSupported(
+    config: ExtensionConfig,
+    mainAgent: AgentName,
+    subAgents: AgentName[],
+  ): void {
+    const availableAgents: AgentName[] = config.providerMode === ProviderMode.COPILOT
+      ? [...COPILOT_AVAILABLE_AGENTS]
+      : [
+          config.anthropicApiKey ? AgentName.CLAUDE : null,
+          config.openaiApiKey ? AgentName.GPT : null,
+          config.googleApiKey ? AgentName.GEMINI : null,
+          config.deepseekApiKey ? AgentName.DEEPSEEK : null,
+        ].filter((agent): agent is AgentName => agent !== null);
+
+    const selected = [mainAgent, ...subAgents];
+    const unsupported = selected.filter((agent, idx) => selected.indexOf(agent) === idx && !availableAgents.includes(agent));
+    if (unsupported.length === 0) {
+      return;
+    }
+    const providerLabel = config.providerMode === ProviderMode.COPILOT ? 'Copilot mode' : 'API Keys mode';
+    throw new Error(`${providerLabel} does not support selected agent(s): ${unsupported.join(', ')}.`);
   }
 
   private buildVerificationSummary(

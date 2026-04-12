@@ -127,6 +127,8 @@ The round selector appears at the top of the panel. Choose the round that matche
 
 Select the AI model that will do the primary work. If you have multiple API keys configured, you can choose any of them. If you only have Copilot, it will be the only option.
 
+In Copilot mode, available role agents are `Claude`, `GPT`, and `Gemini`. `DeepSeek` is available only in API Keys mode.
+
 **Which main agent to choose:**
 - **Claude** — strong at reasoning, long-context comprehension, and following complex instructions
 - **GPT** — reliable all-rounder, good at structured output
@@ -253,6 +255,11 @@ The **model tier** lets you trade response quality for speed and cost:
 - **Heavy** — uses the most capable model variant. Best quality, but slower and more expensive. Use for complex architecture decisions, security-sensitive code, or final reviews.
 
 Toggle the tier using the **Light / Heavy** selector in the panel. The current tier applies to all agents for the current session.
+
+If you use Copilot mode, you can optionally override tier/family per agent in Settings:
+- `aiRoundtable.copilotAgentFamilies` (`claude`, `gpt`, `gemini`, `deepseek`)
+- `aiRoundtable.copilotAgentTiers` (`heavy` / `light`, with global fallback)
+- `aiRoundtable.copilotStrictAgentFamily` (fail when configured family is unavailable)
 
 ---
 

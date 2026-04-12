@@ -200,6 +200,86 @@ describe('AgentRunner', () => {
       expect(seenOptions[1].enabledTools).toBeUndefined();
       expect(seenOptions[2].enabledTools).toEqual(['write_file', 'delete_file']);
     });
+
+    it('routes main=claude, sub=[gpt, gemini], reflection=claude in Copilot mode', async () => {
+      const calledAgents: AgentName[] = [];
+      let callCount = 0;
+      const copilotProvider = {
+        sendRequest: jest.fn().mockImplementation((_: unknown, agentName: AgentName) => {
+          calledAgents.push(agentName);
+          callCount++;
+          if (callCount === 1) {return Promise.resolve('Main response');}
+          if (agentName === AgentName.GPT || agentName === AgentName.GEMINI) {
+            return Promise.resolve(`${agentName} feedback`);
+          }
+          return Promise.resolve('Reflected response');
+        }),
+        isAvailable: jest.fn().mockResolvedValue(true),
+        invalidateModelCache: jest.fn(),
+      };
+
+      const runner = new AgentRunner({
+        copilotProvider: copilotProvider as never,
+        apiKeyProvider: makeApiKeyProvider() as never,
+        providerMode: ProviderMode.COPILOT,
+        workspaceReader: makeWorkspaceReader() as never,
+      });
+
+      const result = await runner.runRound(
+        makeRoundRequest({
+          mainAgent: AgentName.CLAUDE,
+          subAgents: [AgentName.GPT, AgentName.GEMINI],
+        }),
+        makeCancellationToken(),
+        jest.fn(),
+      );
+
+      expect(result.mainAgentResponse).toBe('Main response');
+      expect(result.reflectedResponse).toBe('Reflected response');
+      expect(result.subAgentVerifications).toHaveLength(2);
+      expect(copilotProvider.sendRequest).toHaveBeenCalledTimes(4);
+      expect(calledAgents[0]).toBe(AgentName.CLAUDE);
+      expect(calledAgents[3]).toBe(AgentName.CLAUDE);
+      expect(calledAgents.slice(1, 3).sort()).toEqual([AgentName.GEMINI, AgentName.GPT]);
+    });
+
+    it('routes main=gpt, sub=[claude], reflection=gpt in Copilot mode', async () => {
+      const calledAgents: AgentName[] = [];
+      let callCount = 0;
+      const copilotProvider = {
+        sendRequest: jest.fn().mockImplementation((_: unknown, agentName: AgentName) => {
+          calledAgents.push(agentName);
+          callCount++;
+          if (callCount === 1) {return Promise.resolve('Main GPT response');}
+          if (callCount === 2) {return Promise.resolve('Claude verifier feedback');}
+          return Promise.resolve('GPT reflected response');
+        }),
+        isAvailable: jest.fn().mockResolvedValue(true),
+        invalidateModelCache: jest.fn(),
+      };
+
+      const runner = new AgentRunner({
+        copilotProvider: copilotProvider as never,
+        apiKeyProvider: makeApiKeyProvider() as never,
+        providerMode: ProviderMode.COPILOT,
+        workspaceReader: makeWorkspaceReader() as never,
+      });
+
+      const result = await runner.runRound(
+        makeRoundRequest({
+          mainAgent: AgentName.GPT,
+          subAgents: [AgentName.CLAUDE],
+        }),
+        makeCancellationToken(),
+        jest.fn(),
+      );
+
+      expect(result.mainAgentResponse).toBe('Main GPT response');
+      expect(result.reflectedResponse).toBe('GPT reflected response');
+      expect(result.subAgentVerifications).toHaveLength(1);
+      expect(copilotProvider.sendRequest).toHaveBeenCalledTimes(3);
+      expect(calledAgents).toEqual([AgentName.GPT, AgentName.CLAUDE, AgentName.GPT]);
+    });
   });
 
   describe('sub-agent failure tolerance', () => {

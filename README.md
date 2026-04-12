@@ -57,6 +57,30 @@ AI Roundtable: Configure Provider
 
 Choose **GitHub Copilot** (default) or **API Keys**. If you choose API Keys, you will be prompted to enter keys for each provider — all keys are stored in the OS keychain via `vscode.SecretStorage`, never in settings files.
 
+### Copilot per-agent routing (optional)
+
+By default, Copilot mode uses one global family/tier preference. You can override this per agent in VS Code settings:
+
+```json
+{
+  "aiRoundtable.copilotModelFamily": "auto",
+  "aiRoundtable.modelTier": "heavy",
+  "aiRoundtable.copilotAgentFamilies": {
+    "gpt": "gpt-4o",
+    "claude": "claude"
+  },
+  "aiRoundtable.copilotAgentTiers": {
+    "gpt": "heavy",
+    "claude": "light"
+  },
+  "aiRoundtable.copilotStrictAgentFamily": false
+}
+```
+
+- `copilotAgentFamilies`: override requested family per role agent (`claude`, `gpt`, `gemini`, `deepseek`)
+- `copilotAgentTiers`: override light/heavy per role agent
+- `copilotStrictAgentFamily=true`: fail fast if configured family is unavailable (no fallback)
+
 ---
 
 ## Usage
@@ -170,7 +194,7 @@ This can happen if the Copilot API is temporarily unresponsive. The extension wi
 
 ## Known limitations
 
-- **Copilot mode uses a single model for all agents** — sub-agents and main agent are the same underlying Copilot model, differentiated only by their system prompt role.
+- **Copilot model selection is best-effort** — even with per-agent family/tier preferences, VS Code Copilot may still resolve to a different available model under the requested family.
 - **Conversation history resets when you switch round type** — switching from Developer to Reviewer starts a new conversation.
 - **Max 80 workspace files** — large projects will still have some files omitted. Open the most relevant files before sending a request.
 - **Shell command timeout: configurable (default 60 seconds, max 600)** — long-running commands may be cut off.

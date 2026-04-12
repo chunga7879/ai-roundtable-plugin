@@ -1,6 +1,12 @@
 import * as vscode from 'vscode';
-import type { ExtensionConfig, ModelTier } from './types';
-import { ProviderMode } from './types';
+import type {
+  CopilotAgentFamilyOverrides,
+  CopilotAgentName,
+  CopilotAgentTierOverrides,
+  ExtensionConfig,
+  ModelTier,
+} from './types';
+import { AgentName, ProviderMode } from './types';
 import { ChatPanel } from './panels/ChatPanel';
 import { ConfigurationError } from './errors';
 import { RoundMetricsLogger } from './metrics/RoundMetricsLogger';
@@ -21,6 +27,19 @@ const COMMANDS = {
 
 /** Minimum plausible length for any API key. */
 const MIN_API_KEY_LENGTH = 10;
+const COPILOT_AGENT_NAMES: readonly CopilotAgentName[] = [
+  AgentName.CLAUDE,
+  AgentName.GPT,
+  AgentName.GEMINI,
+  AgentName.DEEPSEEK,
+];
+const COPILOT_MODEL_FAMILY_SET = new Set([
+  'gpt-4o-mini',
+  'gpt-4o',
+  'gpt-4',
+  'claude',
+  'gemini',
+]);
 
 export class ConfigManager {
   constructor(private readonly secretStorage: vscode.SecretStorage) {}
@@ -33,6 +52,13 @@ export class ConfigManager {
 
     const rawCopilotFamily = vsConfig.get<string>('copilotModelFamily') ?? 'auto';
     const copilotModelFamily = rawCopilotFamily === 'auto' ? undefined : rawCopilotFamily;
+    const copilotAgentFamilies = this.parseCopilotAgentFamilies(
+      vsConfig.get<unknown>('copilotAgentFamilies'),
+    );
+    const copilotAgentTiers = this.parseCopilotAgentTiers(
+      vsConfig.get<unknown>('copilotAgentTiers'),
+    );
+    const copilotStrictAgentFamily = vsConfig.get<boolean>('copilotStrictAgentFamily') === true;
 
     const rawTier = vsConfig.get<string>('modelTier');
     const modelTier: ModelTier = rawTier === 'light' ? 'light' : 'heavy';
@@ -67,10 +93,54 @@ export class ConfigManager {
       googleApiKey: googleApiKey ?? undefined,
       deepseekApiKey: deepseekApiKey ?? undefined,
       copilotModelFamily,
+      copilotAgentFamilies,
+      copilotAgentTiers,
+      copilotStrictAgentFamily,
       modelTier,
       runnerTimeoutMs,
       enableMetrics,
     };
+  }
+
+  private parseCopilotAgentFamilies(raw: unknown): CopilotAgentFamilyOverrides | undefined {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      return undefined;
+    }
+    const input = raw as Record<string, unknown>;
+    const parsed: CopilotAgentFamilyOverrides = {};
+    for (const agent of COPILOT_AGENT_NAMES) {
+      const value = input[agent];
+      if (typeof value !== 'string') {
+        continue;
+      }
+      const normalized = value.trim().toLowerCase();
+      if (!normalized || normalized === 'auto') {
+        continue;
+      }
+      if (COPILOT_MODEL_FAMILY_SET.has(normalized)) {
+        parsed[agent] = normalized;
+      }
+    }
+    return Object.keys(parsed).length > 0 ? parsed : undefined;
+  }
+
+  private parseCopilotAgentTiers(raw: unknown): CopilotAgentTierOverrides | undefined {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      return undefined;
+    }
+    const input = raw as Record<string, unknown>;
+    const parsed: CopilotAgentTierOverrides = {};
+    for (const agent of COPILOT_AGENT_NAMES) {
+      const value = input[agent];
+      if (typeof value !== 'string') {
+        continue;
+      }
+      const normalized = value.trim().toLowerCase();
+      if (normalized === 'heavy' || normalized === 'light') {
+        parsed[agent] = normalized;
+      }
+    }
+    return Object.keys(parsed).length > 0 ? parsed : undefined;
   }
 
   async setModelTier(tier: ModelTier): Promise<void> {

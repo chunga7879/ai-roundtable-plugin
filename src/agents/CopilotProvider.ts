@@ -1,5 +1,13 @@
 import * as vscode from 'vscode';
-import type { AgentName, ConversationTurn, ModelTier, ToolCall, ToolResult } from '../types';
+import type {
+  AgentName,
+  ConversationTurn,
+  CopilotAgentFamilyOverrides,
+  CopilotAgentTierOverrides,
+  ModelTier,
+  ToolCall,
+  ToolResult,
+} from '../types';
 import { ProviderError } from '../errors';
 
 export interface LLMRequestOptions {
@@ -60,6 +68,13 @@ const MODEL_SELECTION_TIMEOUT_MS = 30_000;
 const MAX_TOOL_LOOP_TURNS = 12;
 /** Break when the same all-error tool-call batch repeats this many times. */
 const MAX_REPEATED_ERROR_BATCHES = 2;
+const COPILOT_MODEL_FAMILY_SET = new Set([
+  'gpt-4o-mini',
+  'gpt-4o',
+  'gpt-4',
+  'claude',
+  'gemini',
+]);
 
 type XmlToolCall = ReturnType<typeof extractXmlToolCalls>[number];
 
@@ -73,23 +88,100 @@ interface ParsedCopilotResponse {
   toolCallParts: vscode.LanguageModelToolCallPart[];
 }
 
+export interface CopilotRoutingConfig {
+  defaultFamily?: string;
+  defaultTier: ModelTier;
+  familyByAgent?: CopilotAgentFamilyOverrides;
+  tierByAgent?: CopilotAgentTierOverrides;
+  strictFamilyMatch?: boolean;
+}
+
 export class CopilotProvider {
-  private cachedModel: vscode.LanguageModelChat | undefined;
-  private preferredFamily: string | undefined;
-  private modelTier: ModelTier = 'heavy';
+  private readonly cachedModels = new Map<string, vscode.LanguageModelChat>();
+  private routing: CopilotRoutingConfig = { defaultTier: 'heavy' };
 
   setPreferredFamily(family: string | undefined): void {
-    if (this.preferredFamily !== family) {
-      this.preferredFamily = family;
-      this.cachedModel = undefined;
+    const normalized = this.normalizeFamily(family);
+    if (this.routing.defaultFamily === normalized) {
+      return;
     }
+    this.routing = { ...this.routing, defaultFamily: normalized };
+    this.invalidateModelCache();
   }
 
   setModelTier(tier: ModelTier): void {
-    if (this.modelTier !== tier) {
-      this.modelTier = tier;
-      this.cachedModel = undefined;
+    if (this.routing.defaultTier !== tier) {
+      this.routing = { ...this.routing, defaultTier: tier };
+      this.invalidateModelCache();
     }
+  }
+
+  configureRouting(config: CopilotRoutingConfig): void {
+    this.routing = {
+      defaultFamily: this.normalizeFamily(config.defaultFamily),
+      defaultTier: config.defaultTier,
+      familyByAgent: this.normalizeFamilyOverrides(config.familyByAgent),
+      tierByAgent: this.normalizeTierOverrides(config.tierByAgent),
+      strictFamilyMatch: config.strictFamilyMatch === true,
+    };
+    this.invalidateModelCache();
+  }
+
+  private normalizeFamily(family: string | undefined): string | undefined {
+    if (!family) {
+      return undefined;
+    }
+    const normalized = family.trim().toLowerCase();
+    if (!normalized || normalized === 'auto') {
+      return undefined;
+    }
+    return COPILOT_MODEL_FAMILY_SET.has(normalized) ? normalized : undefined;
+  }
+
+  private normalizeFamilyOverrides(
+    familyByAgent: CopilotAgentFamilyOverrides | undefined,
+  ): CopilotAgentFamilyOverrides | undefined {
+    if (!familyByAgent) {
+      return undefined;
+    }
+    const normalized: CopilotAgentFamilyOverrides = {};
+    for (const [agentName, family] of Object.entries(familyByAgent)) {
+      if (typeof family !== 'string') {
+        continue;
+      }
+      const clean = this.normalizeFamily(family);
+      if (!clean) {
+        continue;
+      }
+      normalized[agentName as keyof CopilotAgentFamilyOverrides] = clean;
+    }
+    return Object.keys(normalized).length > 0 ? normalized : undefined;
+  }
+
+  private normalizeTierOverrides(
+    tierByAgent: CopilotAgentTierOverrides | undefined,
+  ): CopilotAgentTierOverrides | undefined {
+    if (!tierByAgent) {
+      return undefined;
+    }
+    const normalized: CopilotAgentTierOverrides = {};
+    for (const [agentName, tier] of Object.entries(tierByAgent)) {
+      if (tier === 'heavy' || tier === 'light') {
+        normalized[agentName as keyof CopilotAgentTierOverrides] = tier;
+      }
+    }
+    return Object.keys(normalized).length > 0 ? normalized : undefined;
+  }
+
+  private isRoutedAgentName(
+    agentName: AgentName,
+  ): agentName is keyof CopilotAgentFamilyOverrides & keyof CopilotAgentTierOverrides {
+    return (
+      agentName === 'claude'
+      || agentName === 'gpt'
+      || agentName === 'gemini'
+      || agentName === 'deepseek'
+    );
   }
 
   async isAvailable(): Promise<boolean> {
@@ -101,9 +193,18 @@ export class CopilotProvider {
     }
   }
 
-  private async selectModel(): Promise<vscode.LanguageModelChat> {
-    if (this.cachedModel) {
-      return this.cachedModel;
+  private async selectModel(agentName: AgentName): Promise<vscode.LanguageModelChat> {
+    const routedAgent = this.isRoutedAgentName(agentName) ? agentName : undefined;
+    const agentFamily = routedAgent ? this.routing.familyByAgent?.[routedAgent] : undefined;
+    const preferredFamily = this.normalizeFamily(agentFamily) ?? this.routing.defaultFamily;
+    const modelTier = routedAgent
+      ? this.routing.tierByAgent?.[routedAgent] ?? this.routing.defaultTier
+      : this.routing.defaultTier;
+    const strictFamilyMatch = this.routing.strictFamilyMatch === true;
+    const cacheKey = `${agentName}|${preferredFamily ?? 'auto'}|${modelTier}|${strictFamilyMatch ? 'strict' : 'relaxed'}`;
+    const cachedModel = this.cachedModels.get(cacheKey);
+    if (cachedModel) {
+      return cachedModel;
     }
 
     const selectWithTimeout = <T>(thenable: Thenable<T>): Promise<T> => {
@@ -126,14 +227,15 @@ export class CopilotProvider {
     };
 
     // If user specified a preferred family, try it first
-    if (this.preferredFamily) {
+    if (preferredFamily) {
       try {
         const models = await selectWithTimeout(
-          vscode.lm.selectChatModels({ vendor: 'copilot', family: this.preferredFamily }),
+          vscode.lm.selectChatModels({ vendor: 'copilot', family: preferredFamily }),
         );
         if (models.length > 0) {
-          this.cachedModel = models[0];
-          return this.cachedModel;
+          const selected = models[0];
+          this.cachedModels.set(cacheKey, selected);
+          return selected;
         }
         // Preferred family not available — fall through to auto selection
       } catch (err) {
@@ -141,11 +243,20 @@ export class CopilotProvider {
           throw err;
         }
       }
+      if (strictFamilyMatch) {
+        throw new CopilotProviderError(
+          `No Copilot model available for family "${preferredFamily}" (agent: ${agentName}). ` +
+          'Either change aiRoundtable.copilotAgentFamilies or disable aiRoundtable.copilotStrictAgentFamily.',
+        );
+      }
     }
 
     // Auto selection: try preferred model families in order
-    const familyList = this.modelTier === 'light' ? COPILOT_LIGHT_FAMILIES : COPILOT_HEAVY_FAMILIES;
+    const familyList = modelTier === 'light' ? COPILOT_LIGHT_FAMILIES : COPILOT_HEAVY_FAMILIES;
     for (const family of familyList) {
+      if (preferredFamily && family === preferredFamily) {
+        continue;
+      }
       let models: vscode.LanguageModelChat[];
       try {
         models = await selectWithTimeout(
@@ -158,8 +269,9 @@ export class CopilotProvider {
         continue;
       }
       if (models.length > 0) {
-        this.cachedModel = models[0];
-        return this.cachedModel;
+        const selected = models[0];
+        this.cachedModels.set(cacheKey, selected);
+        return selected;
       }
     }
 
@@ -183,8 +295,9 @@ export class CopilotProvider {
       );
     }
 
-    this.cachedModel = anyModels[0];
-    return this.cachedModel;
+    const selected = anyModels[0];
+    this.cachedModels.set(cacheKey, selected);
+    return selected;
   }
 
   async sendRequest(
@@ -192,7 +305,7 @@ export class CopilotProvider {
     agentName: AgentName,
     cancellationToken: vscode.CancellationToken,
   ): Promise<string> {
-    const model = await this.selectModel();
+    const model = await this.selectModel(agentName);
     const messages = this.buildMessages(options);
     const enabledToolNames = this.resolveEnabledTools(options);
     const enabledToolSet = new Set(enabledToolNames);
@@ -625,6 +738,6 @@ export class CopilotProvider {
   }
 
   invalidateModelCache(): void {
-    this.cachedModel = undefined;
+    this.cachedModels.clear();
   }
 }
