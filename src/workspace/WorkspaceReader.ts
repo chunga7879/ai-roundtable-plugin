@@ -7,8 +7,8 @@ import {
   resolveWorkspacePath as resolveWorkspacePathWithPrefix,
 } from './WorkspacePath';
 
-const MAX_FILE_SIZE_BYTES = 50_000;
-const MAX_FILES_TO_INCLUDE = 50;
+const MAX_FILE_SIZE_BYTES = 80_000;
+const MAX_FILES_TO_INCLUDE = 80;
 
 const EXCLUDED_DIRS = new Set([
   'node_modules',
@@ -123,7 +123,7 @@ const EXTENSION_TO_LANGUAGE: Readonly<Record<string, string>> = {
 };
 
 /** Maximum number of tool-initiated file reads per agent turn. */
-export const MAX_TOOL_CALLS = 100;
+export const MAX_TOOL_CALLS = 140;
 
 /** Re-exported for backwards compatibility */
 export class WorkspaceReaderError extends WorkspaceError {

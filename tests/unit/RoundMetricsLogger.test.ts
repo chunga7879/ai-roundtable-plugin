@@ -170,6 +170,77 @@ describe('RoundMetricsLogger persistence', () => {
     expect(records.length).toBe(2000);
     expect(records[records.length - 1]?.roundType).toBe(RoundType.QA);
   });
+
+  it('returns only the most recent records when readAll limit is smaller than stored count', async () => {
+    const logger = new RoundMetricsLogger(vscode.Uri.file(storageDir));
+    const metricsFile = metricsFilePath(storageDir);
+    const records = [
+      makeRecord({ timestamp: 1, roundType: RoundType.DEVELOPER }),
+      makeRecord({ timestamp: 2, roundType: RoundType.QA }),
+      makeRecord({ timestamp: 3, roundType: RoundType.DEVOPS }),
+    ];
+
+    await fs.mkdir(path.dirname(metricsFile), { recursive: true });
+    await fs.writeFile(metricsFile, records.map((r) => JSON.stringify(r)).join('\n') + '\n', 'utf8');
+
+    const recent = await logger.readAll(2);
+    expect(recent).toHaveLength(2);
+    expect(recent.map((r) => r.roundType)).toEqual([RoundType.QA, RoundType.DEVOPS]);
+  });
+
+  it('ignores malformed or schema-invalid lines when reading records', async () => {
+    const logger = new RoundMetricsLogger(vscode.Uri.file(storageDir));
+    const metricsFile = metricsFilePath(storageDir);
+    const valid = makeRecord({ timestamp: 100, roundType: RoundType.REVIEWER });
+
+    const lines = [
+      '{',
+      JSON.stringify([]),
+      JSON.stringify({ ...valid, version: 2 }),
+      JSON.stringify({ ...valid, subAgentsConfigured: '1' }),
+      JSON.stringify({ ...valid, status: 'pending' }),
+      JSON.stringify({ ...valid, roundType: 123 }),
+      JSON.stringify(valid),
+    ];
+
+    await fs.mkdir(path.dirname(metricsFile), { recursive: true });
+    await fs.writeFile(metricsFile, lines.join('\n') + '\n', 'utf8');
+
+    const parsed = await logger.readAll(100);
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0].roundType).toBe(RoundType.REVIEWER);
+  });
+
+  it('builds markdown report from persisted records', async () => {
+    const logger = new RoundMetricsLogger(vscode.Uri.file(storageDir));
+    const metricsFile = metricsFilePath(storageDir);
+    const records = [
+      makeRecord({ timestamp: 1, subAgentsConfigured: 0 }),
+      makeRecord({ timestamp: 2, subAgentsConfigured: 1, reflectionUsed: true, verifierIssuesTotal: 2, consensusIssueCount: 1 }),
+    ];
+
+    await fs.mkdir(path.dirname(metricsFile), { recursive: true });
+    await fs.writeFile(metricsFile, records.map((r) => JSON.stringify(r)).join('\n') + '\n', 'utf8');
+
+    const report = await logger.buildMarkdownReport(10);
+    expect(report.summary.totalRuns).toBe(2);
+    expect(report.markdown).toContain('Total runs analyzed: 2');
+    expect(report.markdown).toContain('Single agent (0 sub)');
+  });
+
+  it('removes metrics file when prune leaves no valid records', async () => {
+    const logger = new RoundMetricsLogger(vscode.Uri.file(storageDir));
+    const metricsFile = metricsFilePath(storageDir);
+    const oldRecord = makeRecord({ timestamp: Date.now() - THIRTY_ONE_DAYS_MS });
+
+    await fs.mkdir(path.dirname(metricsFile), { recursive: true });
+    await fs.writeFile(metricsFile, `${JSON.stringify(oldRecord)}\n`, 'utf8');
+
+    const internals = logger as unknown as { pruneStorage: (nowMs: number) => Promise<void> };
+    await internals.pruneStorage(Date.now());
+
+    await expect(fs.stat(metricsFile)).rejects.toThrow();
+  });
 });
 
 function makeRecord(overrides: Partial<RoundRunMetricRecord> = {}): RoundRunMetricRecord {

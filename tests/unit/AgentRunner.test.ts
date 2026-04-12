@@ -1212,7 +1212,7 @@ describe('AgentRunner', () => {
       const copilotProvider = {
         sendRequest: jest.fn().mockImplementation(async (opts: { onToolCall?: (tc: ToolCall) => Promise<ToolResult> }) => {
           if (opts.onToolCall) {
-            for (let i = 0; i < 105; i++) {
+            for (let i = 0; i < 145; i++) {
               const result = await opts.onToolCall({ id: `t${i}`, name: 'read_file', filePath: `file${i}.ts` });
               if (result.isError && result.content.includes('limit')) {
                 toolCallCount++;
@@ -1241,7 +1241,7 @@ describe('AgentRunner', () => {
       // Some calls should have hit the limit
       expect(toolCallCount).toBeGreaterThan(0);
       // workspaceReader should have been called at most MAX_TOOL_CALLS times
-      expect(workspaceReader.readFileForTool.mock.calls.length).toBeLessThanOrEqual(100);
+      expect(workspaceReader.readFileForTool.mock.calls.length).toBeLessThanOrEqual(140);
     });
 
     it('readFileForTool error result is NOT cached', async () => {

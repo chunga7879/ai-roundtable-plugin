@@ -138,9 +138,9 @@ describe('WorkspaceReader.readFileForTool — truncated file', () => {
   beforeEach(() => setupRoot());
   afterEach(teardown);
 
-  it('includes truncation notice for files over 50KB', async () => {
-    const largeContent = 'x'.repeat(60_000);
-    mockWs.fs.stat = jest.fn().mockResolvedValue({ size: 60_000 });
+  it('includes truncation notice for files over 80KB', async () => {
+    const largeContent = 'x'.repeat(90_000);
+    mockWs.fs.stat = jest.fn().mockResolvedValue({ size: 90_000 });
     mockWs.fs.readFile = jest.fn().mockResolvedValue(Buffer.from(largeContent));
 
     const reader = new WorkspaceReader();

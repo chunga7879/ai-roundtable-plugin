@@ -17,25 +17,33 @@ The number of sub-agents selected determines which steps run and how the pipelin
 ```
 VS Code Extension Host
 ├── extension.ts           ← Activation, command registration, ConfigManager
+├── errors.ts              ← Typed error hierarchy
 ├── panels/
 │   ├── ChatPanel.ts       ← Webview panel lifecycle, message routing
 │   ├── RoundOrchestrator.ts ← Coordinates pipeline per round turn
 │   └── webview/index.html ← Chat UI (vanilla JS, sandboxed webview)
 ├── agents/
-│   ├── AgentRunner.ts     ← 3-step pipeline (main → sub verify → reflect)
+│   ├── AgentRunner.ts     ← High-level round runner
+│   ├── RoundExecutionStages.ts ← Stage execution + tool handling policy
 │   ├── CopilotProvider.ts ← vscode.lm API (GitHub Copilot)
 │   └── ApiKeyProvider.ts  ← Direct HTTPS to Anthropic / OpenAI / Google / DeepSeek
+├── metrics/
+│   └── RoundMetricsLogger.ts ← Optional local A/B metrics logging/reporting
 ├── workspace/
 │   ├── WorkspaceReader.ts ← Collects open/visible/workspace files as context
-│   └── WorkspaceWriter.ts ← Parses file writes, applies WorkspaceEdit
+│   ├── WorkspaceWriter.ts ← Applies WorkspaceEdit + diff previews
+│   ├── WorkspaceRootResolver.ts ← Multi-root workspace targeting
+│   ├── WorkspacePath.ts   ← Path normalization/formatting helpers
+│   └── CommandSanitizer.ts ← run_command normalization/safety helpers
 ├── sessions/
 │   └── SessionManager.ts  ← Persists and restores conversation history
+├── verification/
+│   └── issueParser.ts     ← Extracts consensus issues from verifier outputs
 ├── prompts/
 │   ├── roundPrompts.ts        ← Prompt builders (main/sub/reflection)
 │   ├── roundPromptCatalog.ts  ← Round-specific expertise/instructions
 │   └── roundPromptPolicies.ts ← Shared tool/reflection/sub-agent policies
-├── types/index.ts         ← Shared types + webview input validators
-└── errors.ts              ← Typed error hierarchy
+└── types/index.ts         ← Shared types + webview input validators
 ```
 
 ---
@@ -45,7 +53,8 @@ VS Code Extension Host
 ### GitHub Copilot mode
 - Uses `vscode.lm` API — no API keys needed
 - Requires an active GitHub Copilot subscription
-- Model family order: `gpt-4o → gpt-4 → claude → gemini → any`
+- Auto family order (heavy): `gpt-4o → gpt-4 → claude → gemini`
+- Auto family order (light): `gpt-4o-mini → gpt-4o → claude → gemini`
 
 ### API Keys mode
 - Keys stored in `vscode.SecretStorage` (OS keychain — never in settings or logs)
@@ -53,10 +62,10 @@ VS Code Extension Host
 
 | Agent | Provider | Model |
 |---|---|---|
-| `claude` | Anthropic | `claude-sonnet-4-6` |
-| `gpt` | OpenAI | `gpt-4o` |
-| `gemini` | Google | `gemini-1.5-pro` |
-| `deepseek` | DeepSeek | `deepseek-coder` |
+| `claude` | Anthropic | heavy: `claude-sonnet-4-6` / light: `claude-haiku-4-5-20251001` |
+| `gpt` | OpenAI | heavy: `gpt-4o` / light: `gpt-4o-mini` |
+| `gemini` | Google | auto-selects from heavy/light candidate families |
+| `deepseek` | DeepSeek | heavy: `deepseek-coder` / light: `deepseek-chat` |
 
 Agents without a configured key are automatically disabled in the UI.
 
@@ -427,7 +436,7 @@ Sub-agents independently verify accuracy across different parts of the docs. All
 Agent calls write_file tool during Step 1 and/or Step 3
   → Normalized path (.. and absolute paths rejected)
   → Deduplicated (last write wins per path)
-  → Max 50 files total
+  → Reflection writes restricted to Step-1-written paths and capped per turn
 
 ChatPanel enriches isNew flag (stat() each file path)
   → Webview shows "Proposed File Changes" panel
@@ -464,7 +473,7 @@ User clicks a file → VS Code diff preview (current vs proposed)
 |---|---|
 | API keys | `vscode.SecretStorage` — never in settings or logs |
 | Webview input | Validated before dispatch (typed, length-checked, path-traversal-rejected) |
-| File paths from agent | `..` rejected, absolute paths rejected (2 layers: parser + handler) |
+| File paths from agent | `..` rejected, absolute paths rejected (tool handler + apply validation) |
 | Workspace traversal | `path.relative` check prevents symlink escapes |
 | Webview XSS | `textContent` only (no `innerHTML`), strict CSP with per-session nonce |
 | Error messages | Truncated to 300 chars, never include stack traces or API keys |
@@ -546,11 +555,11 @@ Reviewer round (Claude main, GPT sub)
 Open source file + its test file in VS Code
 
 QA round (Claude main)
-  "Add missing branch coverage for parseFileChanges"
+  "Add missing branch coverage for WorkspaceWriter.applyChanges"
   → read_file: src/workspace/WorkspaceWriter.ts
-  → read_file: tests/unit/WorkspaceWriter.test.ts
-  → write_file: tests/unit/WorkspaceWriter.test.ts → apply
-  → "Run verification command? npx jest --coverage tests/unit/WorkspaceWriter.test.ts" dialog
+  → read_file: tests/unit/WorkspaceWriter.class.test.ts
+  → write_file: tests/unit/WorkspaceWriter.class.test.ts → apply
+  → "Run verification command? npx jest --coverage tests/unit/WorkspaceWriter.class.test.ts" dialog
      → Approve → identify remaining gaps → fix and retry
 ```
 

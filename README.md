@@ -37,6 +37,16 @@ npm run quality:check  # lint + coverage gate
 
 Press `F5` in VS Code to launch the Extension Development Host.
 
+### Development scripts
+
+```bash
+npm run compile             # compile extension
+npm run compile:test:vscode # compile VS Code integration test entrypoint
+npm run test                # jest unit/integration tests
+npm run test:vscode         # launch VS Code extension test host
+npm run quality:check       # lint + jest coverage
+```
+
 ### Configure provider
 
 Open the command palette (`Cmd+Shift+P`) and run:
@@ -87,6 +97,13 @@ For Developer and QA rounds, the AI outputs a `VERIFY:` token at the end of its 
 | **DevOps** | Dockerfile, CI/CD pipelines, environment configuration |
 | **Documentation** | Generating README, API docs, CHANGELOG |
 
+### Metrics commands (optional)
+
+If `aiRoundtable.enableMetrics` is enabled in settings, you can use:
+
+- `AI Roundtable: Show A/B Report`
+- `AI Roundtable: Clear Metrics`
+
 ---
 
 ## Project structure
@@ -101,23 +118,33 @@ src/
 │   ├── roundPromptCatalog.ts ← Round-specific expertise/instructions
 │   └── roundPromptPolicies.ts← Shared tool/reflection/sub-agent policies
 ├── agents/
-│   ├── AgentRunner.ts    ← 3-step pipeline (main → sub-verify → reflect) + VERIFY: parsing
+│   ├── AgentRunner.ts    ← 3-step pipeline orchestration + VERIFY: extraction
+│   ├── RoundExecutionStages.ts ← Stage execution (main/verify/reflect) + tool handlers
 │   ├── CopilotProvider.ts← vscode.lm API (GitHub Copilot)
-│   └── ApiKeyProvider.ts ← Direct HTTPS: Anthropic / OpenAI / Google / DeepSeek
+│   ├── ApiKeyProvider.ts ← Direct HTTPS: Anthropic / OpenAI / Google / DeepSeek
+│   └── index.ts          ← Agent module exports
+├── metrics/
+│   └── RoundMetricsLogger.ts ← Local run metrics logger + markdown summary
 ├── workspace/
-│   ├── WorkspaceReader.ts← Collects open files as AI context
-│   └── WorkspaceWriter.ts← Applies file writes and deletes via WorkspaceEdit
+│   ├── WorkspaceReader.ts      ← Collects workspace context and handles read_file
+│   ├── WorkspaceWriter.ts      ← Applies file writes/deletes and diff previews
+│   ├── WorkspaceRootResolver.ts← Resolves multi-root workspace targets
+│   ├── WorkspacePath.ts        ← Path formatting/resolution helpers
+│   └── CommandSanitizer.ts     ← Normalizes/guards run_command execution
 ├── sessions/
 │   └── SessionManager.ts ← Persists conversation history across sessions
+├── verification/
+│   └── issueParser.ts    ← Extracts consensus issues from verifier output
 └── panels/
-    ├── ChatPanel.ts      ← Webview lifecycle, message routing, post-Apply verification flow
+    ├── ChatPanel.ts      ← Webview lifecycle, message routing, apply/verify flow
     ├── RoundOrchestrator.ts ← Coordinates pipeline per round type
     └── webview/
         └── index.html    ← Chat UI (vanilla JS, sandboxed)
 tests/
 ├── __mocks__/vscode.ts   ← VS Code API mock for Jest
 ├── unit/                 ← Unit tests
-└── integration/          ← Integration tests for ChatPanel message routing
+├── integration/          ← Integration tests for ChatPanel and pipeline behavior
+└── vscode/               ← VS Code extension integration test entrypoint
 ```
 
 ---
@@ -145,7 +172,7 @@ This can happen if the Copilot API is temporarily unresponsive. The extension wi
 
 - **Copilot mode uses a single model for all agents** — sub-agents and main agent are the same underlying Copilot model, differentiated only by their system prompt role.
 - **Conversation history resets when you switch round type** — switching from Developer to Reviewer starts a new conversation.
-- **Max 50 workspace files** — large projects will have files truncated or omitted. Open the most relevant files before sending a request.
+- **Max 80 workspace files** — large projects will still have some files omitted. Open the most relevant files before sending a request.
 - **Shell command timeout: configurable (default 60 seconds, max 600)** — long-running commands may be cut off.
-- **Max 50 KB per file** — files larger than 50 KB are truncated when read by the AI.
-- **Max 100 tool calls per turn** — read_file, write_file, delete_file, and run_command calls combined.
+- **Max 80 KB per file** — files larger than 80 KB are truncated when read by the AI.
+- **Max 140 read_file calls per turn** — uncached tool-driven file reads are capped per turn.

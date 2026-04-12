@@ -134,7 +134,7 @@ describe('WorkspaceReader', () => {
       expect(context.files[0].path).toBe('app.ts');
     });
 
-    it('truncates files larger than MAX_FILE_SIZE_BYTES (50000 bytes)', async () => {
+    it('truncates files larger than MAX_FILE_SIZE_BYTES (80000 bytes)', async () => {
       setupWorkspaceRoot('/workspace');
       mockWorkspace.fs.readDirectory = jest.fn().mockResolvedValue([
         ['large.ts', FileType.File],
@@ -149,10 +149,10 @@ describe('WorkspaceReader', () => {
       expect(context.files[0].content).toBe('');
     });
 
-    it('respects MAX_FILES_TO_INCLUDE (50 files)', async () => {
+    it('respects MAX_FILES_TO_INCLUDE (80 files)', async () => {
       setupWorkspaceRoot('/workspace');
-      // Return 60 files
-      const files: [string, FileType][] = Array.from({ length: 60 }, (_, i) => [
+      // Return 100 files
+      const files: [string, FileType][] = Array.from({ length: 100 }, (_, i) => [
         `file${i}.ts`,
         FileType.File,
       ]);
@@ -162,7 +162,7 @@ describe('WorkspaceReader', () => {
 
       const reader = new WorkspaceReader();
       const context = await reader.buildContext();
-      expect(context.files.length).toBeLessThanOrEqual(50);
+      expect(context.files.length).toBeLessThanOrEqual(80);
     });
 
     it('returns empty content for all files (content is read on-demand via tool calls)', async () => {
@@ -199,17 +199,17 @@ describe('WorkspaceReader', () => {
       expect(result.content).toBe('const x = 1;');
     });
 
-    it('truncates files exceeding MAX_FILE_SIZE_BYTES (50000 bytes)', async () => {
+    it('truncates files exceeding MAX_FILE_SIZE_BYTES (80000 bytes)', async () => {
       setupWorkspaceRoot('/workspace');
-      const largeContent = 'x'.repeat(60_000);
-      mockWorkspace.fs.stat = jest.fn().mockResolvedValue({ size: 60_000, type: FileType.File });
+      const largeContent = 'x'.repeat(90_000);
+      mockWorkspace.fs.stat = jest.fn().mockResolvedValue({ size: 90_000, type: FileType.File });
       mockWorkspace.fs.readFile = jest.fn().mockResolvedValue(Buffer.from(largeContent));
 
       const reader = new WorkspaceReader();
       const result = await reader.readFileForTool('large.ts');
 
       expect(result.isError).toBe(false);
-      expect(result.content).toContain('[... truncated at 50000 bytes ...]');
+      expect(result.content).toContain('[... truncated at 80000 bytes ...]');
       expect(result.content.length).toBeLessThan(largeContent.length);
     });
 

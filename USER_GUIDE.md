@@ -13,12 +13,13 @@ This guide walks you through setting up and using AI Roundtable effectively. It 
 5. [Choosing Agents](#choosing-agents)
 6. [Sending a Request](#sending-a-request)
 7. [Reviewing and Applying File Changes](#reviewing-and-applying-file-changes)
-8. [Running Shell Commands](#running-shell-commands)
+8. [Verification After Applying Changes](#verification-after-applying-changes)
 9. [Working with Sessions](#working-with-sessions)
 10. [Model Tier (Light vs Heavy)](#model-tier-light-vs-heavy)
-11. [Common Workflows](#common-workflows)
-12. [Tips for Best Results](#tips-for-best-results)
-13. [Troubleshooting](#troubleshooting)
+11. [A/B Metrics (Optional)](#ab-metrics-optional)
+12. [Common Workflows](#common-workflows)
+13. [Tips for Best Results](#tips-for-best-results)
+14. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -164,7 +165,7 @@ Be specific. The AI has access to your workspace files and will read them, but i
 **Good requests:**
 - "Add a rate limiter middleware to src/api/router.ts that limits to 100 requests per minute per IP"
 - "Review src/auth/jwt.ts for security issues — focus on token validation"
-- "Write unit tests for the parseFileChanges function in src/workspace/WorkspaceWriter.ts, targeting all branches"
+- "Write unit tests for WorkspaceWriter.applyChanges in src/workspace/WorkspaceWriter.ts, targeting error branches"
 
 **Vague requests (harder for the AI):**
 - "Fix the auth"
@@ -252,6 +253,20 @@ The **model tier** lets you trade response quality for speed and cost:
 - **Heavy** — uses the most capable model variant. Best quality, but slower and more expensive. Use for complex architecture decisions, security-sensitive code, or final reviews.
 
 Toggle the tier using the **Light / Heavy** selector in the panel. The current tier applies to all agents for the current session.
+
+---
+
+## A/B Metrics (Optional)
+
+You can record local run metrics and compare single-agent vs verifier-enabled runs.
+
+1. Enable `aiRoundtable.enableMetrics` in VS Code settings.
+2. Run your normal rounds (metrics are stored in extension local storage only).
+3. Open Command Palette and run:
+   - `AI Roundtable: Show A/B Report`
+   - `AI Roundtable: Clear Metrics` (to reset local metrics)
+
+The report includes run counts, average duration, token usage, reflection rate, and verifier issue/consensus signals.
 
 ---
 
