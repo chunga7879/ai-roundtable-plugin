@@ -85,6 +85,13 @@ Agents without a configured key are automatically disabled in the UI.
 - **Copilot `main=gpt`, `sub=[claude]`**: `gpt` main → `claude` verifier → `gpt` reflection.
 - Reflection is skipped when there is no valid verifier feedback.
 
+### Operational limitations (intentional)
+
+- Sub-agents are verifier-only: no tool execution (`read_file`, `run_command`, `write_file`, `delete_file`).
+- Sub-agent verification is limited to context package from the primary agent in that turn.
+- Reflection disables `read_file` and `run_command`.
+- Reflection can modify only paths written by the primary agent in Step 1 of the same turn.
+
 ### Step 1 — Main Agent
 
 **Input:**

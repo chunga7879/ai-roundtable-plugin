@@ -405,6 +405,15 @@ The Cancel button appears while a request is running. If the response takes an u
 
 ---
 
+## Current Limitations
+
+- Sub-agents are verifier-only and cannot call tools (`read_file`, `run_command`, `write_file`, `delete_file`).
+- Sub-agent verification can only use context passed from the primary agent (files read/written and command outputs from that turn).
+- Reflection cannot call `read_file` or `run_command`.
+- Reflection can modify only files written by the primary agent in Step 1 of the same turn.
+
+---
+
 ## Troubleshooting
 
 ### "No GitHub Copilot language models are available"

@@ -211,7 +211,17 @@ This can happen if the Copilot API is temporarily unresponsive. The extension wi
 
 - **Copilot model selection is best-effort** — even with per-agent family/tier preferences, VS Code Copilot may still resolve to a different available model under the requested family.
 - **Conversation history resets when you switch round type** — switching from Developer to Reviewer starts a new conversation.
+- **Sub-agents do not have tool access** — verifiers cannot call `read_file`, `run_command`, `write_file`, or `delete_file`; they only review context produced by the primary agent in that turn.
+- **Reflection stage has strict tool and scope limits** — reflection cannot call `read_file`/`run_command`, and may modify only files written in Step 1 of the same turn.
 - **Max 80 workspace files** — large projects will still have some files omitted. Open the most relevant files before sending a request.
 - **Shell command timeout: configurable (default 60 seconds, max 600)** — long-running commands may be cut off.
 - **Max 80 KB per file** — files larger than 80 KB are truncated when read by the AI.
 - **Max 140 read_file calls per turn** — uncached tool-driven file reads are capped per turn.
+
+### Why These Limits Exist (Short Summary)
+
+- They keep token/cost growth predictable across multi-agent turns.
+- They reduce latency and prevent verifier/reflection tool-call loops.
+- They keep stage responsibilities clear: main writes, verifiers critique, reflection revises.
+- They improve consistency by making verifiers evaluate the same primary-agent context package.
+- They reduce risk by constraining reflection scope and tool access.
