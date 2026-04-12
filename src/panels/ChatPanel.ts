@@ -168,42 +168,13 @@ export class ChatPanel implements vscode.Disposable {
     const msg = message as { type: string; payload?: unknown };
 
     switch (msg.type) {
-      case 'sendMessage': {
-        let payload;
-        try {
-          payload = validateSendMessagePayload(msg.payload);
-        } catch (err) {
-          this.postErrorMessage(
-            err instanceof ValidationError
-              ? err.message
-              : 'Invalid message payload.',
-          );
-          return;
-        }
-        await this.handleSendMessage(
-          payload.userMessage,
-          payload.roundType,
-          payload.mainAgent,
-          payload.subAgents,
-        );
+      case 'sendMessage':
+        await this.handleSendMessageEvent(msg.payload);
         break;
-      }
 
-      case 'applyChanges': {
-        let payload;
-        try {
-          payload = validateApplyChangesPayload(msg.payload);
-        } catch (err) {
-          this.postErrorMessage(
-            err instanceof ValidationError
-              ? err.message
-              : 'Invalid applyChanges payload.',
-          );
-          return;
-        }
-        await this.handleApplyChanges(payload.fileChanges);
+      case 'applyChanges':
+        await this.handleApplyChangesEvent(msg.payload);
         break;
-      }
 
       case 'rejectChanges':
         this.clearDraftFileChanges(true);
@@ -211,29 +182,9 @@ export class ChatPanel implements vscode.Disposable {
         this.postMessage({ type: 'clearFileChanges' });
         break;
 
-      case 'previewChange': {
-        const previewPayload = msg.payload as Record<string, unknown> | undefined;
-        const rawFileChange = previewPayload?.['fileChange'];
-        if (typeof rawFileChange === 'object' && rawFileChange !== null) {
-          const fc = rawFileChange as Record<string, unknown>;
-          // Validate filePath for path traversal before passing to WorkspaceWriter
-          if (
-            typeof fc['filePath'] === 'string' &&
-            fc['filePath'].trim().length > 0 &&
-            !fc['filePath'].includes('..') &&
-            !path.isAbsolute(fc['filePath']) &&
-            typeof fc['content'] === 'string' &&
-            fc['isDeleted'] !== true
-          ) {
-            await this.handlePreviewChange({
-              filePath: (fc['filePath']).trim(),
-              content: fc['content'],
-              isNew: typeof fc['isNew'] === 'boolean' ? fc['isNew'] : false,
-            });
-          }
-        }
+      case 'previewChange':
+        await this.handlePreviewChangeEvent(msg.payload);
         break;
-      }
 
       case 'requestConfig':
         await this.handleRequestConfig();
@@ -246,59 +197,16 @@ export class ChatPanel implements vscode.Disposable {
         break;
 
       case 'clearChat':
-        this.orchestrator.cancel();
-        this.cancelRunningCommand();
-        this.conversationHistory = [];
-        this.currentRoundType = undefined;
-        this.currentSessionId = undefined;
-        this.lastSendMessage = undefined;
-        this.fileCache.clear();
-        this.commandOutputCache.clear();
-        this.clearDraftFileChanges(true);
-        this.pendingVerifyCommand = undefined;
-        this.postMessage({ type: 'clearMessages' });
-        this.postMessage({ type: 'clearFileChanges' });
+        this.clearChatState();
         break;
 
-      case 'requestSessionList': {
-        if (this.sessionManager) {
-          const sessions = await this.sessionManager.listSessions();
-          this.postMessage({ type: 'sessionListLoaded', payload: { sessions } });
-        }
+      case 'requestSessionList':
+        await this.handleRequestSessionList();
         break;
-      }
 
-      case 'restoreSession': {
-        if (this.isBusy()) {
-          this.postMessage({
-            type: 'addMessage',
-            payload: {
-              id: crypto.randomUUID(),
-              role: 'system',
-              content: 'Cannot restore history while a request or command is in progress. Cancel the current run first.',
-              timestamp: Date.now(),
-            },
-          });
-          break;
-        }
-        const { sessionId } = (msg.payload as { sessionId: string });
-        if (this.sessionManager && sessionId) {
-          const session = await this.sessionManager.loadSession(sessionId);
-          if (session) {
-            this.conversationHistory = [...session.turns];
-            this.currentRoundType = session.roundType;
-            this.lastSendMessage = undefined;
-            this.fileCache.clear();
-            this.commandOutputCache.clear();
-            this.pendingVerifyCommand = undefined;
-            this.currentSessionId = session.id;
-            this.postMessage({ type: 'clearFileChanges' });
-            this.postMessage({ type: 'clearContextFiles' });
-            this.postMessage({ type: 'sessionRestored', payload: { turns: session.turns, roundType: session.roundType } });
-          }
-        }
+      case 'restoreSession':
+        await this.handleRestoreSessionEvent(msg.payload);
         break;
-      }
 
       case 'retryLastMessage':
         if (this.lastSendMessage) {
@@ -312,31 +220,148 @@ export class ChatPanel implements vscode.Disposable {
         this.cancelRunningCommand();
         break;
 
-      case 'setModelTier': {
-        const { tier } = (msg.payload as { tier: string });
-        if (tier === 'light' || tier === 'heavy') {
-          if (this.isBusy()) {
-            this.postMessage({
-              type: 'addMessage',
-              payload: {
-                id: crypto.randomUUID(),
-                role: 'system',
-                content: 'Cannot change model tier while a request or command is in progress.',
-                timestamp: Date.now(),
-              },
-            });
-            break;
-          }
-          await this.configManager.setModelTier(tier);
-          await this.handleRequestConfig();
-        }
+      case 'setModelTier':
+        await this.handleSetModelTierEvent(msg.payload);
         break;
-      }
 
       default:
         // Unknown message types are silently ignored
         break;
     }
+  }
+
+  private async handleSendMessageEvent(payload: unknown): Promise<void> {
+    try {
+      const validated = validateSendMessagePayload(payload);
+      await this.handleSendMessage(
+        validated.userMessage,
+        validated.roundType,
+        validated.mainAgent,
+        validated.subAgents,
+      );
+    } catch (err) {
+      this.postErrorMessage(
+        err instanceof ValidationError
+          ? err.message
+          : 'Invalid message payload.',
+      );
+    }
+  }
+
+  private async handleApplyChangesEvent(payload: unknown): Promise<void> {
+    try {
+      const validated = validateApplyChangesPayload(payload);
+      await this.handleApplyChanges(validated.fileChanges);
+    } catch (err) {
+      this.postErrorMessage(
+        err instanceof ValidationError
+          ? err.message
+          : 'Invalid applyChanges payload.',
+      );
+    }
+  }
+
+  private async handlePreviewChangeEvent(payload: unknown): Promise<void> {
+    const previewPayload = payload as Record<string, unknown> | undefined;
+    const rawFileChange = previewPayload?.['fileChange'];
+    if (typeof rawFileChange !== 'object' || rawFileChange === null) {
+      return;
+    }
+
+    const fc = rawFileChange as Record<string, unknown>;
+    // Validate filePath for path traversal before passing to WorkspaceWriter
+    if (
+      typeof fc['filePath'] === 'string' &&
+      fc['filePath'].trim().length > 0 &&
+      !fc['filePath'].includes('..') &&
+      !path.isAbsolute(fc['filePath']) &&
+      typeof fc['content'] === 'string' &&
+      fc['isDeleted'] !== true
+    ) {
+      await this.handlePreviewChange({
+        filePath: (fc['filePath']).trim(),
+        content: fc['content'],
+        isNew: typeof fc['isNew'] === 'boolean' ? fc['isNew'] : false,
+      });
+    }
+  }
+
+  private clearChatState(): void {
+    this.orchestrator.cancel();
+    this.cancelRunningCommand();
+    this.conversationHistory = [];
+    this.currentRoundType = undefined;
+    this.currentSessionId = undefined;
+    this.lastSendMessage = undefined;
+    this.fileCache.clear();
+    this.commandOutputCache.clear();
+    this.clearDraftFileChanges(true);
+    this.pendingVerifyCommand = undefined;
+    this.postMessage({ type: 'clearMessages' });
+    this.postMessage({ type: 'clearFileChanges' });
+  }
+
+  private async handleRequestSessionList(): Promise<void> {
+    if (!this.sessionManager) {
+      return;
+    }
+    const sessions = await this.sessionManager.listSessions();
+    this.postMessage({ type: 'sessionListLoaded', payload: { sessions } });
+  }
+
+  private async handleRestoreSessionEvent(payload: unknown): Promise<void> {
+    if (this.isBusy()) {
+      this.postBusySystemMessage('Cannot restore history while a request or command is in progress. Cancel the current run first.');
+      return;
+    }
+
+    const sessionId = typeof (payload as { sessionId?: unknown } | undefined)?.sessionId === 'string'
+      ? (payload as { sessionId: string }).sessionId
+      : '';
+    if (!this.sessionManager || !sessionId) {
+      return;
+    }
+
+    const session = await this.sessionManager.loadSession(sessionId);
+    if (!session) {
+      return;
+    }
+
+    this.conversationHistory = [...session.turns];
+    this.currentRoundType = session.roundType;
+    this.lastSendMessage = undefined;
+    this.fileCache.clear();
+    this.commandOutputCache.clear();
+    this.pendingVerifyCommand = undefined;
+    this.currentSessionId = session.id;
+    this.postMessage({ type: 'clearFileChanges' });
+    this.postMessage({ type: 'clearContextFiles' });
+    this.postMessage({ type: 'sessionRestored', payload: { turns: session.turns, roundType: session.roundType } });
+  }
+
+  private async handleSetModelTierEvent(payload: unknown): Promise<void> {
+    const tier = (payload as { tier?: unknown } | undefined)?.tier;
+    if (tier !== 'light' && tier !== 'heavy') {
+      return;
+    }
+    if (this.isBusy()) {
+      this.postBusySystemMessage('Cannot change model tier while a request or command is in progress.');
+      return;
+    }
+    await this.configManager.setModelTier(tier);
+    await this.handleRequestConfig();
+  }
+
+  private postBusySystemMessage(content: string): void {
+    this.postMessage({
+      type: 'addMessage',
+      payload: {
+        id: crypto.randomUUID(),
+        role: 'system',
+        content,
+        timestamp: Date.now(),
+      },
+    });
   }
 
   private async handleSendMessage(

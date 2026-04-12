@@ -20,6 +20,12 @@ import { sanitizeCommandForWorkspace } from '../workspace/CommandSanitizer';
 import type { WorkspaceReader } from '../workspace/WorkspaceReader';
 import type { ConfigManager } from '../extension';
 import type { ExtensionConfig } from '../types';
+import {
+  extractEnclosingJsonObject as extractEnclosingVerifierJsonObject,
+  extractIssueTitlesFromParsedJson as extractVerifierIssueTitlesFromParsedJson,
+  normalizeIssueTitle as normalizeVerifierIssueTitle,
+  parseVerifierIssueTitles,
+} from '../verification/issueParser';
 
 export interface OrchestratorRunParams {
   userMessage: string;
@@ -429,158 +435,19 @@ export class RoundOrchestrator {
   }
 
   private extractIssueTitles(feedback: string): string[] {
-    const jsonIssues = this.extractIssueTitlesFromJson(feedback);
-    if (jsonIssues !== null) {
-      return jsonIssues;
-    }
-
-    const issuesSection = feedback.match(/ISSUES:\s*([\s\S]*?)(?:\nDETAILS:|$)/i)?.[1] ?? feedback;
-    return Array.from(new Set(
-      issuesSection
-        .split('\n')
-        .map((line) => line.trim())
-        .filter((line) => /^([-*]|\d+\.)\s+/.test(line))
-        .map((line) => line.replace(/^([-*]|\d+\.)\s+/, '').trim())
-        .filter((line) => line.length > 0 && !/^(none|n\/a)$/i.test(line)),
-    ));
+    return parseVerifierIssueTitles(feedback);
   }
 
-  private extractIssueTitlesFromJson(feedback: string): string[] | null {
-    const candidates = this.extractJsonCandidates(feedback);
-    for (const candidate of candidates) {
-      try {
-        const parsed = JSON.parse(candidate) as unknown;
-        const titles = this.extractIssueTitlesFromParsedJson(parsed);
-        if (titles !== null) {
-          return titles;
-        }
-      } catch {
-        // Ignore malformed JSON candidate and continue.
-      }
-    }
-    return null;
+  public extractEnclosingJsonObject(text: string, requiredToken: string): string | null {
+    return extractEnclosingVerifierJsonObject(text, requiredToken);
   }
 
-  private extractJsonCandidates(feedback: string): string[] {
-    const candidates: string[] = [];
-    const pushUnique = (value: string): void => {
-      const trimmed = value.trim();
-      if (trimmed.length === 0 || candidates.includes(trimmed)) {
-        return;
-      }
-      candidates.push(trimmed);
-    };
-
-    const fenced = feedback.match(/```(?:json)?\s*([\s\S]*?)```/gi) ?? [];
-    for (const block of fenced) {
-      const inner = block.replace(/^```(?:json)?\s*/i, '').replace(/```$/i, '').trim();
-      pushUnique(inner);
-    }
-
-    const whole = feedback.trim();
-    if (whole.length === 0) {
-      return candidates;
-    }
-    const extractedObject = this.extractEnclosingJsonObject(whole, '"issues"');
-    if (extractedObject) {
-      pushUnique(extractedObject);
-    }
-    pushUnique(whole);
-    return candidates;
-  }
-
-  private extractEnclosingJsonObject(text: string, requiredToken: string): string | null {
-    const tokenIndex = text.indexOf(requiredToken);
-    if (tokenIndex === -1) {
-      return null;
-    }
-
-    const objectStart = text.lastIndexOf('{', tokenIndex);
-    if (objectStart === -1) {
-      return null;
-    }
-
-    let depth = 0;
-    let inString = false;
-    let escaped = false;
-
-    for (let i = objectStart; i < text.length; i++) {
-      const ch = text[i];
-      if (inString) {
-        if (escaped) {
-          escaped = false;
-          continue;
-        }
-        if (ch === '\\') {
-          escaped = true;
-          continue;
-        }
-        if (ch === '"') {
-          inString = false;
-        }
-        continue;
-      }
-      if (ch === '"') {
-        inString = true;
-        continue;
-      }
-      if (ch === '{') {
-        depth += 1;
-        continue;
-      }
-      if (ch === '}') {
-        depth -= 1;
-        if (depth === 0) {
-          return text.slice(objectStart, i + 1);
-        }
-      }
-    }
-    return null;
-  }
-
-  private extractIssueTitlesFromParsedJson(parsed: unknown): string[] | null {
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      return null;
-    }
-    const payload = parsed as Record<string, unknown>;
-    if (!Object.prototype.hasOwnProperty.call(payload, 'issues')) {
-      return null;
-    }
-
-    const issues = payload.issues;
-    if (Array.isArray(issues)) {
-      return Array.from(new Set(
-        issues
-          .map((item) => {
-            if (typeof item === 'string') {
-              return item.trim();
-            }
-            if (item && typeof item === 'object') {
-              const title = (item as Record<string, unknown>).title;
-              if (typeof title === 'string') {
-                return title.trim();
-              }
-            }
-            return '';
-          })
-          .filter((title) => title.length > 0 && !/^(none|n\/a)$/i.test(title)),
-      ));
-    }
-
-    if (typeof issues === 'string' && /^(none|n\/a)$/i.test(issues.trim())) {
-      return [];
-    }
-
-    return [];
+  public extractIssueTitlesFromParsedJson(parsed: unknown): string[] | null {
+    return extractVerifierIssueTitlesFromParsedJson(parsed);
   }
 
   private normalizeIssueTitle(issue: string): string {
-    return issue
-      .toLowerCase()
-      .replace(/[`"'()[\]{}]/g, '')
-      .replace(/[^a-z0-9\s_-]/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
+    return normalizeVerifierIssueTitle(issue);
   }
 }
 
@@ -606,17 +473,37 @@ export function execCommand(
   }
 
   return new Promise((resolve) => {
+    let cancelDisposable: vscode.Disposable | undefined;
+    let timeout: NodeJS.Timeout | undefined;
+
     try {
       const shell = process.platform === 'win32' ? 'cmd.exe' : '/bin/sh';
       const shellFlag = process.platform === 'win32' ? '/c' : '-c';
       const child = cp.spawn(shell, [shellFlag, sanitized.effective], {
         cwd,
         env: process.env,
+        detached: process.platform !== 'win32',
       });
 
       const chunks: string[] = [];
       let resolved = false;
       let totalBytes = 0;
+
+      const cleanup = (): void => {
+        if (timeout) {
+          clearTimeout(timeout);
+          timeout = undefined;
+        }
+        cancelDisposable?.dispose();
+        cancelDisposable = undefined;
+      };
+
+      const finish = (stdout: string, exitCode: number): void => {
+        if (resolved) {return;}
+        resolved = true;
+        cleanup();
+        resolve({ command: displayCommand, stdout: normalizedPrefix + stdout, exitCode });
+      };
 
       const handleData = (data: Buffer) => {
         if (resolved) {return;}
@@ -632,45 +519,83 @@ export function execCommand(
       child.stdout.on('data', (d: Buffer) => handleData(d));
       child.stderr.on('data', (d: Buffer) => handleData(d));
 
-      const timeout = setTimeout(() => {
-        if (!resolved) {
-          resolved = true;
-          child.kill();
-          const stdout = chunks.join('') || '(no output)';
-          resolve({ command: displayCommand, stdout: normalizedPrefix + stdout + '\n[Timed out]', exitCode: 1 });
-        }
+      timeout = setTimeout(() => {
+        terminateCommandProcess(child);
+        const stdout = chunks.join('') || '(no output)';
+        finish(`${stdout}\n[Timed out]`, 1);
       }, timeoutMs);
 
       child.on('close', (code) => {
         if (resolved) {return;}
-        resolved = true;
-        clearTimeout(timeout);
-        cancelDisposable?.dispose();
         let stdout = chunks.join('') || '(no output)';
         if (totalBytes > EXEC_MAX_OUTPUT) {
           stdout += `\n[... output truncated at ${EXEC_MAX_OUTPUT} bytes ...]`;
         }
-        resolve({ command: displayCommand, stdout: normalizedPrefix + stdout, exitCode: code ?? 1 });
+        finish(stdout, code ?? 1);
       });
 
       child.on('error', (err) => {
-        if (resolved) {return;}
-        resolved = true;
-        clearTimeout(timeout);
-        cancelDisposable?.dispose();
-        resolve({ command: displayCommand, stdout: normalizedPrefix + String(err), exitCode: 1 });
+        finish(String(err), 1);
       });
 
-      const cancelDisposable = cancellationToken?.onCancellationRequested(() => {
-        if (!resolved) {
-          resolved = true;
-          clearTimeout(timeout);
-          child.kill();
-          resolve({ command: displayCommand, stdout: normalizedPrefix + chunks.join('') + '\n[Cancelled]', exitCode: 1 });
+      cancelDisposable = cancellationToken?.onCancellationRequested(() => {
+        if (resolved) {
+          return;
         }
+        terminateCommandProcess(child);
+        const cancelledOutput = chunks.length > 0
+          ? `${chunks.join('')}\n[Cancelled]`
+          : '[Cancelled]';
+        finish(cancelledOutput, 1);
       });
     } catch (syncErr) {
+      if (timeout) {
+        clearTimeout(timeout);
+      }
+      cancelDisposable?.dispose();
       resolve({ command: displayCommand, stdout: normalizedPrefix + String(syncErr), exitCode: 1 });
     }
   });
+}
+
+function terminateCommandProcess(child: cp.ChildProcess): void {
+  if (process.platform === 'win32') {
+    const pid = child.pid;
+    if (typeof pid === 'number' && pid > 0) {
+      try {
+        const killer = cp.spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore' });
+        killer.on('error', () => {
+          child.kill();
+        });
+        return;
+      } catch {
+        child.kill();
+        return;
+      }
+    }
+    child.kill();
+    return;
+  }
+
+  const pid = child.pid;
+  if (typeof pid === 'number' && pid > 0) {
+    try {
+      process.kill(-pid, 'SIGTERM');
+      setTimeout(() => {
+        if (child.exitCode !== null || child.signalCode !== null) {
+          return;
+        }
+        try {
+          process.kill(-pid, 'SIGKILL');
+        } catch {
+          child.kill('SIGKILL');
+        }
+      }, 1000).unref();
+      return;
+    } catch {
+      // Fall through to direct kill.
+    }
+  }
+
+  child.kill();
 }
