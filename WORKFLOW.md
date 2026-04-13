@@ -647,18 +647,30 @@ Turn 3: "Show me the Redis data model"
 
 | Type | Payload | Description |
 |---|---|---|
-| `addMessage` | `{ id, role, agentName?, content, isSubAgentFeedback? }` | Append a message |
-| `updateMessage` | `{ id, content }` | Update existing message |
-| `streamChunk` | `{ id, chunk }` | Append streaming chunk to a message |
-| `finalizeMessage` | `{ id, content }` | Mark a streaming message as complete |
-| `setLoading` | `{ loading }` | Enable/disable input |
-| `showFileChanges` | `{ fileChanges[] }` | Show proposed changes panel |
-| `clearFileChanges` | — | Hide changes panel |
-| `configLoaded` | `{ providerMode, hasApiKeys, availableAgents, modelTier }` | Send config to webview |
-| `error` | `{ message }` | Show error message |
-| `suggestInstall` | `{ command }` | Suggest running an install command |
-| `pipelineProgress` | `{ stage }` | Show thinking/verifying/reflecting indicator |
-| `toolCallProgress` | `{ msgId, filePath }` | Show file being read or written |
-| `contextUsage` | `{ pct, label }` | Show context window usage gauge |
-| `sessionListLoaded` | `{ sessions[] }` | Return list of saved sessions |
-| `sessionRestored` | `{ turns, roundType }` | Restore conversation turns from a session |
+| `addMessage` | `{ id, role, agentName?, content, isSubAgentFeedback? }` | Append a message bubble |
+| `removeMessage` | `{ id }` | Remove a message bubble by id |
+| `addCollapsibleMessage` | `{ id, title, content }` | Append a collapsible (expandable) message bubble |
+| `updateMessage` | `{ id, content }` | Update content of an existing message |
+| `streamChunk` | `{ id, chunk }` | Append a streaming text chunk to a message |
+| `finalizeMessage` | `{ id, content }` | Replace streaming bubble content with final text (includes token counts) |
+| `interruptMessage` | `{ id }` | Mark a streaming bubble as interrupted (cancelled mid-stream) |
+| `stopStreaming` | `{ id }` | Remove the streaming cursor after main agent finishes (before reflection) |
+| `collapseMessage` | `{ id, content, label }` | Collapse the main agent bubble into a collapsible section before reflection starts |
+| `setLoading` | `{ loading }` | Enable/disable the input field |
+| `showFileChanges` | `{ fileChanges[] }` | Show the Proposed Changes panel |
+| `clearFileChanges` | — | Hide the Proposed Changes panel |
+| `clearMessages` | — | Clear all message bubbles from the chat |
+| `configLoaded` | `{ providerMode, hasApiKeys, availableAgents, modelTier }` | Send current provider config to webview |
+| `error` | `{ message }` | Show an error message in the chat |
+| `suggestInstall` | `{ command }` | Suggest running an install command after dependency file change |
+| `pipelineProgress` | `{ stage }` | Update pipeline stage indicator (`thinking` / `verifying` / `reflecting`) |
+| `toolCallProgress` | `{ msgId, filePath }` | Show a file being read or written by the agent |
+| `contextFileRead` | `{ path }` | Notify the webview that a file was added to agent context |
+| `clearContextFiles` | — | Clear the context file list displayed in the panel |
+| `commandChunk` | `{ msgId, command, chunk }` | Stream a chunk of shell command output |
+| `commandOutput` | `{ msgId, command, stdout, exitCode }` | Deliver the final result of a shell command |
+| `contextUsage` | `{ pct, label }` | Update the context window usage gauge |
+| `roundChanged` | `{ roundType }` | Notify that the active round type changed (e.g. after session restore) |
+| `sessionListLoaded` | `{ sessions[] }` | Return the list of saved sessions |
+| `sessionRestored` | `{ turns, roundType }` | Restore conversation turns from a saved session |
+| `restoreDraftFileChanges` | `{ fileChanges[], roundType, savedAt }` | Restore previously proposed file changes that were not yet applied |

@@ -698,8 +698,9 @@ export class ApiKeyProvider {
       if (textPart?.text) {finalText += textPart.text;}
 
       const functionCalls = parts.filter((p) => p.functionCall !== undefined);
-      const finishReason = parsed.candidates?.[0]?.finishReason;
-      if (!functionCalls.length || !options.onToolCall || finishReason !== 'STOP') {
+      // Gemini can return functionCall parts with finishReason=null.
+      // Drive tool execution based on tool parts presence, not finishReason.
+      if (!functionCalls.length || !options.onToolCall) {
         break;
       }
 
@@ -995,8 +996,8 @@ export class ApiKeyProvider {
 
             const usage = parsed['usage'] as Record<string, unknown> | undefined;
             if (usage) {
-              inputTokens = (usage['prompt_tokens'] as number) ?? 0;
-              outputTokens = (usage['completion_tokens'] as number) ?? 0;
+              inputTokens += (usage['prompt_tokens'] as number) ?? 0;
+              outputTokens += (usage['completion_tokens'] as number) ?? 0;
             }
           } catch { /* ignore malformed SSE lines */ }
         },
@@ -1118,8 +1119,8 @@ export class ApiKeyProvider {
             }
             const usageMeta = parsed['usageMetadata'] as Record<string, unknown> | undefined;
             if (usageMeta) {
-              inputTokens = (usageMeta['promptTokenCount'] as number) ?? inputTokens;
-              outputTokens = (usageMeta['candidatesTokenCount'] as number) ?? outputTokens;
+              inputTokens += (usageMeta['promptTokenCount'] as number) ?? 0;
+              outputTokens += (usageMeta['candidatesTokenCount'] as number) ?? 0;
             }
           } catch (err) {
             if (err instanceof ApiKeyProviderError) {throw err;}

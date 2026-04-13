@@ -1,10 +1,10 @@
 import { RoundExecutionStages } from '../../src/agents/RoundExecutionStages';
 import { AgentName, type CommandOutput, type ToolResult } from '../../src/types';
 
-function createStages() {
+function createStages(readFileForTool?: jest.Mock) {
   return new RoundExecutionStages({
     workspaceReader: {
-      readFileForTool: jest.fn().mockResolvedValue({ content: 'file', isError: false }),
+      readFileForTool: readFileForTool ?? jest.fn().mockResolvedValue({ content: 'file', isError: false }),
     } as never,
     callAgent: jest.fn(async () => ({ content: 'ok' })),
     shouldRetryMissingToolWrites: jest.fn().mockReturnValue(false),
@@ -16,6 +16,7 @@ function createStages() {
 }
 
 function createHandlers() {
+  const cachedFiles = new Map<string, string>();
   const stages = createStages();
   const progressEvents: Array<{ type: string; filePath?: string }> = [];
   const handlers = stages.createRoundToolHandlers({
@@ -32,10 +33,10 @@ function createHandlers() {
       stdout: 'ok',
       exitCode: 0,
     }),
-    cachedFiles: new Map<string, string>(),
+    cachedFiles,
     cachedCommandOutputs: new Map<string, CommandOutput>(),
   });
-  return { handlers, progressEvents };
+  return { handlers, progressEvents, cachedFiles };
 }
 
 describe('RoundExecutionStages tool handlers', () => {
@@ -145,5 +146,32 @@ describe('RoundExecutionStages tool handlers', () => {
     expect(runCommandResult.content).toContain('run_command is not available during reflection');
     expect(readFileResult.isError).toBe(true);
     expect(readFileResult.content).toContain('read_file is not available during reflection');
+  });
+
+  it('bounds cached file entries to prevent unbounded growth', async () => {
+    const readFileForTool = jest
+      .fn()
+      .mockImplementation(async (filePath: string) => ({ content: `content-${filePath}`, isError: false }));
+    const stages = createStages(readFileForTool);
+    const cachedFiles = new Map<string, string>();
+    const handlers = stages.createRoundToolHandlers({
+      mainAgent: AgentName.CLAUDE,
+      onProgress: () => undefined,
+      onRunCommand: async (command: string): Promise<CommandOutput> => ({ command, stdout: '', exitCode: 0 }),
+      cachedFiles,
+      cachedCommandOutputs: new Map<string, CommandOutput>(),
+    });
+
+    for (let i = 0; i < 100; i++) {
+      await handlers.main({
+        id: `r-${i}`,
+        name: 'read_file',
+        filePath: `src/file-${i}.ts`,
+      });
+    }
+
+    expect(cachedFiles.size).toBeLessThanOrEqual(80);
+    expect(cachedFiles.has('src/file-0.ts')).toBe(false);
+    expect(cachedFiles.has('src/file-99.ts')).toBe(true);
   });
 });

@@ -255,6 +255,31 @@ describe('RoundMetricsLogger persistence', () => {
 
     await expect(fs.stat(metricsFile)).rejects.toThrow();
   });
+
+  it('serializes concurrent append operations without losing records', async () => {
+    const logger = new RoundMetricsLogger(vscode.Uri.file(storageDir));
+
+    await Promise.all([
+      logger.append({
+        roundType: RoundType.DEVELOPER,
+        mainAgent: AgentName.CLAUDE,
+        subAgentsConfigured: 0,
+        status: 'success',
+        durationMs: 100,
+      }),
+      logger.append({
+        roundType: RoundType.QA,
+        mainAgent: AgentName.GPT,
+        subAgentsConfigured: 1,
+        status: 'success',
+        durationMs: 120,
+      }),
+    ]);
+
+    const records = await logger.readAll(100);
+    expect(records.length).toBe(2);
+    expect(records.map((r) => r.roundType).sort()).toEqual([RoundType.DEVELOPER, RoundType.QA].sort());
+  });
 });
 
 function makeRecord(overrides: Partial<RoundRunMetricRecord> = {}): RoundRunMetricRecord {

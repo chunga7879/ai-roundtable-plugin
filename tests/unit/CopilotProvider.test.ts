@@ -479,6 +479,34 @@ describe('CopilotProvider — XML tool calls', () => {
     expect(calls).toContain('run_command');
   });
 
+  it('XML write_file preserves content that contains literal </parameter> text', async () => {
+    let callCount = 0;
+    const model = {
+      sendRequest: jest.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          const xml = '<function_calls><invoke name="write_file"><parameter name="path">src/out.xml</parameter><parameter name="content"><root></parameter><child/></root></parameter></invoke></function_calls>';
+          return Promise.resolve({ stream: toAsyncIterable([xml]) });
+        }
+        return Promise.resolve({ stream: toAsyncIterable(['Saved.']) });
+      }),
+    };
+    (vscode.lm.selectChatModels as jest.Mock).mockResolvedValue([model]);
+
+    const onToolCall = jest.fn().mockResolvedValue({ id: 'w1', content: 'ok', isError: false });
+    const provider = new CopilotProvider();
+    const result = await provider.sendRequest({ ...defaultOptions, onToolCall }, AgentName.CLAUDE, makeToken());
+
+    expect(onToolCall).toHaveBeenCalledTimes(1);
+    expect(onToolCall).toHaveBeenCalledWith({
+      id: 'src/out.xml',
+      name: 'write_file',
+      filePath: 'src/out.xml',
+      content: '<root></parameter><child/></root>',
+    });
+    expect(result).toBe('Saved.');
+  });
+
   it('XML with no recognized invoke tags is treated as plain text (not dispatched)', async () => {
     const model = makeModel(['Some text with <function_calls><invoke name="unknown_tool"></invoke></function_calls>']);
     (vscode.lm.selectChatModels as jest.Mock).mockResolvedValue([model]);

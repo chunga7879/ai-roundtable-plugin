@@ -2,7 +2,7 @@
   "name": "ai-roundtable",
   "displayName": "AI Roundtable",
   "description": "Multi-agent AI assistant for VS Code workspaces — run requirements, architecture, development, review, QA, DevOps, and debugging rounds with Claude, GPT, Gemini, or GitHub Copilot.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "chungalee",
   "license": "MIT",
   "repository": {
@@ -148,17 +148,38 @@
           "properties": {
             "claude": {
               "type": "string",
-              "enum": ["auto", "gpt-4o-mini", "gpt-4o", "gpt-4", "claude", "gemini"],
+              "enum": [
+                "auto",
+                "gpt-4o-mini",
+                "gpt-4o",
+                "gpt-4",
+                "claude",
+                "gemini"
+              ],
               "default": "auto"
             },
             "gpt": {
               "type": "string",
-              "enum": ["auto", "gpt-4o-mini", "gpt-4o", "gpt-4", "claude", "gemini"],
+              "enum": [
+                "auto",
+                "gpt-4o-mini",
+                "gpt-4o",
+                "gpt-4",
+                "claude",
+                "gemini"
+              ],
               "default": "auto"
             },
             "gemini": {
               "type": "string",
-              "enum": ["auto", "gpt-4o-mini", "gpt-4o", "gpt-4", "claude", "gemini"],
+              "enum": [
+                "auto",
+                "gpt-4o-mini",
+                "gpt-4o",
+                "gpt-4",
+                "claude",
+                "gemini"
+              ],
               "default": "auto"
             }
           }
@@ -171,17 +192,29 @@
           "properties": {
             "claude": {
               "type": "string",
-              "enum": ["inherit", "heavy", "light"],
+              "enum": [
+                "inherit",
+                "heavy",
+                "light"
+              ],
               "default": "inherit"
             },
             "gpt": {
               "type": "string",
-              "enum": ["inherit", "heavy", "light"],
+              "enum": [
+                "inherit",
+                "heavy",
+                "light"
+              ],
               "default": "inherit"
             },
             "gemini": {
               "type": "string",
-              "enum": ["inherit", "heavy", "light"],
+              "enum": [
+                "inherit",
+                "heavy",
+                "light"
+              ],
               "default": "inherit"
             }
           }
@@ -193,7 +226,10 @@
         },
         "aiRoundtable.modelTier": {
           "type": "string",
-          "enum": ["heavy", "light"],
+          "enum": [
+            "heavy",
+            "light"
+          ],
           "enumDescriptions": [
             "Heavy: use the most capable models (Claude Sonnet, GPT-4o, Gemini 1.5 Pro, gpt-4o via Copilot)",
             "Light: use faster/cheaper models for testing (Claude Haiku, GPT-4o-mini, Gemini 1.5 Flash)"
@@ -226,7 +262,9 @@
   "jest": {
     "preset": "ts-jest",
     "testEnvironment": "node",
-    "roots": ["<rootDir>/tests"],
+    "roots": [
+      "<rootDir>/tests"
+    ],
     "moduleNameMapper": {
       "^vscode$": "<rootDir>/tests/__mocks__/vscode.ts"
     },
@@ -243,12 +281,15 @@
       }
     },
     "transform": {
-      "^.+\\.tsx?$": ["ts-jest", {
-        "tsconfig": {
-          "module": "CommonJS",
-          "strict": false
+      "^.+\\.tsx?$": [
+        "ts-jest",
+        {
+          "tsconfig": {
+            "module": "CommonJS",
+            "strict": false
+          }
         }
-      }]
+      ]
     }
   },
   "devDependencies": {

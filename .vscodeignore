@@ -1,6 +1,7 @@
 .vscode/**
 .vscode-test/**
 src/**
+!src/panels/webview/index.html
 .gitignore
 .eslintrc.json
 tsconfig.json

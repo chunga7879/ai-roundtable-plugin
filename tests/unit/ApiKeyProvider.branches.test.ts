@@ -426,6 +426,31 @@ describe('ApiKeyProvider — Gemini', () => {
     expect(result.usage?.outputTokens).toBe(5);
   });
 
+  it('executes functionCall even when Gemini finishReason is null', async () => {
+    const toolCallBody = geminiBody({
+      candidates: [{
+        content: {
+          parts: [{ functionCall: { name: 'read_file', args: { path: 'src/a.ts' } } }],
+        },
+        finishReason: null,
+      }],
+    });
+    const finalBody = geminiBody({
+      candidates: [{ content: { parts: [{ text: 'Final Gemini answer' }] }, finishReason: 'STOP' }],
+    });
+    setupSequentialMock({ bodies: [toolCallBody, finalBody] });
+
+    const onToolCall = jest.fn().mockResolvedValue({ id: 'read_file', content: 'file content', isError: false });
+    const p = new ApiKeyProvider({ googleApiKey: 'goog-key' });
+    const result = await p.sendRequest(AgentName.GEMINI, { ...defaultOpts, onToolCall });
+
+    expect(onToolCall).toHaveBeenCalledTimes(1);
+    expect(onToolCall).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'read_file', filePath: 'src/a.ts' }),
+    );
+    expect(result.content).toBe('Final Gemini answer');
+  });
+
   it('includes conversation history in request', async () => {
     setupSequentialMock({ bodies: [geminiBody()] });
     const p = new ApiKeyProvider({ googleApiKey: 'goog-key' });

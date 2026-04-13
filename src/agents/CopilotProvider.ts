@@ -38,23 +38,30 @@ export class CopilotProviderError extends ProviderError {
 function extractXmlToolCalls(text: string): Array<{ name: 'read_file'; path: string } | { name: 'run_command'; command: string } | { name: 'write_file'; path: string; content: string } | { name: 'delete_file'; path: string }> {
   const calls: Array<{ name: 'read_file'; path: string } | { name: 'run_command'; command: string } | { name: 'write_file'; path: string; content: string } | { name: 'delete_file'; path: string }> = [];
   const invokeRe = /<invoke\s+name="(read_file|run_command|write_file|delete_file)">([\s\S]*?)<\/invoke>/g;
+  const extractParameter = (body: string, parameterName: 'path' | 'command' | 'content', greedy = false): string | undefined => {
+    const pattern = greedy
+      ? new RegExp(`<parameter\\s+name="${parameterName}">([\\s\\S]*)<\\/parameter>`)
+      : new RegExp(`<parameter\\s+name="${parameterName}">([\\s\\S]*?)<\\/parameter>`);
+    return pattern.exec(body)?.[1];
+  };
   let m: RegExpExecArray | null;
   while ((m = invokeRe.exec(text)) !== null) {
     const toolName = m[1];
     const body = m[2];
     if (toolName === 'read_file') {
-      const paramMatch = /<parameter\s+name="path">([^<]+)<\/parameter>/.exec(body);
-      if (paramMatch) {calls.push({ name: 'read_file', path: paramMatch[1].trim() });}
+      const path = extractParameter(body, 'path');
+      if (path !== undefined) {calls.push({ name: 'read_file', path: path.trim() });}
     } else if (toolName === 'run_command') {
-      const paramMatch = /<parameter\s+name="command">([^<]+)<\/parameter>/.exec(body);
-      if (paramMatch) {calls.push({ name: 'run_command', command: paramMatch[1].trim() });}
+      const command = extractParameter(body, 'command');
+      if (command !== undefined) {calls.push({ name: 'run_command', command: command.trim() });}
     } else if (toolName === 'write_file') {
-      const pathMatch = /<parameter\s+name="path">([^<]+)<\/parameter>/.exec(body);
-      const contentMatch = /<parameter\s+name="content">([\s\S]*?)<\/parameter>/.exec(body);
-      if (pathMatch && contentMatch) {calls.push({ name: 'write_file', path: pathMatch[1].trim(), content: contentMatch[1] });}
+      const path = extractParameter(body, 'path');
+      // Use greedy capture so inner literal "</parameter>" in file content is preserved.
+      const content = extractParameter(body, 'content', true);
+      if (path !== undefined && content !== undefined) {calls.push({ name: 'write_file', path: path.trim(), content });}
     } else if (toolName === 'delete_file') {
-      const paramMatch = /<parameter\s+name="path">([^<]+)<\/parameter>/.exec(body);
-      if (paramMatch) {calls.push({ name: 'delete_file', path: paramMatch[1].trim() });}
+      const path = extractParameter(body, 'path');
+      if (path !== undefined) {calls.push({ name: 'delete_file', path: path.trim() });}
     }
   }
   return calls;

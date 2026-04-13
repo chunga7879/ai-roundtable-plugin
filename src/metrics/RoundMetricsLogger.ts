@@ -113,35 +113,41 @@ export interface AbSummary {
 
 export class RoundMetricsLogger {
   private workspaceHash: string | undefined;
+  private storageMutationQueue: Promise<void> = Promise.resolve();
 
   constructor(private readonly storageUri: vscode.Uri) {}
 
   async append(record: Omit<RoundRunMetricRecord, 'version' | 'timestamp' | 'workspaceId'>): Promise<void> {
-    try {
-      const fullRecord: RoundRunMetricRecord = {
-        version: 1,
-        timestamp: Date.now(),
-        workspaceId: this.getWorkspaceHash(),
-        ...record,
-      };
-      const metricsDir = this.metricsDir();
-      await fs.mkdir(metricsDir, { recursive: true });
-      await fs.appendFile(this.metricsFilePath(), JSON.stringify(fullRecord) + '\n', 'utf8');
-      await this.pruneStorage(fullRecord.timestamp);
-    } catch {
-      // Non-fatal: metrics logging must never block user workflow.
-    }
+    await this.withStorageMutation(async () => {
+      try {
+        const fullRecord: RoundRunMetricRecord = {
+          version: 1,
+          timestamp: Date.now(),
+          workspaceId: this.getWorkspaceHash(),
+          ...record,
+        };
+        const metricsDir = this.metricsDir();
+        await fs.mkdir(metricsDir, { recursive: true });
+        await fs.appendFile(this.metricsFilePath(), JSON.stringify(fullRecord) + '\n', 'utf8');
+        await this.pruneStorage(fullRecord.timestamp);
+      } catch {
+        // Non-fatal: metrics logging must never block user workflow.
+      }
+    });
   }
 
   async clear(): Promise<void> {
-    try {
-      await fs.rm(this.metricsDir(), { recursive: true, force: true });
-    } catch {
-      // Non-fatal
-    }
+    await this.withStorageMutation(async () => {
+      try {
+        await fs.rm(this.metricsDir(), { recursive: true, force: true });
+      } catch {
+        // Non-fatal
+      }
+    });
   }
 
   async readAll(limit = MAX_STORED_RECORDS): Promise<RoundRunMetricRecord[]> {
+    await this.storageMutationQueue;
     try {
       const raw = await fs.readFile(this.metricsFilePath(), 'utf8');
       const records = raw
@@ -338,6 +344,17 @@ export class RoundMetricsLogger {
     } catch {
       // Non-fatal
     }
+  }
+
+  private withStorageMutation<T>(operation: () => Promise<T>): Promise<T> {
+    const next = this.storageMutationQueue
+      .catch((): void => undefined)
+      .then(operation);
+    this.storageMutationQueue = next.then(
+      (): void => undefined,
+      (): void => undefined,
+    );
+    return next;
   }
 }
 

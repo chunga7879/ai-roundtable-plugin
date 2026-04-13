@@ -1,13 +1,17 @@
 import * as crypto from 'crypto';
 import * as vscode from 'vscode';
-import type { ConversationTurn, PersistedSession, RoundType, SessionIndexEntry } from '../types';
+import { RoundType } from '../types';
+import type { ConversationTurn, PersistedSession, SessionIndexEntry } from '../types';
 
 const MAX_SESSIONS = 20;
 const PREVIEW_LENGTH = 80;
+const VALID_ROUND_TYPES = new Set<string>(Object.values(RoundType));
+const VALID_TURN_ROLES = new Set<ConversationTurn['role']>(['user', 'assistant']);
 
 export class SessionManager {
   private workspaceHash: string | undefined;
   private appendQueues = new Map<string, Promise<void>>();
+  private indexMutationQueue: Promise<void> = Promise.resolve();
 
   constructor(private readonly storageUri: vscode.Uri) {}
 
@@ -99,6 +103,8 @@ export class SessionManager {
 
   async listSessions(): Promise<SessionIndexEntry[]> {
     try {
+      // Read after prior index write jobs have settled.
+      await this.indexMutationQueue;
       const index = await this.readIndex();
       return index.sort((a, b) => b.updatedAt - a.updatedAt);
     } catch {
@@ -110,36 +116,39 @@ export class SessionManager {
     try {
       const uri = this.sessionFileUri(sessionId);
       const bytes = await vscode.workspace.fs.readFile(uri);
-      return JSON.parse(Buffer.from(bytes).toString('utf-8')) as PersistedSession;
+      const raw: unknown = JSON.parse(Buffer.from(bytes).toString('utf-8'));
+      return this.parsePersistedSession(raw);
     } catch {
       return undefined;
     }
   }
 
   async pruneOldSessions(maxCount: number): Promise<void> {
-    try {
-      const index = await this.readIndex();
-      if (index.length <= maxCount) {
-        return;
+    await this.withIndexMutation(async () => {
+      try {
+        const index = await this.readIndex();
+        if (index.length <= maxCount) {
+          return;
+        }
+        const sorted = index.sort((a, b) => b.updatedAt - a.updatedAt);
+        const toKeep = sorted.slice(0, maxCount);
+        const toDelete = sorted.slice(maxCount);
+
+        await Promise.all(
+          toDelete.map(async (entry) => {
+            try {
+              await vscode.workspace.fs.delete(this.sessionFileUri(entry.id));
+            } catch {
+              // File may already be gone — continue
+            }
+          }),
+        );
+
+        await this.writeIndex(toKeep);
+      } catch {
+        // Non-fatal
       }
-      const sorted = index.sort((a, b) => b.updatedAt - a.updatedAt);
-      const toKeep = sorted.slice(0, maxCount);
-      const toDelete = sorted.slice(maxCount);
-
-      await Promise.all(
-        toDelete.map(async (entry) => {
-          try {
-            await vscode.workspace.fs.delete(this.sessionFileUri(entry.id));
-          } catch {
-            // File may already be gone — continue
-          }
-        }),
-      );
-
-      await this.writeIndex(toKeep);
-    } catch {
-      // Non-fatal
-    }
+    });
   }
 
   // ── Private helpers ─────────────────────────────────────────────────────────
@@ -177,7 +186,8 @@ export class SessionManager {
   private async readIndex(): Promise<SessionIndexEntry[]> {
     try {
       const bytes = await vscode.workspace.fs.readFile(this.indexUri());
-      return JSON.parse(Buffer.from(bytes).toString('utf-8')) as SessionIndexEntry[];
+      const raw: unknown = JSON.parse(Buffer.from(bytes).toString('utf-8'));
+      return this.parseSessionIndex(raw);
     } catch {
       return [];
     }
@@ -191,25 +201,149 @@ export class SessionManager {
   }
 
   private async appendToIndex(entry: SessionIndexEntry): Promise<void> {
-    const index = await this.readIndex();
-    index.push(entry);
-    await this.writeIndex(index);
+    await this.withIndexMutation(async () => {
+      const index = await this.readIndex();
+      index.push(entry);
+      await this.writeIndex(index);
+    });
   }
 
   private async updateIndexEntry(
     sessionId: string,
     updates: Partial<SessionIndexEntry>,
   ): Promise<void> {
-    const index = await this.readIndex();
-    const i = index.findIndex((e) => e.id === sessionId);
-    if (i !== -1) {
-      index[i] = { ...index[i], ...updates };
-      await this.writeIndex(index);
-    }
+    await this.withIndexMutation(async () => {
+      const index = await this.readIndex();
+      const i = index.findIndex((e) => e.id === sessionId);
+      if (i !== -1) {
+        index[i] = { ...index[i], ...updates };
+        await this.writeIndex(index);
+      }
+    });
   }
 
   private extractPreview(turns: ConversationTurn[]): string {
     const firstUser = turns.find((t) => t.role === 'user');
     return firstUser ? firstUser.content.slice(0, PREVIEW_LENGTH) : '';
+  }
+
+  private withIndexMutation<T>(operation: () => Promise<T>): Promise<T> {
+    const next = this.indexMutationQueue
+      .catch((): void => undefined)
+      .then(operation);
+    this.indexMutationQueue = next.then(
+      (): void => undefined,
+      (): void => undefined,
+    );
+    return next;
+  }
+
+  private parsePersistedSession(raw: unknown): PersistedSession | undefined {
+    if (!this.isRecord(raw)) {
+      return undefined;
+    }
+    const id = this.readString(raw['id']);
+    const workspaceId = this.readString(raw['workspaceId']);
+    const roundTypeRaw = this.readString(raw['roundType']);
+    const createdAt = this.readNumber(raw['createdAt']);
+    const updatedAt = this.readNumber(raw['updatedAt']);
+    const turnsRaw = raw['turns'];
+    if (
+      !id
+      || !workspaceId
+      || !roundTypeRaw
+      || !VALID_ROUND_TYPES.has(roundTypeRaw)
+      || createdAt === undefined
+      || updatedAt === undefined
+      || !Array.isArray(turnsRaw)
+    ) {
+      return undefined;
+    }
+
+    const turns: ConversationTurn[] = [];
+    for (const turnRaw of turnsRaw) {
+      if (!this.isRecord(turnRaw)) {
+        return undefined;
+      }
+      const role = turnRaw['role'];
+      const content = this.readString(turnRaw['content']);
+      if (
+        (role !== 'user' && role !== 'assistant')
+        || !VALID_TURN_ROLES.has(role)
+        || content === undefined
+      ) {
+        return undefined;
+      }
+      turns.push({ role, content });
+    }
+
+    return {
+      id,
+      workspaceId,
+      roundType: roundTypeRaw as RoundType,
+      createdAt,
+      updatedAt,
+      turns,
+    };
+  }
+
+  private parseSessionIndex(raw: unknown): SessionIndexEntry[] {
+    if (!Array.isArray(raw)) {
+      return [];
+    }
+    const entries: SessionIndexEntry[] = [];
+    for (const entryRaw of raw) {
+      const parsed = this.parseSessionIndexEntry(entryRaw);
+      if (parsed) {
+        entries.push(parsed);
+      }
+    }
+    return entries;
+  }
+
+  private parseSessionIndexEntry(raw: unknown): SessionIndexEntry | undefined {
+    if (!this.isRecord(raw)) {
+      return undefined;
+    }
+    const id = this.readString(raw['id']);
+    const workspaceId = this.readString(raw['workspaceId']);
+    const roundTypeRaw = this.readString(raw['roundType']);
+    const createdAt = this.readNumber(raw['createdAt']);
+    const updatedAt = this.readNumber(raw['updatedAt']);
+    const turnCount = this.readNumber(raw['turnCount']);
+    const preview = this.readString(raw['preview']);
+    if (
+      !id
+      || !workspaceId
+      || !roundTypeRaw
+      || !VALID_ROUND_TYPES.has(roundTypeRaw)
+      || createdAt === undefined
+      || updatedAt === undefined
+      || turnCount === undefined
+      || preview === undefined
+    ) {
+      return undefined;
+    }
+    return {
+      id,
+      workspaceId,
+      roundType: roundTypeRaw as RoundType,
+      createdAt,
+      updatedAt,
+      turnCount,
+      preview,
+    };
+  }
+
+  private isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null;
+  }
+
+  private readString(value: unknown): string | undefined {
+    return typeof value === 'string' ? value : undefined;
+  }
+
+  private readNumber(value: unknown): number | undefined {
+    return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
   }
 }

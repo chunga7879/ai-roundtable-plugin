@@ -1148,6 +1148,9 @@ export class ChatPanel implements vscode.Disposable {
 
     this.orchestrator.dispose();
     this.cancelRunningCommand();
+    this.fileCache.clear();
+    this.commandOutputCache.clear();
+    this.workspaceWriter.clearDiffContent();
 
     ChatPanel.instance = undefined;
 

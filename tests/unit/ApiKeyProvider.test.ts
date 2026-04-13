@@ -846,6 +846,27 @@ describe('ApiKeyProvider — Bug fix: finalText accumulation (OpenAI streaming)'
 
     expect(result.content).toBe('Tests passed.');
   });
+
+  it('accumulates usage across OpenAI stream tool-call iterations', async () => {
+    setupStreamMock([
+      [
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"read_file","arguments":"{\\"path\\":\\"a.ts\\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":3,"completion_tokens":2}}',
+        'data: [DONE]',
+      ],
+      [
+        'data: {"choices":[{"delta":{"content":"Done."},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":7}}',
+        'data: [DONE]',
+      ],
+    ]);
+
+    const onToolCall = jest.fn().mockResolvedValue({ id: 'c1', content: 'file body', isError: false });
+    const p = new ApiKeyProvider({ openaiApiKey: 'sk-openai' });
+    const result = await p.sendRequest(AgentName.GPT, { ...defaultOpts, onChunk: jest.fn(), onToolCall });
+
+    expect(result.content).toBe('Done.');
+    expect(result.usage?.inputTokens).toBe(8);
+    expect(result.usage?.outputTokens).toBe(9);
+  });
 });
 
 describe('ApiKeyProvider — Bug fix: finalText accumulation (Gemini streaming)', () => {
@@ -889,6 +910,25 @@ describe('ApiKeyProvider — Bug fix: finalText accumulation (Gemini streaming)'
 
     expect(result.content).toBe('Part1. Part2. Part3.');
     expect(onToolCall).toHaveBeenCalledTimes(2);
+  });
+
+  it('accumulates usage across Gemini stream tool-call iterations', async () => {
+    setupStreamMock([
+      [
+        'data: {"candidates":[{"content":{"parts":[{"text":"P1 "},{"functionCall":{"name":"read_file","args":{"path":"a.ts"}}}]}}],"usageMetadata":{"promptTokenCount":2,"candidatesTokenCount":1}}',
+      ],
+      [
+        'data: {"candidates":[{"content":{"parts":[{"text":"P2"}]}}],"usageMetadata":{"promptTokenCount":4,"candidatesTokenCount":3}}',
+      ],
+    ]);
+
+    const onToolCall = jest.fn().mockResolvedValue({ id: 'read_file', content: 'data', isError: false });
+    const p = new ApiKeyProvider({ googleApiKey: 'goog-key' });
+    const result = await p.sendRequest(AgentName.GEMINI, { ...defaultOpts, onChunk: jest.fn(), onToolCall });
+
+    expect(result.content).toBe('P1 P2');
+    expect(result.usage?.inputTokens).toBe(6);
+    expect(result.usage?.outputTokens).toBe(4);
   });
 });
 

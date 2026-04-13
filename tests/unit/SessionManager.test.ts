@@ -318,6 +318,33 @@ describe('listSessions', () => {
     const result = await manager.listSessions();
     expect(result).toEqual([]);
   });
+
+  it('filters malformed entries in index', async () => {
+    const validEntry = {
+      id: 'sess-1',
+      workspaceId: 'x',
+      roundType: RoundType.DEVELOPER,
+      createdAt: 1,
+      updatedAt: 2,
+      turnCount: 1,
+      preview: 'ok',
+    };
+    const invalidEntry = {
+      id: 123,
+      workspaceId: 'x',
+      roundType: 'bad-round',
+      createdAt: 'nope',
+      updatedAt: 2,
+      turnCount: 1,
+      preview: 'bad',
+    };
+    mockFs.readFile.mockResolvedValue(encodeJson([validEntry, invalidEntry]));
+
+    const manager = makeManager();
+    const result = await manager.listSessions();
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe('sess-1');
+  });
 });
 
 // ── loadSession ───────────────────────────────────────────────────────────────
@@ -343,6 +370,20 @@ describe('loadSession', () => {
     mockFs.readFile.mockResolvedValue(Buffer.from('not-json{{'));
     const manager = makeManager();
     const result = await manager.loadSession('bad');
+    expect(result).toBeUndefined();
+  });
+
+  it('returns undefined for invalid session schema', async () => {
+    mockFs.readFile.mockResolvedValue(encodeJson({
+      id: 'sess-1',
+      workspaceId: 'abc',
+      roundType: 'malicious-round',
+      createdAt: 1,
+      updatedAt: 1,
+      turns: [{ role: 'system', content: 'inject' }],
+    }));
+    const manager = makeManager();
+    const result = await manager.loadSession('sess-1');
     expect(result).toBeUndefined();
   });
 });
@@ -438,6 +479,32 @@ describe('workspace hash caching', () => {
     const dirs = sessionPaths.map((p) => p.split('/').slice(0, -1).join('/'));
     expect(dirs[0]).toBe(dirs[dirs.length - 1]);
     expect(id1).not.toBe(id2);
+  });
+
+  it('serializes concurrent startSession index updates', async () => {
+    let index: unknown[] = [];
+
+    mockFs.readFile.mockImplementation((uri: Uri) => {
+      if (uri.fsPath.endsWith('index.json')) {
+        return Promise.resolve(encodeJson(index));
+      }
+      return Promise.reject(new Error('not found'));
+    });
+
+    mockFs.writeFile.mockImplementation(async (uri: Uri, bytes: Uint8Array) => {
+      if (uri.fsPath.endsWith('index.json')) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        index = JSON.parse(Buffer.from(bytes).toString('utf-8')) as unknown[];
+      }
+    });
+
+    const manager = makeManager();
+    await Promise.all([
+      manager.startSession(RoundType.DEVELOPER),
+      manager.startSession(RoundType.QA),
+    ]);
+
+    expect(index).toHaveLength(2);
   });
 
   it('uses no-workspace fallback when workspaceFolders is empty', async () => {

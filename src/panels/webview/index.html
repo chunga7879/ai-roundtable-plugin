@@ -1924,6 +1924,9 @@
       function handleFinalizeMessage(payload) {
         const wrapper = document.getElementById('msg-' + payload.id);
         if (!wrapper) return;
+        const cursor = wrapper.querySelector('.stream-cursor');
+        if (cursor) cursor.remove();
+        wrapper.dataset.streamBuffer = '';
         const bodyEl = wrapper.querySelector('.message-body');
         if (!bodyEl) return;
         // Fade out → swap content → fade in

@@ -23,6 +23,8 @@ import type { WorkspaceReader } from '../workspace/WorkspaceReader';
 import type { ProgressEvent } from './AgentRunner';
 
 const REFLECTION_ENABLED_TOOLS: ToolCall['name'][] = ['write_file', 'delete_file'];
+const MAX_CACHED_FILES = 80;
+const MAX_CACHED_FILE_CHARS = 6_400_000; // 80 files * 80 KB read cap
 
 export interface StageCallAgentOptions {
   systemPrompt: string;
@@ -160,6 +162,7 @@ export class RoundExecutionStages {
 
       const cached = cachedFiles.get(toolCall.filePath);
       if (cached !== undefined) {
+        this.touchCachedFile(cachedFiles, toolCall.filePath, cached);
         onProgress({ type: 'tool_read', agentName: mainAgent, filePath: toolCall.filePath });
         return { id: toolCall.id, content: cached, isError: false };
       }
@@ -176,7 +179,7 @@ export class RoundExecutionStages {
       onProgress({ type: 'tool_read', agentName: mainAgent, filePath: toolCall.filePath });
       const result = await this.workspaceReader.readFileForTool(toolCall.filePath);
       if (!result.isError) {
-        cachedFiles.set(toolCall.filePath, result.content);
+        this.touchCachedFile(cachedFiles, toolCall.filePath, result.content);
       }
       return { id: toolCall.id, content: result.content, isError: result.isError };
     };
@@ -522,6 +525,35 @@ export class RoundExecutionStages {
       return;
     }
     fileChanges.push(change);
+  }
+
+  private touchCachedFile(cachedFiles: Map<string, string>, filePath: string, content: string): void {
+    if (cachedFiles.has(filePath)) {
+      cachedFiles.delete(filePath);
+    }
+    cachedFiles.set(filePath, content);
+    this.pruneCachedFiles(cachedFiles);
+  }
+
+  private pruneCachedFiles(cachedFiles: Map<string, string>): void {
+    while (cachedFiles.size > MAX_CACHED_FILES) {
+      const oldestKey = cachedFiles.keys().next().value;
+      if (!oldestKey) {
+        break;
+      }
+      cachedFiles.delete(oldestKey);
+    }
+
+    let totalChars = Array.from(cachedFiles.values()).reduce((sum, value) => sum + value.length, 0);
+    while (totalChars > MAX_CACHED_FILE_CHARS) {
+      const oldestKey = cachedFiles.keys().next().value;
+      if (!oldestKey) {
+        break;
+      }
+      const removed = cachedFiles.get(oldestKey);
+      cachedFiles.delete(oldestKey);
+      totalChars -= removed?.length ?? 0;
+    }
   }
 
   private assertNotCancelled(cancellationToken: vscode.CancellationToken): void {
