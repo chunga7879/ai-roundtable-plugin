@@ -4,6 +4,15 @@
   "description": "Multi-agent AI assistant for VS Code workspaces — run requirements, architecture, development, review, QA, DevOps, and debugging rounds with Claude, GPT, Gemini, or GitHub Copilot.",
   "version": "0.1.0",
   "publisher": "chungalee",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/chunga7879/ai-roundtable-plugin.git"
+  },
+  "homepage": "https://github.com/chunga7879/ai-roundtable-plugin#readme",
+  "bugs": {
+    "url": "https://github.com/chunga7879/ai-roundtable-plugin/issues"
+  },
   "engines": {
     "vscode": "^1.88.0"
   },
