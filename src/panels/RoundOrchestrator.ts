@@ -7,12 +7,13 @@ import type {
   ExtensionToWebviewMessage,
   FileChange,
   RoundRequest,
+  RoundRetryCheckpoint,
   TokenUsage,
 } from '../types';
 import { AgentName, ProviderMode } from '../types';
 import type { RoundType } from '../types';
 import type { ProgressEvent } from '../agents/AgentRunner';
-import { AgentRunner } from '../agents/AgentRunner';
+import { AgentRunner, RetryableRoundError } from '../agents/AgentRunner';
 import { CopilotProvider } from '../agents/CopilotProvider';
 import { ApiKeyProvider } from '../agents/ApiKeyProvider';
 import { resolveWorkspaceRootForCommand } from '../workspace/WorkspaceRootResolver';
@@ -35,6 +36,7 @@ export interface OrchestratorRunParams {
   conversationHistory: ConversationTurn[];
   fileCache: Map<string, string>;
   commandOutputCache: Map<string, CommandOutput>;
+  retryCheckpoint?: RoundRetryCheckpoint;
 }
 
 export type OrchestratorResult =
@@ -60,7 +62,7 @@ export type OrchestratorResult =
       };
     }
   | { status: 'cancelled' }
-  | { status: 'error'; error: unknown };
+  | { status: 'error'; error: unknown; retryCheckpoint?: RoundRetryCheckpoint };
 
 const EXEC_MAX_OUTPUT = 50_000;
 const COPILOT_AVAILABLE_AGENTS: AgentName[] = [AgentName.CLAUDE, AgentName.GPT, AgentName.GEMINI];
@@ -98,7 +100,16 @@ export class RoundOrchestrator {
   }
 
   async run(params: OrchestratorRunParams): Promise<OrchestratorResult> {
-    const { userMessage, roundType, mainAgent, subAgents, conversationHistory, fileCache, commandOutputCache } = params;
+    const {
+      userMessage,
+      roundType,
+      mainAgent,
+      subAgents,
+      conversationHistory,
+      fileCache,
+      commandOutputCache,
+      retryCheckpoint,
+    } = params;
 
     // Remove orphaned streaming bubble from a previous interrupted request
     if (this.streamingMsgId) {
@@ -132,6 +143,7 @@ export class RoundOrchestrator {
         conversationHistory: [...conversationHistory],
         cachedFiles: fileCache,
         cachedCommandOutputs: commandOutputCache,
+        retryCheckpoint,
       };
 
       const result = await runner.runRound(
@@ -162,6 +174,9 @@ export class RoundOrchestrator {
     } catch (err) {
       if (err instanceof vscode.CancellationError) {
         return { status: 'cancelled' };
+      }
+      if (err instanceof RetryableRoundError) {
+        return { status: 'error', error: err, retryCheckpoint: err.retryCheckpoint };
       }
       return { status: 'error', error: err };
     } finally {

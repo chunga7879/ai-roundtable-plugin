@@ -229,7 +229,7 @@ This can happen if the Copilot API is temporarily unresponsive. The extension wi
 ## Known limitations
 
 - **Copilot model selection is best-effort** — even with per-agent family/tier preferences, VS Code Copilot may still resolve to a different available model under the requested family.
-- **Conversation history resets when you switch round type** — switching from Developer to Reviewer starts a new conversation.
+- **Round switch uses compact handoff, not full history** — when you switch round type in the same panel, AI Roundtable carries forward a token-capped handoff summary instead of full prior turns.
 - **Sub-agents do not have tool access** — verifiers cannot call `read_file`, `run_command`, `write_file`, or `delete_file`; they only review context produced by the primary agent in that turn.
 - **Reflection stage has strict tool and scope limits** — reflection cannot call `read_file`/`run_command`, and may modify only files written in Step 1 of the same turn.
 - **Max 80 workspace files** — large projects will still have some files omitted. Open the most relevant files before sending a request.

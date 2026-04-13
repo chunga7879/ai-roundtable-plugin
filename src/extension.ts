@@ -7,7 +7,7 @@ import type {
   ModelTier,
 } from './types';
 import { AgentName, ProviderMode } from './types';
-import { ChatPanel } from './panels/ChatPanel';
+import { CHAT_PANEL_VIEW_TYPE, ChatPanel } from './panels/ChatPanel';
 import { ConfigurationError } from './errors';
 import { RoundMetricsLogger } from './metrics/RoundMetricsLogger';
 
@@ -363,6 +363,15 @@ export async function activate(
     vscode.workspace.registerTextDocumentContentProvider(DIFF_SCHEME, {
       provideTextDocumentContent(uri: vscode.Uri): string {
         return diffContentStore.get(uri.path) ?? '';
+      },
+    }),
+  );
+
+  context.subscriptions.push(
+    vscode.window.registerWebviewPanelSerializer(CHAT_PANEL_VIEW_TYPE, {
+      deserializeWebviewPanel(panel: vscode.WebviewPanel): Promise<void> {
+        ChatPanel.revive(panel, context, configManager);
+        return Promise.resolve();
       },
     }),
   );

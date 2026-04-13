@@ -1,4 +1,4 @@
-import { AgentRunner, AgentRunnerError } from '../../src/agents/AgentRunner';
+import { AgentRunner, AgentRunnerError, RetryableRoundError } from '../../src/agents/AgentRunner';
 import { AgentName, ProviderMode, RoundType } from '../../src/types';
 import type { RoundRequest, ToolCall, ToolResult } from '../../src/types';
 import { CancellationError } from 'vscode';
@@ -1813,6 +1813,101 @@ describe('AgentRunner', () => {
       );
 
       expect(capturedSubAgentMessages[0]).not.toContain('[COMMANDS RUN BY PRIMARY AGENT]');
+    });
+  });
+
+  describe('retry checkpoints', () => {
+    it('resumes from provided after_main checkpoint without re-running main stage', async () => {
+      const copilotProvider = {
+        sendRequest: jest.fn().mockImplementation(() => {
+          const n = copilotProvider.sendRequest.mock.calls.length;
+          if (n === 1) return Promise.resolve('Verifier feedback');
+          return Promise.resolve('Reflected response');
+        }),
+        isAvailable: jest.fn().mockResolvedValue(true),
+        invalidateModelCache: jest.fn(),
+      };
+      const runner = new AgentRunner({
+        copilotProvider: copilotProvider as never,
+        apiKeyProvider: makeApiKeyProvider() as never,
+        providerMode: ProviderMode.COPILOT,
+        workspaceReader: makeWorkspaceReader() as never,
+      });
+
+      const request = makeRoundRequest({
+        subAgents: [AgentName.GPT],
+        retryCheckpoint: {
+          requestFingerprint: 'developer::claude::gpt::Build a TODO app',
+          stage: 'after_main',
+          mainAgentResponse: 'Main response',
+          mainAgentFileChanges: [],
+        },
+      });
+      const resumed = await runner.runRound(
+        request,
+        makeCancellationToken(),
+        jest.fn(),
+      );
+
+      expect(resumed.mainAgentResponse).toBe('Main response');
+      expect(resumed.reflectedResponse).toBe('Reflected response');
+      expect(copilotProvider.sendRequest).toHaveBeenCalledTimes(2);
+    });
+
+    it('fails with after_verification checkpoint and resumes reflection only', async () => {
+      let callCount = 0;
+      const copilotProvider = {
+        sendRequest: jest.fn().mockImplementation(() => {
+          callCount++;
+          if (callCount === 1) {
+            return Promise.resolve('Main response');
+          }
+          if (callCount === 2) {
+            return Promise.resolve('Verifier feedback');
+          }
+          if (callCount === 3) {
+            return Promise.reject(new Error('Reflection timeout'));
+          }
+          return Promise.resolve('Reflected response');
+        }),
+        isAvailable: jest.fn().mockResolvedValue(true),
+        invalidateModelCache: jest.fn(),
+      };
+      const runner = new AgentRunner({
+        copilotProvider: copilotProvider as never,
+        apiKeyProvider: makeApiKeyProvider() as never,
+        providerMode: ProviderMode.COPILOT,
+        workspaceReader: makeWorkspaceReader() as never,
+      });
+
+      let checkpointError: RetryableRoundError | undefined;
+      try {
+        await runner.runRound(
+          makeRoundRequest({ subAgents: [AgentName.GPT] }),
+          makeCancellationToken(),
+          jest.fn(),
+        );
+      } catch (err) {
+        checkpointError = err as RetryableRoundError;
+      }
+
+      expect(checkpointError).toBeInstanceOf(RetryableRoundError);
+      expect(checkpointError?.retryCheckpoint.stage).toBe('after_verification');
+      expect(checkpointError?.retryCheckpoint.subAgentVerifications).toHaveLength(1);
+
+      const resumed = await runner.runRound(
+        makeRoundRequest({
+          subAgents: [AgentName.GPT],
+          retryCheckpoint: checkpointError?.retryCheckpoint,
+        }),
+        makeCancellationToken(),
+        jest.fn(),
+      );
+
+      expect(resumed.reflectedResponse).toBe('Reflected response');
+      // Initial run: main + verifier + failed reflection = 3 calls
+      // Resume run: reflection only = 1 call
+      expect(copilotProvider.sendRequest).toHaveBeenCalledTimes(4);
     });
   });
 

@@ -206,6 +206,7 @@ export const window = {
   showErrorMessage: jest.fn().mockResolvedValue(undefined),
   showInputBox: jest.fn().mockResolvedValue(undefined),
   showQuickPick: jest.fn().mockResolvedValue(undefined),
+  registerWebviewPanelSerializer: jest.fn().mockReturnValue({ dispose: jest.fn() }),
   createTerminal: jest.fn().mockReturnValue({
     show: jest.fn(),
     sendText: jest.fn(),

@@ -7,6 +7,8 @@ import type {
   FileChange,
   RoundRequest,
   RoundResult,
+  RoundRetryCheckpoint,
+  RoundRetryStage,
   SubAgentVerification,
   ToolCall,
   ToolResult,
@@ -39,6 +41,17 @@ export class AgentRunnerError extends RoundtableError {
   constructor(message: string, cause?: unknown) {
     super(message, cause);
     this.name = 'AgentRunnerError';
+  }
+}
+
+export class RetryableRoundError extends AgentRunnerError {
+  constructor(
+    message: string,
+    public readonly retryCheckpoint: RoundRetryCheckpoint,
+    cause?: unknown,
+  ) {
+    super(message, cause);
+    this.name = 'RetryableRoundError';
   }
 }
 
@@ -86,7 +99,16 @@ export class AgentRunner {
       conversationHistory,
       cachedFiles,
       cachedCommandOutputs,
+      retryCheckpoint,
     } = request;
+    const requestFingerprint = this.buildRetryFingerprint(request);
+    const resumeCheckpoint = this.resolveRetryCheckpoint(retryCheckpoint, requestFingerprint);
+    const resumedMain = resumeCheckpoint?.mainAgentResponse;
+    const resumedFileChanges = resumeCheckpoint?.mainAgentFileChanges ?? [];
+    const resumedVerifications = resumeCheckpoint?.stage === 'after_verification'
+      ? (resumeCheckpoint.subAgentVerifications ?? [])
+      : [];
+
     const systemPrompt = buildSystemPrompt(roundType);
     const stages = new RoundExecutionStages({
       workspaceReader: this.workspaceReader,
@@ -98,21 +120,19 @@ export class AgentRunner {
       extractConsensusIssues: (verifications) => this.extractConsensusIssues(verifications),
       awaitWithCancellation: (promise, token) => this.awaitWithCancellation(promise, token),
     });
-    const fullUserMessage = stages.buildFullUserMessage(
-      workspaceContext,
-      cachedFiles,
-      userMessage,
-      (context, cache) => this.buildFileListSection(context, cache),
-    );
     const toolHandlers: RoundToolHandlers = stages.createRoundToolHandlers({
       mainAgent,
       onProgress,
       onRunCommand,
       cachedFiles,
       cachedCommandOutputs,
+      initialFileChanges: resumedFileChanges,
     });
 
-    const totalUsage: TokenUsage = { inputTokens: 0, outputTokens: 0 };
+    const totalUsage: TokenUsage = {
+      inputTokens: resumeCheckpoint?.usageSnapshot?.inputTokens ?? 0,
+      outputTokens: resumeCheckpoint?.usageSnapshot?.outputTokens ?? 0,
+    };
     const addUsage = (usage?: TokenUsage) => {
       if (usage) {
         totalUsage.inputTokens += usage.inputTokens;
@@ -120,45 +140,97 @@ export class AgentRunner {
       }
     };
 
-    const { mainAgentResponse, mainAgentFileChanges } = await stages.runMainAgentStage({
-      mainAgent,
-      roundType,
-      userMessage,
-      systemPrompt,
-      fullUserMessage,
-      conversationHistory,
-      cancellationToken,
-      onProgress,
-      toolHandlers,
-      addUsage,
-    });
+    let mainAgentResponse = resumedMain ?? '';
+    let mainAgentFileChanges: FileChange[] = [...resumedFileChanges];
+    if (!resumedMain) {
+      const fullUserMessage = stages.buildFullUserMessage(
+        workspaceContext,
+        cachedFiles,
+        userMessage,
+        (context, cache) => this.buildFileListSection(context, cache),
+      );
+      const mainStageResult = await stages.runMainAgentStage({
+        mainAgent,
+        roundType,
+        userMessage,
+        systemPrompt,
+        fullUserMessage,
+        conversationHistory,
+        cancellationToken,
+        onProgress,
+        toolHandlers,
+        addUsage,
+      });
+      mainAgentResponse = mainStageResult.mainAgentResponse;
+      mainAgentFileChanges = mainStageResult.mainAgentFileChanges;
+    }
 
-    const subAgentVerifications = await stages.runSubAgentVerificationStage({
-      roundType,
-      mainAgent,
-      subAgents,
-      userMessage,
-      mainAgentResponse,
-      mainAgentFileChanges,
-      conversationHistory,
-      cachedFiles,
-      cachedCommandOutputs,
-      cancellationToken,
-      onProgress,
-      addUsage,
-    });
+    let subAgentVerifications: SubAgentVerification[] = [...resumedVerifications];
+    if (resumeCheckpoint?.stage !== 'after_verification') {
+      try {
+        subAgentVerifications = await stages.runSubAgentVerificationStage({
+          roundType,
+          mainAgent,
+          subAgents,
+          userMessage,
+          mainAgentResponse,
+          mainAgentFileChanges,
+          conversationHistory,
+          cachedFiles,
+          cachedCommandOutputs,
+          cancellationToken,
+          onProgress,
+          addUsage,
+        });
+      } catch (err) {
+        if (err instanceof vscode.CancellationError) {
+          throw err;
+        }
+        throw new RetryableRoundError(
+          'Round failed during verification stage.',
+          this.buildRetryCheckpoint(
+            requestFingerprint,
+            'after_main',
+            mainAgentResponse,
+            mainAgentFileChanges,
+            undefined,
+            totalUsage,
+          ),
+          err,
+        );
+      }
+    }
 
-    const reflectedResponse = await stages.runReflectionStage({
-      roundType,
-      mainAgent,
-      mainAgentResponse,
-      mainAgentFileChanges,
-      subAgentVerifications,
-      cancellationToken,
-      onProgress,
-      toolHandlers,
-      addUsage,
-    });
+    let reflectedResponse: string;
+    try {
+      reflectedResponse = await stages.runReflectionStage({
+        roundType,
+        mainAgent,
+        mainAgentResponse,
+        mainAgentFileChanges,
+        subAgentVerifications,
+        cancellationToken,
+        onProgress,
+        toolHandlers,
+        addUsage,
+      });
+    } catch (err) {
+      if (err instanceof vscode.CancellationError) {
+        throw err;
+      }
+      throw new RetryableRoundError(
+        'Round failed during reflection stage.',
+        this.buildRetryCheckpoint(
+          requestFingerprint,
+          'after_verification',
+          mainAgentResponse,
+          mainAgentFileChanges,
+          subAgentVerifications,
+          totalUsage,
+        ),
+        err,
+      );
+    }
 
     const fileChanges: FileChange[] = [...toolHandlers.getAllFileChanges()];
     const { displayResponse, verifyCommand } = this.parseVerifyCommandFromResponse(reflectedResponse);
@@ -172,6 +244,53 @@ export class AgentRunner {
       tokenUsage: hasUsage ? totalUsage : undefined,
       verifyCommand,
     };
+  }
+
+  private buildRetryCheckpoint(
+    requestFingerprint: string,
+    stage: RoundRetryStage,
+    mainAgentResponse: string,
+    mainAgentFileChanges: FileChange[],
+    subAgentVerifications: SubAgentVerification[] | undefined,
+    usage: TokenUsage,
+  ): RoundRetryCheckpoint {
+    return {
+      requestFingerprint,
+      stage,
+      mainAgentResponse,
+      mainAgentFileChanges: [...mainAgentFileChanges],
+      subAgentVerifications: subAgentVerifications ? [...subAgentVerifications] : undefined,
+      usageSnapshot:
+        usage.inputTokens > 0 || usage.outputTokens > 0
+          ? { ...usage }
+          : undefined,
+    };
+  }
+
+  private resolveRetryCheckpoint(
+    checkpoint: RoundRetryCheckpoint | undefined,
+    expectedFingerprint: string,
+  ): RoundRetryCheckpoint | undefined {
+    if (!checkpoint || checkpoint.requestFingerprint !== expectedFingerprint) {
+      return undefined;
+    }
+    if (!checkpoint.mainAgentResponse || checkpoint.mainAgentFileChanges === undefined) {
+      return undefined;
+    }
+    if (checkpoint.stage === 'after_verification' && !checkpoint.subAgentVerifications) {
+      return undefined;
+    }
+    return checkpoint;
+  }
+
+  private buildRetryFingerprint(request: Pick<RoundRequest, 'userMessage' | 'roundType' | 'mainAgent' | 'subAgents'>): string {
+    const subAgents = Array.from(new Set(request.subAgents)).sort().join(',');
+    return [
+      request.roundType,
+      request.mainAgent,
+      subAgents,
+      request.userMessage.trim(),
+    ].join('::');
   }
 
   private async callAgent(

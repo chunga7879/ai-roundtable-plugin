@@ -410,6 +410,52 @@ describe('ChatPanel — createOrReveal reveal', () => {
   });
 });
 
+// ── revive — restart/panel restore paths ────────────────────────────────────
+
+describe('ChatPanel — revive', () => {
+  const extensionContext = {
+    extensionUri: vscode.Uri.file('/ext'),
+    globalStorageUri: vscode.Uri.file('/tmp/ai-roundtable-test'),
+  } as unknown as vscode.ExtensionContext;
+
+  it('reuses existing instance when reviving the same panel', async () => {
+    jest.clearAllMocks();
+    const panel = makeWebviewPanel();
+    (vscode.window.createWebviewPanel as jest.Mock).mockReturnValue(panel);
+    (vscode.lm.selectChatModels as jest.Mock).mockResolvedValue([]);
+
+    const { ChatPanel } = await import('../../src/panels/ChatPanel');
+    (ChatPanel as unknown as { instance: undefined }).instance = undefined;
+
+    const existing = ChatPanel.createOrReveal(vscode.Uri.file('/ext'), makeConfigManager() as never);
+    const revived = ChatPanel.revive(panel as never, extensionContext, makeConfigManager() as never);
+
+    expect(revived).toBe(existing);
+    expect(panel.dispose).not.toHaveBeenCalled();
+  });
+
+  it('replaces previous instance when reviving a different panel', async () => {
+    jest.clearAllMocks();
+    const firstPanel = makeWebviewPanel();
+    const secondPanel = makeWebviewPanel();
+    (vscode.window.createWebviewPanel as jest.Mock).mockReturnValue(firstPanel);
+    (vscode.lm.selectChatModels as jest.Mock).mockResolvedValue([]);
+
+    const { ChatPanel } = await import('../../src/panels/ChatPanel');
+    (ChatPanel as unknown as { instance: undefined }).instance = undefined;
+
+    const firstInstance = ChatPanel.createOrReveal(vscode.Uri.file('/ext'), makeConfigManager() as never);
+    const revived = ChatPanel.revive(secondPanel as never, extensionContext, makeConfigManager() as never);
+
+    expect(revived).not.toBe(firstInstance);
+    expect(firstPanel.dispose).toHaveBeenCalledTimes(1);
+    expect((secondPanel.webview as { options?: unknown }).options).toEqual({
+      enableScripts: true,
+      localResourceRoots: [extensionContext.extensionUri],
+    });
+  });
+});
+
 // ── requestConfig — getConfig failure ────────────────────────────────────────
 
 describe('ChatPanel — requestConfig getConfig failure', () => {

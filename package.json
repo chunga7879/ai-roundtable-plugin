@@ -25,7 +25,8 @@
   ],
   "icon": "resources/ai_roundtable_icon.png",
   "activationEvents": [
-    "onStartupFinished"
+    "onStartupFinished",
+    "onWebviewPanel:aiRoundtable.chatPanel"
   ],
   "main": "./out/extension.js",
   "contributes": {

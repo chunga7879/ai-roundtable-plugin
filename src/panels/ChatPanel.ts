@@ -7,6 +7,7 @@ import type {
   ConversationTurn,
   ExtensionToWebviewMessage,
   FileChange,
+  RoundRetryCheckpoint,
 } from '../types';
 import { SessionManager } from '../sessions/SessionManager';
 import {
@@ -26,7 +27,7 @@ import { RoundOrchestrator, execCommand } from './RoundOrchestrator';
 import { RoundMetricsLogger } from '../metrics/RoundMetricsLogger';
 import type { RoundRunMetricRecord } from '../metrics/RoundMetricsLogger';
 
-const VIEW_TYPE = 'aiRoundtable.chatPanel';
+export const CHAT_PANEL_VIEW_TYPE = 'aiRoundtable.chatPanel';
 const PANEL_TITLE = 'AI Roundtable';
 const DRAFT_FILE_CHANGES_KEY = 'aiRoundtable.draftFileChanges';
 
@@ -44,6 +45,9 @@ const CONTEXT_LIMIT_TOKENS: Record<string, number> = {
 
 /** Rough chars-to-tokens ratio (4 chars ≈ 1 token). */
 const CHARS_PER_TOKEN = 4;
+const ROUND_HANDOFF_MAX_CHARS = 500 * CHARS_PER_TOKEN;
+const ROUND_HANDOFF_MAX_TURNS = 10;
+const ROUND_HANDOFF_MAX_CHARS_PER_TURN = 260;
 const COPILOT_AVAILABLE_AGENTS: AgentName[] = [
   AgentName.CLAUDE,
   AgentName.GPT,
@@ -63,6 +67,7 @@ export class ChatPanel implements vscode.Disposable {
   private conversationHistory: ConversationTurn[] = [];
   private currentRoundType: RoundType | undefined;
   private lastSendMessage: { userMessage: string; roundType: RoundType; mainAgent: AgentName; subAgents: AgentName[] } | undefined;
+  private lastRetryCheckpoint: RoundRetryCheckpoint | undefined;
   /** Files read by the agent — reused on next turn within a round, cleared on round change or Apply Changes. */
   private fileCache: Map<string, string> = new Map();
   /** Command outputs from the current turn — cleared on round change or Apply Changes. */
@@ -136,7 +141,7 @@ export class ChatPanel implements vscode.Disposable {
     }
 
     const panel = vscode.window.createWebviewPanel(
-      VIEW_TYPE,
+      CHAT_PANEL_VIEW_TYPE,
       PANEL_TITLE,
       column ?? vscode.ViewColumn.Beside,
       {
@@ -147,6 +152,35 @@ export class ChatPanel implements vscode.Disposable {
     );
 
     ChatPanel.instance = new ChatPanel(panel, extensionUri, configManager, extensionContext);
+    return ChatPanel.instance;
+  }
+
+  static revive(
+    panel: vscode.WebviewPanel,
+    context: vscode.ExtensionContext,
+    configManager: ConfigManager,
+  ): ChatPanel {
+    if (ChatPanel.instance && ChatPanel.instance.panel === panel) {
+      ChatPanel.instance.syncLoadingStateWithBackend();
+      void ChatPanel.instance.handleRequestConfig();
+      return ChatPanel.instance;
+    }
+
+    panel.webview.options = {
+      enableScripts: true,
+      localResourceRoots: [context.extensionUri],
+    };
+
+    if (ChatPanel.instance) {
+      ChatPanel.instance.dispose();
+    }
+
+    ChatPanel.instance = new ChatPanel(
+      panel,
+      context.extensionUri,
+      configManager,
+      context,
+    );
     return ChatPanel.instance;
   }
 
@@ -218,7 +252,14 @@ export class ChatPanel implements vscode.Disposable {
       case 'retryLastMessage':
         if (this.lastSendMessage) {
           const { userMessage, roundType, mainAgent, subAgents } = this.lastSendMessage;
-          await this.handleSendMessage(userMessage, roundType, mainAgent, subAgents);
+          await this.handleSendMessage(
+            userMessage,
+            roundType,
+            mainAgent,
+            subAgents,
+            false,
+            this.lastRetryCheckpoint,
+          );
         }
         break;
 
@@ -301,6 +342,7 @@ export class ChatPanel implements vscode.Disposable {
     this.currentRoundType = undefined;
     this.currentSessionId = undefined;
     this.lastSendMessage = undefined;
+    this.lastRetryCheckpoint = undefined;
     this.fileCache.clear();
     this.commandOutputCache.clear();
     this.clearDraftFileChanges(true);
@@ -339,6 +381,7 @@ export class ChatPanel implements vscode.Disposable {
     this.conversationHistory = [...session.turns];
     this.currentRoundType = session.roundType;
     this.lastSendMessage = undefined;
+    this.lastRetryCheckpoint = undefined;
     this.fileCache.clear();
     this.commandOutputCache.clear();
     this.pendingVerifyCommand = undefined;
@@ -379,9 +422,13 @@ export class ChatPanel implements vscode.Disposable {
     mainAgent: AgentName,
     subAgents: AgentName[],
     suppressUserBubble = false,
+    retryCheckpoint?: RoundRetryCheckpoint,
   ): Promise<void> {
     // Save for retry
     this.lastSendMessage = { userMessage, roundType, mainAgent, subAgents };
+    if (!retryCheckpoint) {
+      this.lastRetryCheckpoint = undefined;
+    }
 
     const previousRoundType = this.currentRoundType;
 
@@ -394,11 +441,15 @@ export class ChatPanel implements vscode.Disposable {
         void this.sessionManager.updateSessionRoundType(this.currentSessionId, roundType);
       }
     } else if (roundType !== previousRoundType) {
-      // Reset history and file cache when round type changes
-      this.conversationHistory = [];
+      // Reset history and file cache when round type changes.
+      // Keep a compact handoff summary so the next round has minimal continuity
+      // without carrying full history/token cost.
+      const handoffTurn = this.buildRoundHandoffTurn(previousRoundType, roundType);
+      this.conversationHistory = handoffTurn ? [handoffTurn] : [];
       this.currentSessionId = undefined;
       this.fileCache.clear();
       this.pendingVerifyCommand = undefined;
+      this.lastRetryCheckpoint = undefined;
       this.postMessage({ type: 'roundChanged', payload: { roundType } });
       this.currentRoundType = roundType;
     }
@@ -437,12 +488,14 @@ export class ChatPanel implements vscode.Disposable {
       conversationHistory: this.conversationHistory,
       fileCache: this.fileCache,
       commandOutputCache: this.commandOutputCache,
+      retryCheckpoint,
     });
     const runConfig = await runConfigPromise;
 
     switch (result.status) {
       case 'cancelled':
         this.pendingVerifyCommand = undefined;
+        this.lastRetryCheckpoint = undefined;
         this.postMessage({
           type: 'addMessage',
           payload: { id: crypto.randomUUID(), role: 'system', content: 'Request cancelled.', timestamp: Date.now() },
@@ -464,7 +517,11 @@ export class ChatPanel implements vscode.Disposable {
         // Preserve user message in history so retry has context.
         this.conversationHistory.push({ role: 'user', content: userMessage });
         this.pendingVerifyCommand = undefined;
-        this.postErrorMessage(this.toSafeUserMessage(result.error), true);
+        this.lastRetryCheckpoint = result.retryCheckpoint;
+        this.postErrorMessage(
+          this.toErrorMessageWithRetryHint(this.toSafeUserMessage(result.error), result.retryCheckpoint),
+          true,
+        );
         if (runConfig?.enableMetrics) {
           void this.logRoundMetric({
             roundType,
@@ -480,6 +537,7 @@ export class ChatPanel implements vscode.Disposable {
         break;
 
       case 'success': {
+        this.lastRetryCheckpoint = undefined;
         if (result.newUserTurn) {
           this.conversationHistory.push(result.newUserTurn);
         }
@@ -548,6 +606,19 @@ export class ChatPanel implements vscode.Disposable {
         break;
       }
     }
+  }
+
+  private toErrorMessageWithRetryHint(
+    baseMessage: string,
+    retryCheckpoint: RoundRetryCheckpoint | undefined,
+  ): string {
+    if (!retryCheckpoint) {
+      return baseMessage;
+    }
+    const stageLabel = retryCheckpoint.stage === 'after_verification'
+      ? 'reflection'
+      : 'verification';
+    return `${baseMessage}\n\nRetry will resume from ${stageLabel} stage.`;
   }
 
   private async handleApplyChanges(fileChanges: FileChange[]): Promise<void> {
@@ -747,6 +818,55 @@ export class ChatPanel implements vscode.Disposable {
 
   private syncLoadingStateWithBackend(): void {
     this.postMessage({ type: 'setLoading', payload: { loading: this.isBusy() } });
+  }
+
+  private buildRoundHandoffTurn(
+    previousRoundType: RoundType,
+    nextRoundType: RoundType,
+  ): ConversationTurn | undefined {
+    if (this.conversationHistory.length === 0) {
+      return undefined;
+    }
+
+    const recentTurns = this.conversationHistory.slice(-ROUND_HANDOFF_MAX_TURNS);
+    const bodyLines: string[] = [];
+    for (const turn of recentTurns) {
+      const role = turn.role === 'user' ? 'User' : 'Assistant';
+      const compact = this.compactHandoffText(turn.content, ROUND_HANDOFF_MAX_CHARS_PER_TURN);
+      if (!compact) {
+        continue;
+      }
+      bodyLines.push(`- ${role}: ${compact}`);
+    }
+    if (bodyLines.length === 0) {
+      return undefined;
+    }
+
+    let content = [
+      '[ROUND_HANDOFF_SUMMARY]',
+      `Previous round: ${previousRoundType}`,
+      `Current round: ${nextRoundType}`,
+      '',
+      'Carry-forward context from the prior round:',
+      ...bodyLines,
+    ].join('\n');
+
+    if (content.length > ROUND_HANDOFF_MAX_CHARS) {
+      content = `${content.slice(0, ROUND_HANDOFF_MAX_CHARS - 44).trimEnd()}\n- ... (truncated for token budget)`;
+    }
+
+    return { role: 'user', content };
+  }
+
+  private compactHandoffText(text: string, maxChars: number): string {
+    const normalized = text.replace(/\s+/g, ' ').trim();
+    if (!normalized) {
+      return '';
+    }
+    if (normalized.length <= maxChars) {
+      return normalized;
+    }
+    return `${normalized.slice(0, maxChars - 3).trimEnd()}...`;
   }
 
   private resolveAvailableAgents(config: {

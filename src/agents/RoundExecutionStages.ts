@@ -102,13 +102,21 @@ export class RoundExecutionStages {
     onRunCommand?: (command: string) => Promise<CommandOutput>;
     cachedFiles: Map<string, string>;
     cachedCommandOutputs: Map<string, CommandOutput>;
+    initialFileChanges?: FileChange[];
   }): RoundToolHandlers {
-    const { mainAgent, onProgress, onRunCommand, cachedFiles, cachedCommandOutputs } = params;
+    const {
+      mainAgent,
+      onProgress,
+      onRunCommand,
+      cachedFiles,
+      cachedCommandOutputs,
+      initialFileChanges = [],
+    } = params;
     let toolCallCount = 0;
     let reflectionWriteCount = 0;
     const maxReflectionWrites = 20;
     let allowedReflectionFilePaths: Set<string> = new Set();
-    const allFileChanges: FileChange[] = [];
+    const allFileChanges: FileChange[] = [...initialFileChanges];
 
     const main = async (toolCall: ToolCall): Promise<ToolResult> => {
       if (toolCall.name === 'run_command') {

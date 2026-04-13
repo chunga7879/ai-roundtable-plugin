@@ -33,7 +33,7 @@ A **round** is a specialized AI mode for a specific phase of software developmen
 - The **Reviewer** round instructs the AI to act as a Staff Engineer conducting an adversarial code review.
 - The **QA** round instructs the AI to write tests targeting ≥80% branch coverage.
 
-Switching to a different round changes the AI's behavior entirely and resets the conversation history.
+Switching to a different round changes the AI's behavior entirely. In the same panel, AI Roundtable carries a compact handoff summary (typically ~200-500 tokens when enough prior context exists) instead of full prior history.
 
 ### What is a Main Agent?
 
@@ -195,7 +195,7 @@ Turn 3: "Write the implementation"
   → AI writes the code based on the agreed design
 ```
 
-Switching to a different round clears the history for that round and starts fresh.
+Switching to a different round starts a new round context. The extension injects a compact handoff summary from the prior round in the same panel (not the full transcript).
 
 ---
 

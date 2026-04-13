@@ -483,6 +483,10 @@ describe('activate()', () => {
       DIFF_SCHEME,
       expect.objectContaining({ provideTextDocumentContent: expect.any(Function) }),
     );
+    expect(mockWin.registerWebviewPanelSerializer).toHaveBeenCalledWith(
+      'aiRoundtable.chatPanel',
+      expect.objectContaining({ deserializeWebviewPanel: expect.any(Function) }),
+    );
     expect(mockCmds.registerCommand).toHaveBeenCalledWith('aiRoundtable.openPanel', expect.any(Function));
     expect(mockCmds.registerCommand).toHaveBeenCalledWith('aiRoundtable.configureProvider', expect.any(Function));
     expect(mockCmds.registerCommand).toHaveBeenCalledWith('aiRoundtable.clearApiKeys', expect.any(Function));

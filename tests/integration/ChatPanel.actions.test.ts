@@ -194,6 +194,55 @@ describe('ChatPanel — retryLastMessage', () => {
     const msgs = panel._sentMessages as Array<{ type: string; payload?: { role?: string } }>;
     expect(msgs.some((m) => m.type === 'setLoading')).toBe(true);
   });
+
+  it('resumes from failed verification checkpoint instead of restarting main stage', async () => {
+    let callCount = 0;
+    const fakeModel = {
+      sendRequest: jest.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          return Promise.resolve({
+            stream: (async function* () {
+              yield new vscode.LanguageModelTextPart('Main response');
+            })(),
+          });
+        }
+        if (callCount === 2) {
+          return Promise.resolve({
+            stream: (async function* () {
+              yield new vscode.LanguageModelTextPart('Verifier feedback');
+            })(),
+          });
+        }
+        if (callCount === 3) {
+          throw new Error('Reflection timeout');
+        }
+        return Promise.resolve({
+          stream: (async function* () {
+            yield new vscode.LanguageModelTextPart('Reflected response');
+          })(),
+        });
+      }),
+    };
+    const { panel } = await setupPanel(makeConfigManager(), fakeModel);
+    const handler = (panel as unknown as { _messageHandler: (m: unknown) => void })._messageHandler;
+
+    handler({
+      type: 'sendMessage',
+      payload: {
+        ...validSendMessage.payload,
+        subAgents: [AgentName.GPT],
+      },
+    });
+    await waitFor(() => (panel._sentMessages as Array<{ type: string; payload?: { role?: string } }>)
+      .some((m) => m.type === 'addMessage' && m.payload?.role === 'error'));
+
+    handler({ type: 'retryLastMessage' });
+    await waitFor(() => (panel._sentMessages as Array<{ type: string; payload?: { content?: string } }>)
+      .some((m) => m.type === 'finalizeMessage' && m.payload?.content?.includes('Reflected response')));
+
+    expect(fakeModel.sendRequest).toHaveBeenCalledTimes(4);
+  });
 });
 
 // ── cancelRequest ─────────────────────────────────────────────────────────────
@@ -439,14 +488,14 @@ describe('ChatPanel — setModelTier', () => {
 });
 
 
-// ── sendMessage — round type change clears history ────────────────────────────
+// ── sendMessage — round type change handoff summary ────────────────────────────
 
 describe('ChatPanel — sendMessage round type change', () => {
   afterEach(() => {
     (vscode.workspace as { workspaceFolders: unknown }).workspaceFolders = undefined;
   });
 
-  it('clears conversation history when round type changes', async () => {
+  it('injects a compact handoff summary when round type changes', async () => {
     const fakeModel = makeFakeModel();
     const { panel } = await setupPanel(makeConfigManager(), fakeModel);
     const handler = (panel as unknown as { _messageHandler: (m: unknown) => void })._messageHandler;
@@ -481,6 +530,19 @@ describe('ChatPanel — sendMessage round type change', () => {
     const roundChanged = msgs.find((m) => m.type === 'roundChanged');
     expect(roundChanged).toBeDefined();
     expect(roundChanged?.payload?.roundType).toBe(RoundType.REVIEWER);
+
+    expect(fakeModel.sendRequest).toHaveBeenCalledTimes(2);
+    const secondCallMessages = fakeModel.sendRequest.mock.calls[1]?.[0] as Array<{ role: string; content: unknown }>;
+    const handoffPrompt = secondCallMessages.find((m) =>
+      m.role === 'user'
+      && typeof m.content === 'string'
+      && m.content.includes('[ROUND_HANDOFF_SUMMARY]'));
+
+    expect(handoffPrompt).toBeDefined();
+    const handoffText = String(handoffPrompt?.content ?? '');
+    expect(handoffText).toContain('Previous round: qa');
+    expect(handoffText).toContain('Current round: reviewer');
+    expect(handoffText).toContain('Write tests');
   });
 });
 

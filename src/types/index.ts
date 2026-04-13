@@ -68,6 +68,19 @@ export interface RoundRequest {
   cachedFiles: Map<string, string>;
   /** Command outputs from the current turn — passed to sub-agents for verification. */
   cachedCommandOutputs: Map<string, CommandOutput>;
+  /** Optional checkpoint used to resume retry from a previously failed stage. */
+  retryCheckpoint?: RoundRetryCheckpoint;
+}
+
+export type RoundRetryStage = 'after_main' | 'after_verification';
+
+export interface RoundRetryCheckpoint {
+  requestFingerprint: string;
+  stage: RoundRetryStage;
+  mainAgentResponse: string;
+  mainAgentFileChanges: FileChange[];
+  subAgentVerifications?: SubAgentVerification[];
+  usageSnapshot?: TokenUsage;
 }
 
 export interface WorkspaceContext {

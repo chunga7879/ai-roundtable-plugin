@@ -485,7 +485,7 @@ User clicks a file → VS Code diff preview (current vs proposed)
 ## Conversation History
 
 - Each round type maintains its own conversation history
-- History resets when the user switches round type
+- On round switch in the same panel, full history is not forwarded; a compact token-capped handoff summary is injected instead (typically ~200-500 tokens when enough prior context exists)
 - History is passed to the main agent on every turn (multi-turn within a round)
 - Sub-agent verification calls receive prior user turns for context, but not the full assistant history — only the main agent's latest response
 - Sessions are persisted to disk via `SessionManager` and can be restored across VS Code restarts
@@ -619,7 +619,7 @@ Turn 2: "What if we want per-user AND per-IP limits simultaneously?"
 Turn 3: "Show me the Redis data model"
   → write_file: docs/architecture.md with key/value schema
 
-(Switching to Developer round resets history)
+(Switching to Developer round injects a compact handoff summary instead of full history)
 ```
 
 ---
