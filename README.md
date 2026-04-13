@@ -97,7 +97,6 @@ You can still override this per agent in VS Code settings:
 ### Open the panel
 
 - Command palette: `AI Roundtable: Open AI Roundtable Panel`
-- Or click the AI Roundtable icon in the activity bar
 
 ### Basic workflow
 

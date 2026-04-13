@@ -98,9 +98,6 @@ Keys are stored securely in your OS keychain via VS Code's `SecretStorage`. They
 1. Press `Cmd+Shift+P` (Mac) or `Ctrl+Shift+P` (Windows/Linux)
 2. Type `AI Roundtable: Open AI Roundtable Panel` and press Enter
 
-**Via activity bar:**
-Click the AI Roundtable icon in the left sidebar.
-
 ---
 
 ## Choosing a Round

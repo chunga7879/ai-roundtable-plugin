@@ -198,26 +198,6 @@
           "description": "Enable local run-metrics logging for A/B comparison (single-agent vs with verifiers). Stored only in local extension storage."
         }
       }
-    },
-    "viewsContainers": {
-      "activitybar": [
-        {
-          "id": "aiRoundtable",
-          "title": "AI Roundtable",
-          "icon": "resources/ai_roundtable_icon.png"
-        }
-      ]
-    },
-    "views": {
-      "aiRoundtable": [
-        {
-          "type": "webview",
-          "id": "aiRoundtable.sidebarView",
-          "name": "Chat",
-          "icon": "resources/ai_roundtable_icon.png",
-          "contextualTitle": "AI Roundtable"
-        }
-      ]
     }
   },
   "scripts": {
